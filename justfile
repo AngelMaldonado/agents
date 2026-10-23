@@ -83,3 +83,23 @@ sandbox verb="build":
 check:
     cd server && bunx tsc --noEmit
     cd web && bunx tsc --noEmit
+
+# ---- production (Komodo stack `buyer` on reko-3) ----
+
+# deploy: image | sandbox — then redeploy the stack in Komodo with IMAGE_TAG=<commit>
+deploy verb="image":
+    #!/usr/bin/env bash
+    set -euo pipefail
+    git diff --quiet HEAD || { echo "commit first: the image must match a commit" >&2; exit 1; }
+    tag=$(git rev-parse --short HEAD)
+    case "{{verb}}" in
+      image)
+        docker buildx build --platform linux/amd64 -t registry.cubytest.space/cuby/buyer:$tag -t registry.cubytest.space/cuby/buyer:latest --push .
+        echo "pushed registry.cubytest.space/cuby/buyer:$tag"
+        ;;
+      sandbox)
+        docker --context {{ctx}} build -t buyer-sandbox:$tag -t buyer-sandbox:latest sandbox/
+        echo "built buyer-sandbox:$tag on {{ctx}}"
+        ;;
+      *) echo "unknown: just deploy {{verb}}"; exit 1 ;;
+    esac

@@ -1,0 +1,51 @@
+# The `buyer` stack of Komodo (reko-3), "Compose" field. https://agents.cubytest.space (LAN/tailnet only).
+# The stack's "Environment" sets BUYER_ADMIN_PIN, BUYER_MASTER_KEY (32 bytes base64: openssl rand -base64 32),
+# BUYER_PROXY_KEY (openssl rand -hex 24) and IMAGE_TAG to pin a commit.
+# Losing BUYER_MASTER_KEY makes every saved key and site login unreadable: keep it in 1Password.
+# The sandbox image is built on reko-3 itself: just deploy sandbox.
+services:
+  server:
+    image: registry.cubytest.space/cuby/buyer:${IMAGE_TAG:-latest}
+    restart: unless-stopped
+    environment:
+      BUYER_INSTANCE: prod
+      BUYER_ADMIN_PIN: ${BUYER_ADMIN_PIN:?set BUYER_ADMIN_PIN in the stack's Environment}
+      BUYER_MASTER_KEY: ${BUYER_MASTER_KEY:?set BUYER_MASTER_KEY in the stack's Environment}
+      BUYER_PROXY_KEY: ${BUYER_PROXY_KEY:?set BUYER_PROXY_KEY in the stack's Environment}
+      BUYER_CLIPROXY_CONFIG: /cliproxy/config.yaml
+      BUYER_CLIPROXY_URL: http://cliproxy:8317
+      BUYER_SANDBOX_NETWORK: buyer-prod-sandbox
+      BUYER_SANDBOX_SERVER_URL: http://buyer-prod-server:8787
+      BUYER_SANDBOX_IMAGE: buyer-sandbox:${IMAGE_TAG:-latest}
+    volumes:
+      - /srv/buyer/data:/data
+      - /srv/buyer/cliproxy:/cliproxy
+      - /var/run/docker.sock:/var/run/docker.sock
+    networks:
+      internal: {}
+      sandbox:
+        aliases: [buyer-prod-server]
+      proxy: {}
+    labels:
+      - traefik.enable=true
+      - traefik.docker.network=proxy
+      - traefik.http.routers.buyer.rule=Host(`agents.cubytest.space`)
+      - traefik.http.routers.buyer.entrypoints=websecure
+      - traefik.http.routers.buyer.service=buyer
+      - traefik.http.services.buyer.loadbalancer.server.port=8787
+
+  cliproxy:
+    image: eceasy/cli-proxy-api:v8.0.40
+    restart: unless-stopped
+    entrypoint: ["sh", "-c", "until [ -f /cfg/config.yaml ]; do sleep 1; done; exec ./CLIProxyAPI -config /cfg/config.yaml"]
+    volumes:
+      - /srv/buyer/cliproxy:/cfg
+    networks: [internal]
+
+networks:
+  proxy:
+    external: true
+  internal:
+    name: buyer-prod-internal
+  sandbox:
+    name: buyer-prod-sandbox
