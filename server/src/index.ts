@@ -208,7 +208,7 @@ app.post('/api/agents/:id/tasks', async (c) => {
 	const { prompt } = await c.req.json();
 	if (typeof prompt !== 'string' || !prompt.trim()) return c.json({ error: 'Describe la tarea.' }, 400);
 	try {
-		return c.json({ task: tasks.publicTask(tasks.enqueue(a, prompt)) });
+		return c.json({ task: tasks.publicTask(await tasks.enqueue(a, prompt)) });
 	} catch (err) {
 		return fail(c, err);
 	}

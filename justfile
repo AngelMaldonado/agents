@@ -83,6 +83,7 @@ sandbox verb="build":
 check:
     cd server && bunx tsc --noEmit
     cd web && bunx tsc --noEmit
+    cd server && bun test
 
 # ---- production (Komodo stack `buyer` on reko-3) ----
 

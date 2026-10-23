@@ -26,6 +26,13 @@ Navegador (React) ── /ws: frames sólo lectura, tareas, eventos ──► se
 | `web/` | Galería, vista del agente, ajustes y admin (React + Vite) |
 | `scripts/fake-llm.ts` | LLM falso con guion para probar sin gastar (`just dev fake on`) |
 
+## Modelos
+
+- Catálogo inicial: Claude Sonnet 4.6, Claude Haiku 4.5, **GPT-6.1 Sol** (`openai/gpt-6.1-sol`) y **GPT-6 Sol** (`openai/gpt-6-sol`). El admin puede cambiarlo.
+- GPT usa `/v1/responses` (necesario para herramientas en GPT-6.1 Sol); pi 1.4.0 ya incluye ambos modelos en su catálogo offline.
+- Con un CLIProxyAPI propio, Buyer consulta `/v1/models` antes de encolar: si no ofrece el modelo del agente, devuelve un error sin crear el contenedor. Que un modelo aparezca ahí no garantiza cuota ni acceso upstream.
+- Referencia: [GPT-6.1 Sol](https://developers.openai.com/api/docs/models/gpt-6.1-sol), [GPT-6 Sol](https://developers.openai.com/api/docs/models/gpt-6-sol).
+
 ## Seguridad, en corto
 
 - El contenedor recibe un token de arranque que se quema al conectar; los logins de sitios viajan sólo por ese socket. pi recibe otro token que sólo sirve en `/llm/*`, para el modelo de su tarea.

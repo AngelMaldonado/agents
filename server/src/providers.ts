@@ -76,6 +76,17 @@ export async function proxyModels(url: string, key: string) {
 	return data.data.map((m) => m.id);
 }
 
+/** Fail before allocating a sandbox when the person's proxy does not advertise the model. */
+export async function checkProxyModel(personId: number, model: string) {
+	const own = proxyCredentials(personId);
+	if (!own) return;
+	const [provider, id] = model.split('/', 2);
+	const ids = await proxyModels(own.url, own.key);
+	if (ids.includes(id)) return;
+	const alternatives = ids.filter((m) => m.startsWith(provider === 'openai' ? 'gpt-' : 'claude-')).slice(0, 8);
+	throw new Error(`Tu CLIProxyAPI no ofrece ${id}. Cambia el modelo del agente.${alternatives.length ? ` Disponibles: ${alternatives.join(', ')}.` : ''}`);
+}
+
 export function setProxy(personId: number, url: string, key: string) {
 	db.query(
 		`INSERT INTO proxy_accounts (person_id, url, enc_key, last4, updated_at) VALUES (?, ?, ?, ?, ?)

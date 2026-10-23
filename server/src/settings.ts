@@ -21,8 +21,8 @@ const DEFAULTS: Settings = {
 	models: [
 		{ id: 'anthropic/claude-sonnet-4-6', label: 'Claude Sonnet 4.6' },
 		{ id: 'anthropic/claude-haiku-4-5-20251001', label: 'Claude Haiku 4.5' },
-		{ id: 'openai/gpt-5.4', label: 'GPT-5.4' },
-		{ id: 'openai/gpt-5.4-mini', label: 'GPT-5.4 mini' }
+		{ id: 'openai/gpt-6.1-sol', label: 'GPT-6.1 Sol' },
+		{ id: 'openai/gpt-6-sol', label: 'GPT-6 Sol' }
 	]
 };
 
