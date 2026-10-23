@@ -9,9 +9,85 @@ export function Settings({ me, agents }: { me: Person; agents: Agent[] }) {
 	return (
 		<div className="page">
 			<h1>Ajustes de {me.name}</h1>
+			<Proxy />
 			<Keys />
 			<Vault agents={mine} />
 		</div>
+	);
+}
+
+type ProxyRow = { url: string; last4: string; updated_at: number };
+type Check = { total: number; catalog: { id: string; label: string; served: boolean }[] };
+
+function Proxy() {
+	const [proxy, setProxy] = useState<ProxyRow | null>(null);
+	const [url, setUrl] = useState('');
+	const [key, setKey] = useState('');
+	const [check, setCheck] = useState<Check | null>(null);
+	const [error, setError] = useState('');
+	const [busy, setBusy] = useState(false);
+	useEffect(() => {
+		api('/keys').then((r) => {
+			setProxy(r.proxy);
+			if (r.proxy) setUrl(r.proxy.url);
+		});
+	}, []);
+	const run = async (fn: () => Promise<any>) => {
+		setBusy(true);
+		setError('');
+		try {
+			await fn();
+		} catch (err) {
+			setError((err as Error).message);
+		} finally {
+			setBusy(false);
+		}
+	};
+	return (
+		<section className="panel">
+			<h2>Tu CLIProxyAPI</h2>
+			<p className="muted">
+				Si tienes un CLIProxyAPI con tus cuentas de Claude y GPT, pon su URL y tu API key: todas tus tareas saldrán por él y las keys de abajo dejan de hacer falta. La key se guarda cifrada y no se vuelve a mostrar; los agentes nunca la ven.
+			</p>
+			<form
+				className="form"
+				onSubmit={(e) => {
+					e.preventDefault();
+					void run(async () => {
+						const r = await api('/proxy', { method: 'PUT', body: { url, key } });
+						setProxy(r.proxy);
+						setCheck(r.check);
+						setKey('');
+					});
+				}}
+			>
+				<div className="row wrap">
+					<input value={url} onChange={(e) => setUrl(e.target.value)} placeholder="http://192.168.20.x:8317 o https://proxy.ejemplo.com" />
+					<input type="password" value={key} onChange={(e) => setKey(e.target.value)} placeholder={proxy ? `Guardada · termina en …${proxy.last4}` : 'API key del proxy'} autoComplete="off" />
+					<button className="primary" disabled={busy || !url.trim() || !key.trim()}>{busy ? 'Probando…' : proxy ? 'Reemplazar' : 'Guardar'}</button>
+					{proxy && (
+						<>
+							<button type="button" disabled={busy} onClick={() => run(async () => setCheck((await api('/proxy/test', { method: 'POST' })).check))}>Probar</button>
+							<button type="button" className="ghost" onClick={() => run(async () => { await api('/proxy', { method: 'DELETE' }); setProxy(null); setCheck(null); })}>Quitar</button>
+						</>
+					)}
+				</div>
+				{proxy && <p className="muted small">En uso: {proxy.url} · key …{proxy.last4} · {ago(proxy.updated_at)}</p>}
+				{error && <p className="error">{error}</p>}
+				{check && (
+					<div className="small">
+						<p className="ok">Conectó: el proxy sirve {check.total} modelos.</p>
+						{check.catalog.map((m) => (
+							<div key={m.id} className={m.served ? 'ok' : 'muted'}>
+								{m.served ? '✓' : '✗'} {m.label} <code>{m.id.split('/')[1]}</code>
+								{!m.served && ' — tu proxy no lo sirve: los agentes con este modelo fallarán'}
+							</div>
+						))}
+					</div>
+				)}
+				<p className="muted small">La URL la abre el servidor en reko-3, no tu navegador: <code>localhost</code> de tu Mac no sirve; usa una IP de la LAN o de la tailnet.</p>
+			</form>
+		</section>
 	);
 }
 
@@ -22,8 +98,8 @@ function Keys() {
 	}, []);
 	return (
 		<section className="panel">
-			<h2>Tus API keys</h2>
-			<p className="muted">Las tareas que lanzas consumen tu cuenta. Las keys se guardan cifradas y no se vuelven a mostrar, ni siquiera al admin; los agentes nunca las ven.</p>
+			<h2>O tus API keys directas</h2>
+			<p className="muted">Se usan sólo si no tienes un CLIProxyAPI propio. Las tareas que lanzas consumen tu cuenta. Las keys se guardan cifradas y no se vuelven a mostrar, ni siquiera al admin; los agentes nunca las ven.</p>
 			<KeyRowForm provider="anthropic" label="Anthropic (Claude)" hint="sk-ant-api03-… · Console de Anthropic o créditos API de tu plan" row={keys.find((k) => k.provider === 'anthropic')} onSaved={setKeys} />
 			<KeyRowForm provider="openai" label="OpenAI (GPT)" hint="sk-proj-… · platform.openai.com" row={keys.find((k) => k.provider === 'openai')} onSaved={setKeys} />
 			<p className="muted small">Claude sólo con API key: usar el login de una suscripción Claude Pro/Max a través de un proxy viola los términos de Anthropic.</p>

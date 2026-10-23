@@ -40,6 +40,53 @@ export function deleteKey(personId: number, provider: Provider) {
 	writeProxyConfig();
 }
 
+// ---------- a person's own CLIProxyAPI ----------
+
+export function proxyOf(personId: number) {
+	return db.query('SELECT url, last4, updated_at FROM proxy_accounts WHERE person_id = ?').get(personId) as
+		| { url: string; last4: string; updated_at: number }
+		| null;
+}
+
+/** URL and key, decrypted: only for the LLM gateway. */
+export function proxyCredentials(personId: number) {
+	const row = db.query('SELECT url, enc_key FROM proxy_accounts WHERE person_id = ?').get(personId) as { url: string; enc_key: string } | null;
+	return row ? { url: row.url, key: open(row.enc_key) } : null;
+}
+
+/** https://host:8317/v1/ -> https://host:8317 */
+export function normalizeProxyUrl(raw: string) {
+	const u = new URL(String(raw ?? '').trim());
+	if (u.protocol !== 'http:' && u.protocol !== 'https:') throw new Error('La URL debe empezar con http:// o https://');
+	return `${u.origin}${u.pathname.replace(/\/+$/, '').replace(/\/v1$/, '')}`;
+}
+
+/** The model ids the proxy serves with this key; throws a readable error otherwise. */
+export async function proxyModels(url: string, key: string) {
+	let res: Response;
+	try {
+		res = await fetch(`${url}/v1/models`, { headers: { authorization: `Bearer ${key}` }, signal: AbortSignal.timeout(8000) });
+	} catch (err) {
+		throw new Error(`No se pudo conectar a ${url} desde el servidor: ${(err as Error).message}`);
+	}
+	if (res.status === 401 || res.status === 403) throw new Error('El proxy rechazó la API key.');
+	if (!res.ok) throw new Error(`El proxy respondió ${res.status} en /v1/models.`);
+	const data = (await res.json().catch(() => null)) as { data?: { id: string }[] } | null;
+	if (!Array.isArray(data?.data)) throw new Error('Eso no parece un CLIProxyAPI (/v1/models no devolvió una lista).');
+	return data.data.map((m) => m.id);
+}
+
+export function setProxy(personId: number, url: string, key: string) {
+	db.query(
+		`INSERT INTO proxy_accounts (person_id, url, enc_key, last4, updated_at) VALUES (?, ?, ?, ?, ?)
+		 ON CONFLICT(person_id) DO UPDATE SET url = excluded.url, enc_key = excluded.enc_key, last4 = excluded.last4, updated_at = excluded.updated_at`
+	).run(personId, url, seal(key), key.slice(-4), now());
+}
+
+export function deleteProxy(personId: number) {
+	db.query('DELETE FROM proxy_accounts WHERE person_id = ?').run(personId);
+}
+
 /** Rewrites CLIProxyAPI's config; it reloads the file on its own. */
 export function writeProxyConfig() {
 	const proxyKey = process.env.BUYER_PROXY_KEY;

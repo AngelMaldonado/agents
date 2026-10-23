@@ -17,7 +17,7 @@ import { settings } from './settings';
 import { systemPrompt } from './prompt';
 import { DockerSandbox } from './sandbox/docker';
 import type { SandboxProvider } from './sandbox/provider';
-import { hasKey, type Provider } from './providers';
+import { hasKey, proxyOf, type Provider } from './providers';
 import { grantedNames, resolveCredential } from './vault';
 
 export type Status = 'queued' | 'starting' | 'running' | 'done' | 'incomplete' | 'cancelled' | 'error';
@@ -107,8 +107,8 @@ function setState(taskId: number, state: CharState) {
 
 export function enqueue(agent: { id: number; person_id: number; model: string }, prompt: string) {
 	const providerName = agent.model.split('/')[0] as Provider;
-	if (!hasKey(agent.person_id, providerName)) {
-		throw new Error(`Falta tu API key de ${providerName === 'anthropic' ? 'Anthropic' : 'OpenAI'} (Ajustes).`);
+	if (!proxyOf(agent.person_id) && !hasKey(agent.person_id, providerName)) {
+		throw new Error(`Falta tu CLIProxyAPI o tu API key de ${providerName === 'anthropic' ? 'Anthropic' : 'OpenAI'} (Ajustes).`);
 	}
 	if (db.query("SELECT 1 FROM tasks WHERE agent_id = ? AND status IN ('queued','starting','running')").get(agent.id)) {
 		throw new Error('Este agente ya tiene una tarea en curso.');

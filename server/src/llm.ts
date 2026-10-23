@@ -4,9 +4,11 @@
 // llm_token. Here the token becomes the task, the model must be the task's model, and the request
 // goes to CLIProxyAPI as u<owner>/<model> with the backend's internal proxy key. The sandbox never
 // holds a real key, and can't reach another person's account or another model.
+// A person with their own CLIProxyAPI (Ajustes) gets their requests sent there instead, with their
+// key and the plain model id.
 import type { Context } from 'hono';
 import { byLlmToken } from './tasks';
-import { prefixOf } from './providers';
+import { prefixOf, proxyCredentials } from './providers';
 
 const CLIPROXY = process.env.BUYER_CLIPROXY_URL ?? 'http://cliproxy:8317';
 
@@ -37,25 +39,27 @@ export async function gateway(c: Context) {
 		return c.json({ error: { message: 'invalid JSON' } }, 400);
 	}
 	if (body?.model !== model) return c.json({ error: { message: `this task may only use ${model}` } }, 403);
-	body.model = `${prefixOf(task.person_id)}/${model}`;
+	const own = proxyCredentials(task.person_id);
+	const base = own?.url ?? CLIPROXY;
+	const key = own?.key ?? process.env.BUYER_PROXY_KEY!;
+	body.model = own ? model : `${prefixOf(task.person_id)}/${model}`;
 
 	const headers = new Headers();
 	for (const h of PASS) {
 		const v = c.req.header(h);
 		if (v) headers.set(h, v);
 	}
-	const key = process.env.BUYER_PROXY_KEY!;
 	headers.set('authorization', `Bearer ${key}`);
 	headers.set('x-api-key', key);
 
-	const upstream = await fetch(`${CLIPROXY}${route.upstream}`, {
+	const upstream = await fetch(`${base}${route.upstream}`, {
 		method: 'POST',
 		headers,
 		body: JSON.stringify(body),
 		signal: c.req.raw.signal
 	}).catch((err: Error) => err);
 	if (upstream instanceof Error) {
-		return c.json({ error: { type: 'api_error', message: `proxy unreachable: ${upstream.message}` } }, 502);
+		return c.json({ error: { type: 'api_error', message: `${own ? 'your CLIProxyAPI' : 'proxy'} unreachable: ${upstream.message}` } }, 502);
 	}
 	const out = new Headers();
 	for (const h of ['content-type', 'cache-control', 'request-id', 'x-request-id']) {

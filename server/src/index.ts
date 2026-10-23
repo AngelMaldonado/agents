@@ -11,7 +11,10 @@ import * as tasks from './tasks';
 import * as vault from './vault';
 import * as hub from './hub';
 import { settings, saveSettings } from './settings';
-import { keysOf, setKey, deleteKey, writeProxyConfig, PROVIDERS, type Provider } from './providers';
+import {
+	keysOf, setKey, deleteKey, writeProxyConfig, PROVIDERS, type Provider,
+	proxyOf, proxyCredentials, normalizeProxyUrl, proxyModels, setProxy, deleteProxy
+} from './providers';
 import { checkMasterKey } from './crypto';
 import { gateway } from './llm';
 
@@ -108,7 +111,44 @@ app.post('/api/admin/lock', (c) => {
 
 // ---------- provider keys (each person's own; never shown back) ----------
 
-app.get('/api/keys', (c) => c.json({ keys: keysOf(c.get('me').id) }));
+app.get('/api/keys', (c) => c.json({ keys: keysOf(c.get('me').id), proxy: proxyOf(c.get('me').id) }));
+
+// A person's own CLIProxyAPI. Saving checks it answers /v1/models with that key.
+function catalogCheck(ids: string[]) {
+	return {
+		total: ids.length,
+		catalog: settings().models.map((m) => ({ id: m.id, label: m.label, served: ids.includes(m.id.split('/')[1]) }))
+	};
+}
+
+app.put('/api/proxy', async (c) => {
+	const { url, key } = await c.req.json();
+	try {
+		const k = String(key ?? '').trim();
+		if (!k) throw new Error('Falta la API key.');
+		const u = normalizeProxyUrl(url);
+		const ids = await proxyModels(u, k);
+		setProxy(c.get('me').id, u, k);
+		return c.json({ proxy: proxyOf(c.get('me').id), check: catalogCheck(ids) });
+	} catch (err) {
+		return fail(c, err);
+	}
+});
+
+app.post('/api/proxy/test', async (c) => {
+	const p = proxyCredentials(c.get('me').id);
+	if (!p) return c.json({ error: 'No tienes un CLIProxyAPI guardado.' }, 404);
+	try {
+		return c.json({ check: catalogCheck(await proxyModels(p.url, p.key)) });
+	} catch (err) {
+		return fail(c, err);
+	}
+});
+
+app.delete('/api/proxy', (c) => {
+	deleteProxy(c.get('me').id);
+	return c.json({ proxy: null });
+});
 app.put('/api/keys/:provider', async (c) => {
 	const provider = c.req.param('provider') as Provider;
 	if (!PROVIDERS.includes(provider)) return c.json({ error: 'Proveedor desconocido.' }, 404);

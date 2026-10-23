@@ -41,6 +41,14 @@ CREATE TABLE IF NOT EXISTS provider_keys (
 	updated_at INTEGER NOT NULL,
 	PRIMARY KEY (person_id, provider)
 );
+-- A person's own CLIProxyAPI: when set, their tasks go there instead of the built-in proxy.
+CREATE TABLE IF NOT EXISTS proxy_accounts (
+	person_id INTEGER PRIMARY KEY REFERENCES people(id) ON DELETE CASCADE,
+	url TEXT NOT NULL,                  -- base URL, without /v1
+	enc_key TEXT NOT NULL,
+	last4 TEXT NOT NULL,
+	updated_at INTEGER NOT NULL
+);
 -- A worker: a stable character with a role and a model. Each task gets a fresh sandbox.
 CREATE TABLE IF NOT EXISTS agents (
 	id INTEGER PRIMARY KEY,

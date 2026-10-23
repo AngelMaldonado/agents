@@ -51,6 +51,11 @@ function sse(events: [string, unknown][]) {
 Bun.serve({
 	port: 8317,
 	async fetch(req) {
+		// Also plays a person's own CLIProxyAPI in Ajustes: URL http://fake-llm:8317, key fake-proxy-key.
+		if (req.url.endsWith('/v1/models')) {
+			if (req.headers.get('authorization') !== 'Bearer fake-proxy-key') return Response.json({ error: 'bad key' }, { status: 401 });
+			return Response.json({ object: 'list', data: ['claude-sonnet-4-6', 'claude-haiku-4-5-20251001'].map((id) => ({ id, object: 'model' })) });
+		}
 		if (!req.url.endsWith('/v1/messages')) return new Response('not here', { status: 404 });
 		const body = await req.json();
 		const results = body.messages.flatMap((m: any) => (Array.isArray(m.content) ? m.content : [])).filter((c: any) => c.type === 'tool_result').length;
