@@ -1,0 +1,5 @@
+{
+  "name": "buyer",
+  "private": true,
+  "workspaces": ["server", "web"]
+}

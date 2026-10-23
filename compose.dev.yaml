@@ -1,0 +1,82 @@
+# Buyer's dev environment, on reko-3 (just dev up). The code is rsynced to ~/dev/work/buyer on
+# reko-3 and bind-mounted; bun --watch and Vite pick up changes. https://agents-dev.cubytest.space
+#
+# Networks:
+#   proxy              Traefik (shared, external)
+#   buyer-dev-internal backend <-> CLIProxyAPI (and web -> backend); no sandbox here
+#   buyer-dev-sandbox  task containers -> backend only (they never see CLIProxyAPI)
+name: buyer-dev
+
+services:
+  server:
+    image: oven/bun:1.4
+    working_dir: /app
+    # .env.dev holds the secrets; it exists only on reko-3, so it is read here, not by compose.
+    command: ["sh", "-c", "set -a && . /app/.env.dev && set +a && bun install && cd server && exec bun --watch src/index.ts"]
+    environment:
+      BUYER_INSTANCE: dev
+      BUYER_DATA: /data
+      BUYER_CLIPROXY_CONFIG: /cliproxy/config.yaml
+      # `just dev fake on` points this at the scripted fake LLM (no tokens spent).
+      BUYER_CLIPROXY_URL: ${BUYER_CLIPROXY_URL:-http://cliproxy:8317}
+      BUYER_SANDBOX_NETWORK: buyer-dev-sandbox
+      BUYER_SANDBOX_SERVER_URL: http://buyer-dev-server:8787
+      BUYER_SANDBOX_IMAGE: buyer-sandbox:dev
+      BUYER_WEB_DIST: /nonexistent
+      PORT: "8787"
+    volumes:
+      - ./:/app
+      - data:/data
+      - cliproxy:/cliproxy
+      - /var/run/docker.sock:/var/run/docker.sock
+    networks:
+      buyer-dev-internal:
+      buyer-dev-sandbox:
+        aliases: [buyer-dev-server]
+    restart: unless-stopped
+
+  web:
+    image: oven/bun:1.4
+    working_dir: /app/web
+    command: ["sh", "-c", "until [ -d /app/node_modules ]; do sleep 1; done; exec bun --bun vite --host 0.0.0.0 --port 5173"]
+    environment:
+      BUYER_API: http://server:8787
+    volumes:
+      - ./:/app
+    networks: [proxy, buyer-dev-internal]
+    labels:
+      traefik.enable: "true"
+      traefik.docker.network: proxy
+      traefik.http.routers.buyer-dev.entrypoints: websecure
+      traefik.http.routers.buyer-dev.rule: Host(`agents-dev.cubytest.space`)
+      traefik.http.routers.buyer-dev.service: buyer-dev
+      traefik.http.services.buyer-dev.loadbalancer.server.port: "5173"
+    restart: unless-stopped
+
+  cliproxy:
+    image: eceasy/cli-proxy-api:v8.0.40
+    entrypoint: ["sh", "-c", "until [ -f /cfg/config.yaml ]; do sleep 1; done; exec ./CLIProxyAPI -config /cfg/config.yaml"]
+    volumes:
+      - cliproxy:/cfg
+    networks: [buyer-dev-internal]
+    restart: unless-stopped
+
+  fake-llm:
+    profiles: [fake]
+    image: oven/bun:1.4
+    command: ["bun", "/app/scripts/fake-llm.ts"]
+    volumes:
+      - ./scripts:/app/scripts:ro
+    networks: [buyer-dev-internal]
+
+volumes:
+  data:
+  cliproxy:
+
+networks:
+  proxy:
+    external: true
+  buyer-dev-internal:
+    name: buyer-dev-internal
+  buyer-dev-sandbox:
+    name: buyer-dev-sandbox

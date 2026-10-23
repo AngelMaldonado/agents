@@ -1,0 +1,28 @@
+#!/usr/bin/env node
+// agent-browser credential plugin (agent-browser.plugin.v1 over stdio). It asks the supervisor,
+// which asks the backend; the login goes straight to agent-browser and never to the model.
+let input = '';
+process.stdin.setEncoding('utf8');
+process.stdin.on('data', (c) => (input += c));
+process.stdin.on('end', async () => {
+	const reply = (o) => process.stdout.write(JSON.stringify({ protocol: 'agent-browser.plugin.v1', ...o }) + '\n');
+	let req;
+	try {
+		req = JSON.parse(input);
+	} catch {
+		return reply({ success: false, error: 'invalid request' });
+	}
+	if (req.type !== 'credential.resolve') return reply({ success: false, error: `unsupported: ${req.type}` });
+	const name = req.request?.itemRef || req.request?.profileName || '';
+	try {
+		const res = await fetch('http://127.0.0.1:7777/credential', {
+			method: 'POST',
+			body: JSON.stringify({ name, url: req.request?.url ?? '' })
+		});
+		const r = await res.json();
+		if (!r.ok) return reply({ success: false, error: r.error ?? 'denied' });
+		reply({ success: true, credential: r.credential });
+	} catch (err) {
+		reply({ success: false, error: String(err?.message ?? err) });
+	}
+});
