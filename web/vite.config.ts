@@ -12,6 +12,7 @@ export default defineConfig({
 		hmr: process.env.AGENTS_API ? { clientPort: 443, protocol: 'wss' } : undefined,
 		proxy: {
 			'/api': { target: api, changeOrigin: false },
+			'/hooks': { target: api, changeOrigin: false },
 			'/ws': { target: api.replace(/^http/, 'ws'), ws: true }
 		}
 	}

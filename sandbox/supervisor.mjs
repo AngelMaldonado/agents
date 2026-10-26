@@ -43,6 +43,8 @@ mkdirSync(PI_DIR, { recursive: true });
 const log = (...a) => console.error('[supervisor]', ...a);
 let backend = null;
 let pi = null;
+let piReady = false; // the prompt went in: pi takes commands now
+const piQueue = []; // steer/follow-up/abort that arrived before that
 let blockedWaitMs = 10 * 60_000;
 let session = null; // from the backend's start message; reconnects with it
 let bye = false; // the backend ended the run: a close is final
@@ -91,7 +93,9 @@ function onBackend(raw) {
 			bye = true;
 			break;
 		case 'pi_cmd':
-			if (pi?.stdin.writable) pi.stdin.write(JSON.stringify(msg.cmd) + '\n');
+			// pi starts seconds after the run (the browser opens first): hold what comes before.
+			if (pi?.stdin.writable && piReady) pi.stdin.write(JSON.stringify(msg.cmd) + '\n');
+			else piQueue.push(msg.cmd);
 			break;
 		case 'unblock':
 			releaseBlocked(true);
@@ -104,6 +108,10 @@ function onBackend(raw) {
 		}
 		case 'collect':
 			void collect();
+			break;
+		case 'files':
+			// Attachments of a message that arrives mid-run; the follow-up that names them comes next.
+			writeInbox(msg.files ?? []);
 			break;
 		case 'purge':
 			// A vault access was revoked mid-run: wipe that origin now.
@@ -146,6 +154,19 @@ function watchBrowser() {
 	};
 	ws.onclose = () => setTimeout(watchBrowser, 1000);
 	ws.onerror = () => {};
+}
+
+// ---------- attachments ----------
+
+/** Writes a message's attachments under ~/work (in/<message>/<name>); nothing outside it. */
+function writeInbox(files) {
+	for (const f of files) {
+		const rel = String(f.path ?? '');
+		if (!/^in\/\d+\/[\w.-]+$/.test(rel)) continue;
+		const dest = join(WORK, rel);
+		mkdirSync(join(dest, '..'), { recursive: true });
+		writeFileSync(dest, Buffer.from(String(f.data ?? ''), 'base64'));
+	}
 }
 
 // ---------- the browser profile: wiping one origin ----------
@@ -212,6 +233,7 @@ async function start(msg) {
 	writeFileSync(join(PI_DIR, 'models.json'), JSON.stringify({ providers: { openai: { baseUrl: `${SERVER}/llm/openai/v1` } } }));
 	const systemFile = join(HOME, '.pi', 'agents-system.md');
 	writeFileSync(systemFile, msg.system);
+	writeInbox(msg.files ?? []);
 
 	// The profile: wiped whole if asked, and freed from the locks a previous container left
 	// (Chrome refuses a profile "in use on another computer": every container has its own hostname).
@@ -247,6 +269,8 @@ async function start(msg) {
 		pi = null;
 	});
 	pi.stdin.write(JSON.stringify({ id: 'task', type: 'prompt', message: msg.prompt }) + '\n');
+	piReady = true;
+	for (const cmd of piQueue.splice(0)) pi.stdin.write(JSON.stringify(cmd) + '\n');
 }
 
 /** Strict JSONL: split on LF only (U+2028/9 are valid inside JSON strings). */

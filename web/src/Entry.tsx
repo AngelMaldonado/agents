@@ -23,7 +23,7 @@ export function Entry({ onIn }: { onIn: () => void }) {
 				<Character seed="caro" state="done" size={96} />
 			</div>
 			<h1>Agents</h1>
-			<p className="muted">Agentes que cotizan por ti, cada uno con su propia computadora. Míralos trabajar en vivo.</p>
+			<p className="muted">Agentes con su propia computadora: les escribes, trabajan y te responden. Míralos trabajar en vivo.</p>
 			<form onSubmit={submit} className="entry-form">
 				<input value={name} onChange={(e) => setName(e.target.value)} placeholder="¿Cómo te llamas?" autoFocus maxLength={40} />
 				<button className="primary" disabled={!name.trim()}>Entrar</button>

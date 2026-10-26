@@ -6,7 +6,8 @@
 // that prompt. The conversation continues between runs, so the whole history arrives every time:
 //   [blocked]     gets stuck and asks for help        [vault]       logs in with "local-test"
 //   [cookie-set]  leaves a cookie on example.com      [cookie-get]  shows example.com's cookies
-//   [texto]       answers without tools or files
+//   [texto]       answers without tools or files    [lento]       ~20 s of work (to get messages mid-run)
+//   [adjunto]     reads the attachments in ~/work/in/
 //   "anota el número N"  writes N to ~/work/nota.txt
 //   "qué número anotaste"  reads it back and quotes what the conversation says
 //   anything else: visits a page and leaves a screenshot and a summary in ~/work/out/
@@ -16,6 +17,17 @@ type Ctx = { history: string; lastOutput: string };
 const SITE = `mkdir -p ~/site && printf '%s' '<html><body><h1>Portal de prueba</h1><form action="/ok.html"><input id="u" name="u"><input id="p" name="p" type="password"><button>Entrar</button></form></body></html>' > ~/site/login.html && echo '<h1>Dentro del portal</h1>' > ~/site/ok.html && (cd ~/site && nohup python3 -m http.server 8000 >/dev/null 2>&1 &) && sleep 1 && echo listo`;
 
 const SCRIPTS: { match: RegExp; steps: Step[] }[] = [
+	{
+		match: /\[lento\]/,
+		steps: [{ bash: 'sleep 10 && echo uno' }, { bash: 'sleep 10 && echo dos' }, { text: 'Terminé lo lento.' }]
+	},
+	{
+		match: /\[adjunto\]/,
+		steps: [
+			{ bash: 'for f in ~/work/in/*/*; do echo "$f: $(cat "$f")"; done' },
+			{ text: (c) => `Leí los adjuntos:\n\n\`\`\`\n${c.lastOutput.trim() || '(ninguno)'}\n\`\`\`` }
+		]
+	},
 	{
 		match: /\[blocked\]/,
 		steps: [
@@ -107,6 +119,25 @@ function plan(input: any[]) {
 	return { prompt, step: steps[Math.min(results.length, steps.length - 1)], ctx, steered };
 }
 
+// ---------- a test bridge: receives an agent's outbound webhook ----------
+// POST /hook-receiver records the delivery (500 while failing is on); GET /hook-receiver/log lists
+// them; POST /hook-receiver/fail?on=1|0 turns failing on or off.
+
+const received: { at: string; headers: Record<string, string>; body: string }[] = [];
+let failing = false;
+
+async function receiver(req: Request, path: string) {
+	if (path === '/hook-receiver/log') return Response.json(received);
+	if (path === '/hook-receiver/fail') {
+		failing = new URL(req.url).searchParams.get('on') === '1';
+		return Response.json({ failing });
+	}
+	const body = await req.text();
+	if (failing) return new Response('receiver is failing on purpose', { status: 500 });
+	received.push({ at: new Date().toISOString(), headers: Object.fromEntries(req.headers), body });
+	return Response.json({ ok: true });
+}
+
 // ---------- the Responses stream ----------
 
 function sse(events: unknown[]) {
@@ -122,6 +153,8 @@ Bun.serve({
 			if (req.headers.get('authorization') !== 'Bearer fake-proxy-key') return Response.json({ error: 'bad key' }, { status: 401 });
 			return Response.json({ object: 'list', data: ['gpt-6.1-sol', 'gpt-6-sol'].map((id) => ({ id, object: 'model' })) });
 		}
+		const path = new URL(req.url).pathname;
+		if (path.startsWith('/hook-receiver')) return receiver(req, path);
 		if (!req.url.endsWith('/v1/responses')) return new Response('not here', { status: 404 });
 		const body = await req.json();
 		const input: any[] = Array.isArray(body.input) ? body.input : [];

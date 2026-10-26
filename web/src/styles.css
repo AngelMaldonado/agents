@@ -175,3 +175,10 @@ tr.best td { background: #12281c; }
 .markdown th, .markdown td { border: 1px solid var(--line); padding: 4px 8px; }
 .files { list-style: none; padding: 0; display: flex; flex-direction: column; gap: 4px; }
 .conversation { display: flex; flex-direction: column; gap: 6px; margin-bottom: 14px; }
+
+/* An agent's channels. */
+.channels .kv { display: flex; align-items: center; gap: 12px; margin: 6px 0; flex-wrap: wrap; }
+.channels .kv > .muted { min-width: 5em; }
+.channels .schedule { margin: 6px 0; align-items: center; }
+.channels .grow { flex: 1; min-width: 0; overflow-wrap: anywhere; }
+.channels pre { background: #0c0f14; border: 1px solid var(--line); border-radius: 8px; padding: 10px; overflow-x: auto; white-space: pre; }

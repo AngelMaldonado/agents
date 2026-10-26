@@ -17,6 +17,7 @@ services:
       AGENTS_SANDBOX_NETWORK: agents-prod-sandbox
       AGENTS_SANDBOX_SERVER_URL: http://agents-prod-server:8787
       AGENTS_SANDBOX_IMAGE: agents-sandbox:${IMAGE_TAG:-latest}
+      AGENTS_PUBLIC_URL: https://agents.cubytest.space
       AGENTS_DATABASE_URL: postgres://agents:${AGENTS_DB_PASSWORD:?set AGENTS_DB_PASSWORD in the stack's Environment}@postgres:5432/agents
     depends_on:
       postgres:

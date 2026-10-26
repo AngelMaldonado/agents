@@ -28,6 +28,8 @@ import { hasKey, proxyOf, checkProxyModel, type Provider } from './providers';
 import { grantedNames, resolveCredential } from './vault';
 import { quotaOf } from './people';
 import { stateMount } from './state';
+import { createDelivery, startDelivery, notify } from './channels';
+import { requestRoute, startPrompt } from './inbox';
 
 export type Status = 'queued' | 'starting' | 'running' | 'blocked' | 'done' | 'incomplete' | 'cancelled' | 'error';
 export type CharState =
@@ -175,21 +177,32 @@ export const applyGlobalCap = () => ensureQueue(SANDBOXES, settings().maxConcurr
 /** A person's quota changed (Admin): their queue follows it. */
 export const applyQuota = (personId: number, quota: number) => ensureQueue(personQueue(personId), quota);
 
-// ---------- enqueue ----------
+// ---------- starting a run ----------
 
-export async function enqueue(agent: { id: number; person_id: number; model: string }, prompt: string, opts: { admin: boolean }) {
+type AgentRef = { id: number; person_id: number; model: string };
+
+/** Throws a readable error when the agent can't run now (model, keys, proxy, quota). */
+export async function checkRunnable(agent: AgentRef) {
 	const providerName = agent.model.split('/')[0] as Provider;
 	if (providerName !== 'openai') throw new Error('Este agente usa un modelo que ya no está en el catálogo: cámbialo por uno GPT.');
 	if (!(await proxyOf(agent.person_id)) && !(await hasKey(agent.person_id, providerName))) {
 		throw new Error('Falta tu CLIProxyAPI o tu API key de OpenAI (Ajustes).');
 	}
 	await checkProxyModel(agent.person_id, agent.model);
-	const quota = await quotaOf(agent.person_id);
-	if (quota < 1) throw new Error('Tu cuota de tareas simultáneas es 0: pídele a un admin que la suba.');
-	const priority = opts.admin ? 0 : 10;
-	let id: number;
+	if ((await quotaOf(agent.person_id)) < 1) throw new Error('Tu cuota de tareas simultáneas es 0: pídele a un admin que la suba.');
+}
+
+/** The agent's live run, if any. */
+export const liveRunOf = (agentId: number) =>
+	row<RunRef & { status: Status }>(
+		"select id, person_id, agent_id, status from runs where agent_id = $1 and status in ('queued','starting','running','blocked')",
+		[agentId]
+	);
+
+/** Inserts a run for a stored message, in the agent's current conversation. */
+async function insertRun(agent: AgentRef, messageId: number, priority: number, status: 'queued' | 'error', reason: string | null) {
 	try {
-		id = await tx(async (c) => {
+		return await tx(async (c) => {
 			let conv = await row<{ id: number }>('select id from conversations where agent_id = $1 and archived_at is null', [agent.id], c);
 			conv ??= await row<{ id: number }>(
 				'insert into conversations (agent_id, pi_session_id) values ($1, gen_random_uuid()::text) returning id',
@@ -198,32 +211,69 @@ export async function enqueue(agent: { id: number; person_id: number; model: str
 			);
 			const { id } = (await row<{ id: number }>("select nextval(pg_get_serial_sequence('runs', 'id')) as id", [], c))!;
 			await exec(
-				`insert into runs (id, agent_id, person_id, conversation_id, workflow_id, model, priority, status, state)
-				 overriding system value values ($1, $2, $3, $4, $5, $6, $7, 'queued', 'idle')`,
-				[id, agent.id, agent.person_id, conv!.id, runWorkflowId(id), agent.model, priority],
+				`insert into runs (id, agent_id, person_id, conversation_id, workflow_id, model, priority, status, state, end_reason, ended_at)
+				 overriding system value values ($1, $2, $3, $4, $5, $6, $7, $8, $8, $9, case when $8 = 'error' then now() end)`,
+				[id, agent.id, agent.person_id, conv!.id, runWorkflowId(id), agent.model, priority, status, reason],
 				c
 			);
-			await exec(
-				`insert into messages (agent_id, source, person_id, text, run_id, routed_as, routed_at)
-				 values ($1, 'web', $2, $3, $4, 'new_run', now())`,
-				[agent.id, agent.person_id, prompt.trim(), id],
-				c
-			);
+			await exec("update messages set run_id = $2, routed_as = 'new_run', routed_at = now() where id = $1", [messageId, id], c);
 			return id;
 		});
 	} catch (err) {
 		if ((err as { constraint?: string }).constraint === 'runs_one_live_per_agent') throw new Error('Este agente ya tiene una tarea en curso.');
 		throw err;
 	}
+}
+
+/** A run for a stored message: queued on its person's queue. */
+export async function startRun(agent: AgentRef, messageId: number, priority: number) {
+	const id = await insertRun(agent, messageId, priority, 'queued', null);
 	await publishTask(id);
 	try {
-		await applyQuota(agent.person_id, quota);
+		await applyQuota(agent.person_id, await quotaOf(agent.person_id));
 		await DBOS.startWorkflow(admit, { workflowID: `admit-${id}`, queueName: personQueue(agent.person_id) })(id, priority);
 	} catch (err) {
 		await finish(id, { status: 'error', reason: `No se pudo encolar: ${(err as Error).message}` });
 		throw err;
 	}
 	return (await getTask(id))!;
+}
+
+/** A message that can't start a run (no key, quota 0...) still gets one, ended in error, so its sender hears why. */
+export async function failRun(agent: AgentRef, messageId: number, reason: string) {
+	const id = await insertRun(agent, messageId, 10, 'error', reason);
+	const t = (await publishTask(id))!;
+	await event(t, 'status', { status: 'error', reason });
+	await notify(id, 'error');
+}
+
+/** From the web: the owner launches a task on an idle agent. */
+export async function enqueue(agent: AgentRef, prompt: string, opts: { admin: boolean }) {
+	await checkRunnable(agent);
+	if (await liveRunOf(agent.id)) throw new Error('Este agente ya tiene una tarea en curso.');
+	const m = (await row<{ id: number }>(
+		"insert into messages (agent_id, source, person_id, text) values ($1, 'web', $2, $3) returning id",
+		[agent.id, agent.person_id, prompt.trim()]
+	))!;
+	try {
+		return await startRun(agent, m.id, opts.admin ? 0 : 10);
+	} catch (err) {
+		await exec('delete from messages where id = $1 and run_id is null', [m.id]);
+		throw err;
+	}
+}
+
+/** Sends messages to a run's supervisor, in order; false if it is not connected right now. */
+export function toSupervisor(runId: number, msgs: object[]) {
+	const sup = live.get(runId)?.sup;
+	if (!sup) return false;
+	for (const m of msgs) sup.send(JSON.stringify(m));
+	return true;
+}
+
+export async function recordEvent(runId: number, kind: string, data: unknown) {
+	const t = await row<RunRef>('select id, person_id, agent_id from runs where id = $1', [runId]);
+	if (t) await event(t, kind, data);
 }
 
 // ---------- the durable part ----------
@@ -247,7 +297,10 @@ async function sandboxRunFn(runId: number) {
 		};
 		await DBOS.runStep(() => collect(runId), { name: 'collect' });
 	}
-	await DBOS.runStep(() => finish(runId, end), { name: 'finish' });
+	const status = await DBOS.runStep(() => finish(runId, end), { name: 'finish' });
+	// The agent's webhook hears how it ended (a child workflow: retries for a day).
+	const delivery = status ? await DBOS.runStep(() => createDelivery(runId, status as 'done'), { name: 'delivery' }) : null;
+	if (delivery) await startDelivery(delivery);
 }
 const sandboxRun = DBOS.registerWorkflow(sandboxRunFn, { name: 'sandboxRun' });
 
@@ -326,9 +379,10 @@ async function collect(runId: number) {
 	});
 }
 
-async function finish(runId: number, end: End) {
+/** Ends the run; returns its final status, or null if it had already ended. */
+async function finish(runId: number, end: End): Promise<Status | null> {
 	const t = await getTask(runId);
-	if (!t || FINAL.includes(t.status)) return;
+	if (!t || FINAL.includes(t.status)) return null;
 	const { status, reason } = end;
 	const l = live.get(runId);
 	try {
@@ -348,6 +402,9 @@ async function finish(runId: number, end: End) {
 	await event(t, 'status', { status, reason });
 	hub.forgetFrame(runId);
 	live.delete(runId);
+	// Messages that waited for this run to end (a new conversation, a lost follow-up) go now.
+	requestRoute(t.agent_id);
+	return status;
 }
 
 // ---------- the sandbox's side ----------
@@ -396,11 +453,14 @@ export async function attach(cred: { token?: string; session?: string }, sup: Su
 			[t.id]
 		))!;
 		const s = settings();
+		// Every message that joined while the run waited goes into its first prompt.
+		const { prompt, files } = await startPrompt(t.id);
 		sup.send(JSON.stringify({
 			t: 'start',
 			session,
 			model: t.model,
-			prompt: (await getTask(t.id))!.prompt,
+			prompt,
+			files,
 			system: systemPrompt(agent, await grantedNames(t.agent_id)),
 			blockedWaitMs: s.blockedWaitMinutes * 60_000,
 			piSession: conv.pi_session_id,
@@ -411,6 +471,7 @@ export async function attach(cred: { token?: string; session?: string }, sup: Su
 	} else {
 		sup.send(JSON.stringify({ t: 'resumed' }));
 		await event(t, 'system', { message: 'La computadora se volvió a conectar.' });
+		requestRoute(t.agent_id); // follow-ups that waited for it
 	}
 	return {
 		message: (raw: string) => onSupervisor(l, raw),
@@ -447,6 +508,8 @@ function onSupervisor(l: Live, raw: string) {
 			case 'blocked':
 				await event(ref, 'blocked', { reason: String(msg.reason ?? '').slice(0, 2000) });
 				await setStatus(ref.id, 'blocked', 'blocked', ['running']);
+				// The bridge hears it: its next message is the answer (Q23).
+				await notify(ref.id, 'blocked', String(msg.reason ?? '').slice(0, 2000));
 				break;
 			case 'unblocked':
 				await event(ref, 'system', { message: msg.steered ? 'Recibió instrucciones y sigue.' : 'Nadie respondió: salta el sitio.' });
@@ -647,6 +710,8 @@ export async function cancel(taskId: number) {
 			for (const wf of [`admit-${taskId}`, runWorkflowId(taskId)]) await DBOS.cancelWorkflow(wf, { cancelChildren: true }).catch(() => {});
 			await publishTask(taskId);
 			await event(t, 'status', { status: 'cancelled', reason: 'Cancelada antes de empezar.' });
+			await notify(taskId, 'cancelled');
+			requestRoute(t.agent_id);
 			return;
 		}
 	}

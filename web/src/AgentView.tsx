@@ -6,8 +6,9 @@ import { Character, STATE_LABEL } from './Character';
 import { Browser } from './Browser';
 import { onEvent, onTask, useTick } from './live';
 import { stateOf } from './Gallery';
+import { Channels } from './Channels';
 
-type Tab = 'activity' | 'terminal' | 'answer' | 'history';
+type Tab = 'activity' | 'terminal' | 'answer' | 'history' | 'channels';
 
 export function AgentView({ agent, me, settings, onBack, onChanged }: {
 	agent: Agent; me: Person; settings: PublicSettings; onBack: () => void; onChanged: () => void;
@@ -127,15 +128,16 @@ export function AgentView({ agent, me, settings, onBack, onChanged }: {
 			</div>
 
 			<div className="tabs">
-				{(['activity', 'terminal', 'answer', 'history'] as Tab[]).map((t) => (
+				{(['activity', 'terminal', 'answer', 'history', ...(mine ? ['channels'] : [])] as Tab[]).map((t) => (
 					<button key={t} className={tab === t ? 'on' : ''} onClick={() => setTab(t)}>
-						{{ activity: 'Actividad', terminal: 'Terminal', answer: 'Respuesta', history: `Historial (${history.length})` }[t]}
+						{{ activity: 'Actividad', terminal: 'Terminal', answer: 'Respuesta', history: `Historial (${history.length})`, channels: 'Canales' }[t]}
 					</button>
 				))}
 			</div>
 			{tab === 'activity' && <Activity events={events} />}
 			{tab === 'terminal' && <Terminal events={events} />}
 			{tab === 'answer' && <Answer task={task} files={files} />}
+			{tab === 'channels' && mine && <Channels agentId={agent.id} />}
 			{tab === 'history' && (
 				<div className="history">
 					{conversations.map((c) => {

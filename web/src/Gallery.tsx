@@ -30,7 +30,7 @@ export function Gallery({ agents, me, settings, onOpen, onChanged }: {
 			{creating && <NewAgent settings={settings} onClose={() => setCreating(false)} onCreated={(id) => { setCreating(false); onChanged(); onOpen(id); }} />}
 			{!mine.length && !creating && (
 				<div className="empty">
-					<p>Aún no tienes agentes. Crea uno, dale un rol (p. ej. «compras de electrónica») y pídele una cotización.</p>
+					<p>Aún no tienes agentes. Crea uno, dale un rol (p. ej. «investiga proveedores y resume lo que encuentres») y escríbele una tarea.</p>
 				</div>
 			)}
 			<div className="grid">{mine.map((a) => <Card key={a.id} agent={a} onOpen={onOpen} />)}</div>

@@ -16,8 +16,11 @@ import {
 	keysOf, setKey, deleteKey, writeProxyConfig, PROVIDERS, type Provider,
 	proxyOf, proxyCredentials, normalizeProxyUrl, proxyModels, setProxy, deleteProxy
 } from './providers';
-import { checkMasterKey } from './crypto';
+import { checkMasterKey, open } from './crypto';
 import { gateway } from './llm';
+import * as channels from './channels';
+import * as inbox from './inbox';
+import { verify, checkLink } from './sign';
 
 checkMasterKey();
 await migrate();
@@ -25,6 +28,7 @@ await loadSettings();
 await writeProxyConfig();
 await startDbos();
 await tasks.recover();
+await inbox.startRouter();
 
 type Env = { Variables: { me: people.Person } };
 const app = new Hono<Env>();
@@ -66,10 +70,63 @@ app.get(
 	})
 );
 
+// ---------- channels: an agent's inbound webhook ----------
+// The contract (body, signature, answers) is documented in Bubble: project agents, docs/canales.md.
+
+const MAX_HOOK_BYTES = 20 * 1024 * 1024;
+
+app.post('/hooks/:token', async (c) => {
+	const hook = await channels.agentByToken(c.req.param('token'));
+	if (!hook) return c.json({ error: 'unknown or rotated hook' }, 401);
+	if (Number(c.req.header('content-length') ?? 0) > MAX_HOOK_BYTES) return c.json({ error: 'body too large' }, 413);
+	const raw = await c.req.text();
+	if (raw.length > MAX_HOOK_BYTES) return c.json({ error: 'body too large' }, 413);
+	if (!verify(c.req.header('x-agents-signature'), open(hook.in_secret_enc), raw)) return c.json({ error: 'bad signature' }, 401);
+	let body: any;
+	try {
+		body = JSON.parse(raw);
+	} catch {
+		return c.json({ error: 'invalid JSON' }, 400);
+	}
+	if (typeof body !== 'object' || body === null) return c.json({ error: 'the body must be a JSON object' }, 400);
+	try {
+		const r = await inbox.receive({
+			agentId: hook.agent_id,
+			source: 'hook',
+			text: typeof body.text === 'string' ? body.text : '',
+			sender: typeof body.from === 'string' ? body.from.slice(0, 200) : null,
+			context: body.context,
+			newConversation: body.new_conversation === true,
+			attachments: Array.isArray(body.attachments) ? body.attachments : [],
+			dedupeKey: c.req.header('idempotency-key')?.slice(0, 200) || null
+		});
+		return c.json(r, r.duplicate ? 200 : 202);
+	} catch (err) {
+		return fail(c, err);
+	}
+});
+
+// ---------- signed links (sent in outbound webhooks; no login) ----------
+
+app.get('/api/public/runs/:id', async (c) => {
+	if (!checkLink(c.req.path, c.req.query('exp'), c.req.query('sig'))) return c.json({ error: 'expired or invalid link' }, 403);
+	const t = await tasks.getTask(Number(c.req.param('id')));
+	if (!t) return c.json({ error: 'not found' }, 404);
+	const { prompt, ...run } = tasks.publicTask(t);
+	return c.json({ run, files: await tasks.artifacts(t.id) });
+});
+
+app.get('/api/public/runs/:id/files/:name', async (c) => {
+	if (!checkLink(c.req.path, c.req.query('exp'), c.req.query('sig'))) return c.json({ error: 'expired or invalid link' }, 403);
+	const f = await tasks.file(Number(c.req.param('id')), decodeURIComponent(c.req.param('name')));
+	if (!f) return c.json({ error: 'not found' }, 404);
+	return new Response(Bun.file(f.path), { headers: { 'content-type': f.mime } });
+});
+
 // ---------- session ----------
 
 app.use('/api/*', async (c, next) => {
-	const open = ['/api/me', '/api/join', '/api/invite'];
+	const open = ['/api/me', '/api/join', '/api/invite', '/api/public/'];
 	const me = await people.whoIs(getCookie(c, people.COOKIE));
 	if (me) c.set('me', me);
 	if (!me && !open.some((p) => c.req.path.startsWith(p))) return c.json({ error: 'Entra con tu nombre.' }, 401);
@@ -207,6 +264,8 @@ app.delete('/api/agents/:id', async (c) => {
 	const a = await ownAgent(c);
 	if (!a) return c.json({ error: 'No es tuyo.' }, 404);
 	await agents.retire(a);
+	// Its schedules would keep firing at a retired agent: they go too.
+	for (const s of await channels.schedules(a.id)) await channels.deleteSchedule(a.id, s.name);
 	return c.json({ ok: true });
 });
 
@@ -274,6 +333,83 @@ app.get('/api/tasks/:id/files/:name', async (c) => {
 	const f = await tasks.file(t.id, c.req.param('name'));
 	if (!f) return c.json({ error: 'No existe.' }, 404);
 	return new Response(Bun.file(f.path), { headers: { 'content-type': f.mime, 'cache-control': 'private, max-age=86400' } });
+});
+
+// ---------- an agent's channels (owner only: they hold its secrets) ----------
+
+async function channelsView(agentId: number) {
+	return { ...(await channels.view(agentId)), deliveries: await channels.deliveries(agentId), schedules: await channels.schedules(agentId), timezone: channels.TZ };
+}
+
+app.get('/api/agents/:id/channels', async (c) => {
+	const a = await ownAgent(c);
+	if (!a) return c.json({ error: 'Sólo el dueño ve los canales de su agente.' }, 403);
+	return c.json(await channelsView(a.id));
+});
+
+app.post('/api/agents/:id/channels/rotate', async (c) => {
+	const a = await ownAgent(c);
+	if (!a) return c.json({ error: 'No es tuyo.' }, 403);
+	const { which } = await c.req.json();
+	await channels.rotate(a.id, which === 'out' ? 'out' : 'in');
+	return c.json(await channelsView(a.id));
+});
+
+app.put('/api/agents/:id/channels/out', async (c) => {
+	const a = await ownAgent(c);
+	if (!a) return c.json({ error: 'No es tuyo.' }, 403);
+	try {
+		const { url } = await c.req.json();
+		await channels.setOutUrl(a.id, url ?? null);
+		return c.json(await channelsView(a.id));
+	} catch (err) {
+		return fail(c, err);
+	}
+});
+
+app.post('/api/agents/:id/deliveries/:did/resend', async (c) => {
+	const a = await ownAgent(c);
+	if (!a) return c.json({ error: 'No es tuyo.' }, 403);
+	try {
+		await channels.resend(a.id, Number(c.req.param('did')));
+		return c.json(await channelsView(a.id));
+	} catch (err) {
+		return fail(c, err);
+	}
+});
+
+app.post('/api/agents/:id/schedules', async (c) => {
+	const a = await ownAgent(c);
+	if (!a) return c.json({ error: 'No es tuyo.' }, 403);
+	try {
+		const { cron, message } = await c.req.json();
+		await channels.addSchedule(a.id, cron, message);
+		return c.json(await channelsView(a.id));
+	} catch (err) {
+		return fail(c, err);
+	}
+});
+
+app.post('/api/agents/:id/schedules/:name/:action', async (c) => {
+	const a = await ownAgent(c);
+	if (!a) return c.json({ error: 'No es tuyo.' }, 403);
+	try {
+		await channels.pauseSchedule(a.id, c.req.param('name'), c.req.param('action') === 'pause');
+		return c.json(await channelsView(a.id));
+	} catch (err) {
+		return fail(c, err);
+	}
+});
+
+app.delete('/api/agents/:id/schedules/:name', async (c) => {
+	const a = await ownAgent(c);
+	if (!a) return c.json({ error: 'No es tuyo.' }, 403);
+	try {
+		await channels.deleteSchedule(a.id, c.req.param('name'));
+		return c.json(await channelsView(a.id));
+	} catch (err) {
+		return fail(c, err);
+	}
 });
 
 // ---------- an agent's memory: conversations and browser profile ----------

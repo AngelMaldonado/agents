@@ -73,6 +73,12 @@ Cada agente tiene un volumen Docker (`agents-<instancia>-agent-<id>`, montado en
 
 La respuesta de una tarea es el último mensaje del agente, en markdown.
 
+## Canales
+
+Un agente despierta por la web, por su **webhook de entrada** (`POST /hooks/<token>`, firmado con HMAC: `X-Agents-Signature: t=…,v1=…`) o por sus **horarios** (cron de DBOS, hora de `America/Mexico_City`). Todo entra a su buzón (`server/src/inbox.ts`): si duerme, empieza una tarea; si está trabajando, es un seguimiento; si está atascado, es la respuesta. Cuando una tarea termina o se atasca, su **webhook de salida** recibe la respuesta, enlaces firmados de 7 días a los archivos y el `context` del puente, con reintentos durante ~24 h (`server/src/channels.ts`). Todo se configura en la pestaña Canales del agente. El contrato completo para quien construya un puente está en Bubble: proyecto `agents`, `docs/canales.md`.
+
+En dev, `just dev fake on` también levanta un receptor de prueba en `http://fake-llm:8317/hook-receiver`.
+
 ## Ejemplo de rol: compras
 
 Lo que el POC traía cableado ahora es un rol que se pega en el agente:

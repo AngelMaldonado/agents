@@ -27,6 +27,8 @@ services:
       AGENTS_WEB_DIST: /nonexistent
       AGENTS_DATABASE_URL: postgres://agents:agents@postgres:5432/agents
       AGENTS_TEST_DATABASE_URL: postgres://agents:agents@postgres:5432/agents_test
+      # Links in webhooks and the inbound URL shown to the owner (LAN/tailnet only).
+      AGENTS_PUBLIC_URL: https://agents-dev.cubytest.space
       PORT: "8787"
     depends_on:
       postgres:
