@@ -4,7 +4,7 @@ import remarkGfm from 'remark-gfm';
 import { api, ago, isLive, isWorking, type Agent, type Artifact, type Conversation, type Person, type PublicSettings, type Task, type TaskEvent } from './api';
 import { Character, STATE_LABEL } from './Character';
 import { Browser } from './Browser';
-import { onEvent, onTask, useTick } from './live';
+import { onEvent, onTask, useConnected, useTick, useWatch } from './live';
 import { stateOf } from './Gallery';
 import { Channels } from './Channels';
 
@@ -67,6 +67,20 @@ export function AgentView({ agent, me, settings, onBack, onChanged }: {
 			offT();
 		};
 	}, [taskId]);
+
+	// Its full stream and its events come only while this view is open.
+	useWatch(agent.id);
+	// After a reconnect: what happened meanwhile (events after the last one we have).
+	const connected = useConnected();
+	const lastEvent = events.length ? events[events.length - 1].id : 0;
+	useEffect(() => {
+		if (!connected || !taskId) return;
+		api(`/tasks/${taskId}?after=${lastEvent}`).then((r) => {
+			setTask(r.task);
+			setFiles(r.artifacts);
+			setEvents((es) => [...es, ...r.events.filter((e: TaskEvent) => !es.some((x) => x.id === e.id))]);
+		});
+	}, [connected]);
 
 	const live = isLive(task) && task!.status !== 'queued';
 	const state = task && task.id === agent.task?.id ? stateOf({ ...agent, task }) : 'idle';

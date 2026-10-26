@@ -42,6 +42,8 @@ services:
       agents-dev-internal:
       agents-dev-sandbox:
         aliases: [agents-dev-server]
+      # Prometheus scrapes /metrics (port 9464) here; no Traefik labels, so it is not published.
+      proxy:
     restart: unless-stopped
 
   web:

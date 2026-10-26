@@ -109,6 +109,9 @@ function onBackend(raw) {
 		case 'collect':
 			void collect();
 			break;
+		case 'watch':
+			watched = Boolean(msg.on);
+			break;
 		case 'files':
 			// Attachments of a message that arrives mid-run; the follow-up that names them comes next.
 			writeInbox(msg.files ?? []);
@@ -129,8 +132,14 @@ function ab(...args) {
 let lastUrl = '';
 let pending = null;
 let flushing = null;
+let watched = false; // someone has this agent's view open (the backend says so)
+let lastThumb = 0;
+const THUMB_MS = 1000;
 
-/** Frames, read-only: nothing is ever written to the stream socket. At most ~5 per second. */
+/**
+ * Frames, read-only: nothing is ever written to the stream socket. A thumbnail a second always
+ * (the gallery); the full stream, at most ~5 per second, only while someone watches the agent.
+ */
 function watchBrowser() {
 	const ws = new WebSocket(STREAM);
 	ws.onmessage = (e) => {
@@ -143,11 +152,18 @@ function watchBrowser() {
 		if (m.type === 'url' && m.url) lastUrl = m.url;
 		if (m.type === 'tabs') lastUrl = m.tabs?.find((t) => t.active)?.url ?? lastUrl;
 		if (m.type !== 'frame') return;
-		pending = { t: 'frame', jpeg: m.data, meta: { ...m.metadata, url: lastUrl } };
+		const meta = { ...m.metadata, url: lastUrl };
+		const now = Date.now();
+		if (now - lastThumb >= THUMB_MS) {
+			lastThumb = now;
+			send({ t: 'thumb', jpeg: m.data, meta });
+		}
+		if (!watched) return;
+		pending = { t: 'frame', jpeg: m.data, meta };
 		if (!flushing) {
 			flushing = setTimeout(() => {
 				flushing = null;
-				if (pending) send(pending);
+				if (pending && watched) send(pending);
 				pending = null;
 			}, 200);
 		}

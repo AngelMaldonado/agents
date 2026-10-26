@@ -182,3 +182,7 @@ tr.best td { background: #12281c; }
 .channels .schedule { margin: 6px 0; align-items: center; }
 .channels .grow { flex: 1; min-width: 0; overflow-wrap: anywhere; }
 .channels pre { background: #0c0f14; border: 1px solid var(--line); border-radius: 8px; padding: 10px; overflow-x: auto; white-space: pre; }
+
+/* The monitor. */
+.monitor .host .row { gap: 28px; }
+.monitor td.num { text-align: right; white-space: nowrap; }

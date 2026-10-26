@@ -1,7 +1,8 @@
 // SandboxProvider on the Docker Engine API, over the unix socket with Bun's fetch.
 // The sandbox dials out to the backend (see sandbox/supervisor.mjs), so nothing here attaches
 // to a container's stdio or reaches into its ports.
-import type { SandboxProvider, SandboxSpec } from './provider';
+import { readFile } from 'node:fs/promises';
+import type { SandboxProvider, SandboxSpec, SandboxInfo, SandboxStats, HostInfo } from './provider';
 
 const SOCKET = process.env.DOCKER_SOCKET ?? '/var/run/docker.sock';
 const API = 'http://docker/v1.45';
@@ -59,9 +60,38 @@ export class DockerSandbox implements SandboxProvider {
 		await call('DELETE', `/containers/${id}?force=true&v=true`, undefined, [404, 409]);
 	}
 
-	async list(label: string) {
+	async list(label: string): Promise<SandboxInfo[]> {
 		const filters = encodeURIComponent(JSON.stringify({ label: [label] }));
-		const rows = (await call('GET', `/containers/json?all=true&filters=${filters}`)) as { Id: string; Labels: Record<string, string> | null }[];
-		return rows.map((r) => ({ id: r.Id, labels: r.Labels ?? {} }));
+		const rows = (await call('GET', `/containers/json?all=true&filters=${filters}`)) as {
+			Id: string; Names: string[]; Labels: Record<string, string> | null; State: string; Created: number;
+		}[];
+		return rows.map((r) => ({ id: r.Id, name: (r.Names?.[0] ?? '').replace(/^\//, ''), labels: r.Labels ?? {}, state: r.State, created: r.Created * 1000 }));
+	}
+
+	/** One sample (Docker waits ~1 s to compute the CPU delta). */
+	async stats(id: string): Promise<SandboxStats | null> {
+		const s = await call('GET', `/containers/${id}/stats?stream=false`, undefined, [404, 409]).catch(() => null);
+		if (!s?.cpu_stats) return null;
+		const cpuDelta = (s.cpu_stats.cpu_usage?.total_usage ?? 0) - (s.precpu_stats?.cpu_usage?.total_usage ?? 0);
+		const sysDelta = (s.cpu_stats.system_cpu_usage ?? 0) - (s.precpu_stats?.system_cpu_usage ?? 0);
+		const cpus = s.cpu_stats.online_cpus ?? 1;
+		const nets = Object.values((s.networks ?? {}) as Record<string, { rx_bytes: number; tx_bytes: number }>);
+		const usage = s.memory_stats?.usage ?? 0;
+		return {
+			cpuPercent: sysDelta > 0 && cpuDelta > 0 ? (cpuDelta / sysDelta) * cpus * 100 : 0,
+			memoryBytes: Math.max(0, usage - (s.memory_stats?.stats?.inactive_file ?? 0)),
+			memoryLimit: s.memory_stats?.limit ?? 0,
+			netRx: nets.reduce((n, x) => n + (x.rx_bytes ?? 0), 0),
+			netTx: nets.reduce((n, x) => n + (x.tx_bytes ?? 0), 0)
+		};
+	}
+
+	/** Docker's view of the host, plus /proc (the container sees the host's memory and load). */
+	async host(): Promise<HostInfo> {
+		const info = await call('GET', '/info');
+		const proc = (path: string) => readFile(path, 'utf8').catch(() => '');
+		const available = Number((await proc('/proc/meminfo')).match(/MemAvailable:\s+(\d+)/)?.[1] ?? 0) * 1024;
+		const load1 = Number((await proc('/proc/loadavg')).split(' ')[0] || 0);
+		return { cpus: info.NCPU ?? 0, memoryTotal: info.MemTotal ?? 0, memoryAvailable: available, load1 };
 	}
 }

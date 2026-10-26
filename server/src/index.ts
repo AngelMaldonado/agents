@@ -20,6 +20,7 @@ import { checkMasterKey, open } from './crypto';
 import { gateway } from './llm';
 import * as channels from './channels';
 import * as inbox from './inbox';
+import * as monitor from './monitor';
 import { verify, checkLink } from './sign';
 
 checkMasterKey();
@@ -29,6 +30,17 @@ await writeProxyConfig();
 await startDbos();
 await tasks.recover();
 await inbox.startRouter();
+monitor.startMonitor();
+
+// Prometheus scrapes this on its own port, never through Traefik (it names people and agents).
+const METRICS_PORT = Number(process.env.AGENTS_METRICS_PORT ?? 9464);
+Bun.serve({
+	port: METRICS_PORT,
+	fetch: async (req) =>
+		new URL(req.url).pathname === '/metrics'
+			? new Response(await monitor.metricsText(), { headers: { 'content-type': 'text/plain; version=0.0.4' } })
+			: new Response('not here', { status: 404 })
+});
 
 type Env = { Variables: { me: people.Person } };
 const app = new Hono<Env>();
@@ -461,6 +473,12 @@ app.delete('/api/vault/:id', async (c) => {
 	return c.json({ credentials: await vault.list(c.get('me').id) });
 });
 
+// ---------- the monitor ----------
+
+app.get('/api/monitor', (c) => c.json(monitor.view(c.get('me'))));
+
+app.post('/api/admin/orphans/clean', async (c) => adminOnly(c) ?? c.json({ cleaned: await monitor.cleanOrphans() }));
+
 // ---------- admin (behind the PIN) ----------
 
 app.get('/api/admin', async (c) =>
@@ -498,25 +516,42 @@ app.delete('/api/admin/people/:id', async (c) => {
 
 // ---------- browsers' live feed ----------
 
+// The browser says what it is looking at: {t:'watch'|'unwatch', agentId} and {t:'monitor', on}.
 app.get(
 	'/ws',
 	upgradeWebSocket((c) => {
 		const me = people.whoIs(getCookie(c, people.COOKIE));
-		let leave: (() => void) | null = null;
+		let viewer: hub.Viewer | null = null;
 		let closed = false;
 		return {
 			onOpen(_e, ws) {
 				void me.then((person) => {
 					if (closed) return;
 					if (!person) return ws.close(4401, 'login');
-					const viewer = { person, send: (d: string) => ws.send(d) };
-					leave = hub.join(viewer);
-					hub.replayFrames(viewer, tasks.liveOwners());
+					viewer = hub.join(person, (d: string) => ws.send(d));
 				});
+			},
+			async onMessage(e) {
+				if (!viewer || typeof e.data !== 'string') return;
+				let m: any;
+				try {
+					m = JSON.parse(e.data);
+				} catch {
+					return;
+				}
+				if (m.t === 'watch') {
+					const a = await agents.seeable(viewer.person, Number(m.agentId));
+					if (a && viewer) hub.watch(viewer, a.id, a.person_id);
+				} else if (m.t === 'unwatch') {
+					hub.unwatch(viewer, Number(m.agentId));
+				} else if (m.t === 'monitor') {
+					hub.setMonitor(viewer, Boolean(m.on));
+					if (m.on) viewer.send(JSON.stringify(monitor.view(viewer.person)));
+				}
 			},
 			onClose() {
 				closed = true;
-				leave?.();
+				if (viewer) hub.leave(viewer);
 			}
 		};
 	})

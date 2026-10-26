@@ -4,6 +4,7 @@ import { connect, onTask, useConnected } from './live';
 import { Entry, Invite } from './Entry';
 import { Gallery } from './Gallery';
 import { AgentView } from './AgentView';
+import { Monitor } from './Monitor';
 import { Settings } from './Settings';
 import { Admin } from './Admin';
 
@@ -68,6 +69,7 @@ export function App() {
 				<a className="brand" href="#/">Agents</a>
 				<nav>
 					<a href="#/" className={hash === '/' ? 'on' : ''}>Galería</a>
+					<a href="#/monitor" className={hash === '/monitor' ? 'on' : ''}>Monitor</a>
 					<a href="#/settings" className={hash === '/settings' ? 'on' : ''}>Ajustes</a>
 					<a href="#/admin" className={hash === '/admin' ? 'on' : ''}>{me.admin ? 'Admin ●' : 'Admin'}</a>
 				</nav>
@@ -77,7 +79,9 @@ export function App() {
 				</span>
 			</header>
 			<main>
-				{hash === '/settings' ? (
+				{hash === '/monitor' ? (
+					<Monitor key={String(me.admin)} me={me} />
+				) : hash === '/settings' ? (
 					<Settings me={me} agents={agents} />
 				) : hash === '/admin' ? (
 					<Admin me={me} pinIsSet={pinIsSet} onChanged={changed} />

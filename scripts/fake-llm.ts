@@ -22,6 +22,14 @@ const SCRIPTS: { match: RegExp; steps: Step[] }[] = [
 		steps: [{ bash: 'sleep 10 && echo uno' }, { bash: 'sleep 10 && echo dos' }, { text: 'Terminé lo lento.' }]
 	},
 	{
+		// A page that never stops moving: the browser streams frames the whole time (frame-rate tests).
+		match: /\[animado\]/,
+		steps: [
+			{ bash: `mkdir -p ~/site && printf '%s' '<html><body style="margin:0;background:#123"><div style="width:200px;height:200px;margin:100px;background:#e84;animation:s 1s linear infinite"></div><style>@keyframes s{to{transform:rotate(360deg)}}</style></body></html>' > ~/site/anim.html && (cd ~/site && nohup python3 -m http.server 8001 >/dev/null 2>&1 &) && sleep 1 && agent-browser open http://localhost:8001/anim.html && sleep 40 && echo listo` },
+			{ text: 'Miré la animación 40 s.' }
+		]
+	},
+	{
 		match: /\[adjunto\]/,
 		steps: [
 			{ bash: 'for f in ~/work/in/*/*; do echo "$f: $(cat "$f")"; done' },

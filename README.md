@@ -79,6 +79,12 @@ Un agente despierta por la web, por su **webhook de entrada** (`POST /hooks/<tok
 
 En dev, `just dev fake on` también levanta un receptor de prueba en `http://fake-llm:8317/hook-receiver`.
 
+## Monitor y tiempo real
+
+- **Por tópicos** (`server/src/hub.ts`): la galería recibe el estado de las tareas y una miniatura por segundo por agente; el stream completo (~5 fps) y los eventos de una tarea sólo llegan a quien tiene abierta la vista de ese agente, y el supervisor sólo lo manda mientras alguien la mira. Al reconectar, la web vuelve a pedir lo que se perdió.
+- **Monitor** (pestaña Monitor, `server/src/monitor.ts`): cada persona ve sus computadoras (CPU, RAM, red, tiempo, costo) y su lugar en la cola; el admin ve todas, el host y los huérfanos, que puede limpiar.
+- **`/metrics`** en el puerto 9464 (no pasa por Traefik): corridas por estado, cola por persona, CPU y RAM por sandbox, host, costo por persona, arranque promedio e imágenes enviadas. El panel «Agents» de Grafana y sus dos alertas viven en `~/dev/work/reko-3` (`roles/monitoring/files/dashboards/Cuby/agents.json`, `roles/monitoring/files/alerting/agents.yaml`, job `agents` en `prometheus_extra_scrape_configs`).
+
 ## Ejemplo de rol: compras
 
 Lo que el POC traía cableado ahora es un rol que se pega en el agente:

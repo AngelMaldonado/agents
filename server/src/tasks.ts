@@ -111,12 +111,10 @@ export async function file(taskId: number, name: string) {
 	return f && { path: joinPath(DATA_DIR, f.path), mime: f.mime };
 }
 
-/** Run id -> owner, for the runs whose last frame a new viewer may get. */
-export function liveOwners() {
-	const m = new Map<number, number>();
-	for (const [id, l] of live) if (l.sup) m.set(id, l.ref.person_id);
-	return m;
-}
+/** The full stream only flows while someone has the agent's view open (thumbnails always do). */
+hub.onWatchChange((agentId, watched) => {
+	for (const l of live.values()) if (l.ref.agent_id === agentId) l.sup?.send(JSON.stringify({ t: 'watch', on: watched }));
+});
 
 export function publicTask(t: Task) {
 	const { container_id, workflow_id, ...rest } = t;
@@ -137,7 +135,7 @@ async function event(ref: RunRef, kind: string, data: unknown) {
 		 insert into run_events (run_id, seq, kind, data) select $1, event_seq, $2, $3 from s returning seq, at`,
 		[ref.id, kind, JSON.stringify(data)]
 	);
-	if (e) hub.publish(ref.person_id, { t: 'event', taskId: ref.id, agentId: ref.agent_id, event: { id: e.seq, at: e.at, kind, data } });
+	if (e) hub.toWatchers(ref.agent_id, ref.person_id, { t: 'event', taskId: ref.id, agentId: ref.agent_id, event: { id: e.seq, at: e.at, kind, data } });
 }
 
 async function setState(id: number, state: CharState) {
@@ -400,7 +398,7 @@ async function finish(runId: number, end: End): Promise<Status | null> {
 	);
 	await publishTask(runId);
 	await event(t, 'status', { status, reason });
-	hub.forgetFrame(runId);
+	hub.forgetAgent(t.agent_id);
 	live.delete(runId);
 	// Messages that waited for this run to end (a new conversation, a lost follow-up) go now.
 	requestRoute(t.agent_id);
@@ -473,6 +471,7 @@ export async function attach(cred: { token?: string; session?: string }, sup: Su
 		await event(t, 'system', { message: 'La computadora se volvió a conectar.' });
 		requestRoute(t.agent_id); // follow-ups that waited for it
 	}
+	if (hub.watchers(t.agent_id)) sup.send(JSON.stringify({ t: 'watch', on: true }));
 	return {
 		message: (raw: string) => onSupervisor(l, raw),
 		close: () => {
@@ -491,8 +490,8 @@ function onSupervisor(l: Live, raw: string) {
 		return;
 	}
 	const ref = l.ref;
-	if (msg.t === 'frame') {
-		if (typeof msg.jpeg === 'string') hub.frame(ref.person_id, ref.id, ref.agent_id, msg.jpeg, msg.meta ?? null);
+	if (msg.t === 'frame' || msg.t === 'thumb') {
+		if (typeof msg.jpeg === 'string') (msg.t === 'frame' ? hub.frame : hub.thumb)(ref.person_id, ref.id, ref.agent_id, msg.jpeg, msg.meta ?? null);
 		return;
 	}
 	if (msg.t === 'collected') {

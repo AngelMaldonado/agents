@@ -1,5 +1,8 @@
-// The live feed: one WebSocket per browser tab. Frames are kept per agent (the newest only),
-// task updates and events are fanned out to whoever listens.
+// The live feed: one WebSocket per browser tab. The server sends by topic: task updates and ~1 fps
+// thumbnails for the gallery always; an agent's full stream and events only while its view is open
+// (watch); the monitor only while its page is open. After a reconnect the subscriptions are sent
+// again and views refetch what they missed (useConnected).
+// Frames (thumbnails or full) are kept per agent, the newest only.
 import { useEffect, useState, useSyncExternalStore } from 'react';
 import type { Task, TaskEvent } from './api';
 
@@ -18,21 +21,34 @@ function setConnected(v: boolean) {
 	connSubs.forEach((l) => l());
 }
 
+const watching = new Map<number, number>(); // agent id -> how many views watch it
+const monitorSubs = new Set<(m: any) => void>();
+
+function tell(msg: object) {
+	if (ws?.readyState === WebSocket.OPEN) ws.send(JSON.stringify(msg));
+}
+
 let ws: WebSocket | null = null;
 export function connect() {
 	if (ws) return;
 	const open = () => {
 		ws = new WebSocket(`${location.protocol === 'https:' ? 'wss' : 'ws'}://${location.host}/ws`);
-		ws.onopen = () => setConnected(true);
+		ws.onopen = () => {
+			for (const agentId of watching.keys()) tell({ t: 'watch', agentId });
+			if (monitorSubs.size) tell({ t: 'monitor', on: true });
+			setConnected(true);
+		};
 		ws.onmessage = (e) => {
 			const m = JSON.parse(e.data);
-			if (m.t === 'frame') {
+			if (m.t === 'frame' || m.t === 'thumb') {
 				frames.set(m.agentId, { taskId: m.taskId, jpeg: m.jpeg, meta: m.meta, at: Date.now() });
 				frameSubs.get(m.agentId)?.forEach((l) => l());
 			} else if (m.t === 'task') {
 				taskSubs.forEach((l) => l(m.task));
 			} else if (m.t === 'event') {
 				eventSubs.forEach((l) => l(m.taskId, m.event));
+			} else if (m.t === 'monitor') {
+				monitorSubs.forEach((l) => l(m));
 			}
 		};
 		ws.onclose = () => {
@@ -42,6 +58,33 @@ export function connect() {
 		};
 	};
 	open();
+}
+
+/** While mounted, the agent's full stream and events come to this tab. */
+export function useWatch(agentId: number) {
+	useEffect(() => {
+		const n = (watching.get(agentId) ?? 0) + 1;
+		watching.set(agentId, n);
+		if (n === 1) tell({ t: 'watch', agentId });
+		return () => {
+			const left = (watching.get(agentId) ?? 1) - 1;
+			if (left > 0) return void watching.set(agentId, left);
+			watching.delete(agentId);
+			tell({ t: 'unwatch', agentId });
+		};
+	}, [agentId]);
+}
+
+/** While mounted, the monitor's snapshots (every few seconds) go to `fn`. */
+export function useMonitorFeed(fn: (m: any) => void) {
+	useEffect(() => {
+		monitorSubs.add(fn);
+		if (monitorSubs.size === 1) tell({ t: 'monitor', on: true });
+		return () => {
+			monitorSubs.delete(fn);
+			if (!monitorSubs.size) tell({ t: 'monitor', on: false });
+		};
+	}, [fn]);
 }
 
 export function useFrame(agentId: number) {
