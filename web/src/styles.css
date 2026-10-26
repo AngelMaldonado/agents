@@ -164,3 +164,14 @@ tr.best td { background: #12281c; }
 .entry h1 { font-size: 34px; }
 .entry-chars { display: flex; gap: 8px; }
 .entry-form { display: flex; gap: 8px; width: min(420px, 100%); }
+
+/* The answer (markdown from the agent: no raw HTML is rendered) and its files. */
+.markdown { line-height: 1.55; max-width: 80ch; overflow-wrap: anywhere; }
+.markdown h1, .markdown h2, .markdown h3 { margin: 1em 0 0.4em; }
+.markdown pre { background: #0c0f14; border: 1px solid var(--line); border-radius: 8px; padding: 10px; overflow-x: auto; }
+.markdown code { background: var(--panel2); border-radius: 4px; padding: 0 4px; }
+.markdown pre code { background: none; padding: 0; }
+.markdown table { border-collapse: collapse; margin: 0.6em 0; }
+.markdown th, .markdown td { border: 1px solid var(--line); padding: 4px 8px; }
+.files { list-style: none; padding: 0; display: flex; flex-direction: column; gap: 4px; }
+.conversation { display: flex; flex-direction: column; gap: 6px; margin-bottom: 14px; }

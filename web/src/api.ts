@@ -5,15 +5,10 @@ export type Model = { id: string; label: string };
 export type PublicSettings = {
 	models: Model[]; maxConcurrent: number; maxMinutes: number; maxCostUsd: number; blockedWaitMinutes: number; sandboxImage: string;
 };
-export type Option = {
-	product: string; vendor: string; price: number | null; currency: string; shipping: string | null; availability: string;
-	url: string; screenshot?: string; checked_at?: string; notes?: string;
-};
-export type Quote = { summary?: string; recommendation?: { option: number; why: string }; options: Option[] };
-export type Status = 'queued' | 'starting' | 'running' | 'done' | 'incomplete' | 'cancelled' | 'error';
+export type Status = 'queued' | 'starting' | 'running' | 'blocked' | 'done' | 'incomplete' | 'cancelled' | 'error';
 export type Task = {
 	id: number; agent_id: number; person_id: number; prompt: string; model: string; status: Status; state: CharState;
-	cost: number; tokens: number; end_reason: string | null; result: Quote | null;
+	cost: number; tokens: number; end_reason: string | null; answer: string | null; conversation_id: number;
 	created_at: number; started_at: number | null; ended_at: number | null;
 };
 export type Agent = {
@@ -22,7 +17,8 @@ export type Agent = {
 };
 export type TaskEvent = { id: number; at: number; kind: string; data: any };
 export type Artifact = { id: number; name: string; mime: string; size: number };
-export type Credential = { id: number; name: string; origin: string; login_url: string; updated_at: number; agents: number[] };
+export type Conversation = { id: number; started_at: number; archived_at: number | null; runs: number };
+export type Credential ={ id: number; name: string; origin: string; login_url: string; updated_at: number; agents: number[] };
 
 export async function api<T = any>(path: string, init?: { method?: string; body?: unknown }): Promise<T> {
 	const res = await fetch(`/api${path}`, {
@@ -36,7 +32,9 @@ export async function api<T = any>(path: string, init?: { method?: string; body?
 	return data as T;
 }
 
-export const isLive = (t: Task | null | undefined) => !!t && ['queued', 'starting', 'running'].includes(t.status);
+export const isLive = (t: Task | null | undefined) => !!t && ['queued', 'starting', 'running', 'blocked'].includes(t.status);
+/** Running, or waiting for a human: either way its supervisor takes steers. */
+export const isWorking = (t: Task | null | undefined) => !!t && (t.status === 'running' || t.status === 'blocked');
 
 export function ago(ms: number) {
 	const s = Math.round((Date.now() - ms) / 1000);

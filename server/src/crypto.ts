@@ -1,13 +1,13 @@
-// Secrets at rest: AES-256-GCM with BUYER_MASTER_KEY (32 bytes, base64), which never lives in
+// Secrets at rest: AES-256-GCM with AGENTS_MASTER_KEY (32 bytes, base64), which never lives in
 // the database. Provider keys and site logins are write-only: nothing decrypts them for a person,
 // only for CLIProxyAPI's config and for a granted sandbox login.
 import { createCipheriv, createDecipheriv, randomBytes } from 'node:crypto';
 
 function masterKey() {
-	const raw = process.env.BUYER_MASTER_KEY;
-	if (!raw) throw new Error('BUYER_MASTER_KEY is not set');
+	const raw = process.env.AGENTS_MASTER_KEY;
+	if (!raw) throw new Error('AGENTS_MASTER_KEY is not set');
 	const key = Buffer.from(raw, 'base64');
-	if (key.length !== 32) throw new Error('BUYER_MASTER_KEY must be 32 bytes in base64');
+	if (key.length !== 32) throw new Error('AGENTS_MASTER_KEY must be 32 bytes in base64');
 	return key;
 }
 

@@ -1,17 +1,24 @@
-// Tasks: the queue, each task's sandbox, the pi event stream, steer/cancel and the limits.
+// Runs (the HTTP API still calls them tasks): the queue, each run's sandbox, the pi event stream,
+// steer/cancel and the limits. Durable with DBOS, in the same Postgres as everything else.
 //
-// A task's life: queued -> starting (container created) -> running (supervisor connected, pi
-// prompted) -> done | incomplete | cancelled | error. Ending always aborts pi, asks the sandbox for
-// what it wrote under ~/work/out, destroys the container and kills its tokens.
+// The queue has two levels, because a person's quota is their own number:
+//   admit-<id>  on queue person:<id>  (concurrency = that person's run_quota): holds the person's
+//               slot and waits for
+//   run-<id>    on queue sandboxes    (concurrency = the admin's global cap, priority 0 for runs
+//               launched with the admin PIN, 10 for the rest): start -> wait for 'end' -> collect
+//               -> finish.
+// Steps run at least once (a step cut by a restart runs again), so each one is idempotent.
 //
-// Two tokens per task. `token` reaches the container in its environment and only opens the
-// supervisor's WebSocket, once: it is burnt on connect, so the agent reading /proc/1/environ gets
-// nothing. Site logins travel only over that socket. `llm_token` is pi's provider key: it only
-// works on the LLM gateway, for this task's model, while the task runs.
+// Three tokens per run, stored as sha256. The bootstrap token reaches the container in its
+// environment and only opens the supervisor's WebSocket, once. That first connection hands the
+// supervisor a session token, which is how it reconnects after the backend restarts (a deploy);
+// it dies with the run. The llm token is pi's provider key: it only works on the LLM gateway, for
+// this run's model, while the run is live.
 import { randomBytes } from 'node:crypto';
 import { mkdirSync, writeFileSync } from 'node:fs';
 import { join as joinPath } from 'node:path';
-import { db, now, DATA_DIR } from './db';
+import { DBOS } from '@dbos-inc/dbos-sdk';
+import { row, rows, exec, tx, hash, DATA_DIR } from './db';
 import * as hub from './hub';
 import { settings } from './settings';
 import { systemPrompt } from './prompt';
@@ -19,243 +26,502 @@ import { DockerSandbox } from './sandbox/docker';
 import type { SandboxProvider } from './sandbox/provider';
 import { hasKey, proxyOf, checkProxyModel, type Provider } from './providers';
 import { grantedNames, resolveCredential } from './vault';
+import { quotaOf } from './people';
+import { stateMount } from './state';
 
-export type Status = 'queued' | 'starting' | 'running' | 'done' | 'incomplete' | 'cancelled' | 'error';
+export type Status = 'queued' | 'starting' | 'running' | 'blocked' | 'done' | 'incomplete' | 'cancelled' | 'error';
 export type CharState =
 	| 'idle' | 'starting' | 'thinking' | 'browsing' | 'running' | 'writing' | 'blocked' | 'steered'
 	| 'done' | 'incomplete' | 'cancelled' | 'error';
 
 export type Task = {
-	id: number; agent_id: number; person_id: number; prompt: string; model: string; status: Status;
-	state: CharState; token: string | null; llm_token: string | null; container_id: string | null; cost: number; tokens: number;
-	end_reason: string | null; result: string | null; created_at: number; started_at: number | null; ended_at: number | null;
+	id: number; agent_id: number; person_id: number; prompt: string; model: string; status: Status; state: CharState;
+	container_id: string | null; workflow_id: string; priority: number; cost: number; tokens: number;
+	end_reason: string | null; answer: string | null; conversation_id: number;
+	created_at: number; started_at: number | null; ended_at: number | null;
 };
 
+type RunRef = { id: number; person_id: number; agent_id: number };
+type End = { status: Status; reason: string | null };
 type Supervisor = { send: (data: string) => void; close: () => void };
-type Run = {
-	taskId: number;
-	ownerId: number;
-	agentId: number;
+/** What only this process knows about a live run: its socket and a few timers. */
+type Live = {
+	ref: RunRef;
 	sup?: Supervisor;
-	deadline?: Timer;
-	ending?: Promise<void>;
+	chain: Promise<void>;
 	collected?: () => void;
 	steeredUntil?: number;
 	lastError?: string; // the provider's error on the last assistant turn, if it failed
+	ending?: boolean;
+	timer?: Timer; // waiting for the supervisor to (re)connect
 };
 
-const SERVER_URL = process.env.BUYER_SANDBOX_SERVER_URL ?? 'http://buyer-server:8787';
+const SERVER_URL = process.env.AGENTS_SANDBOX_SERVER_URL ?? 'http://agents-server:8787';
 // dev and prod share reko-3's Docker: names and labels carry the instance.
-const INSTANCE = process.env.BUYER_INSTANCE ?? 'dev';
-const LABEL = `buyer.instance=${INSTANCE}`;
+export const INSTANCE = process.env.AGENTS_INSTANCE ?? 'dev';
+const LABEL = `agents.instance=${INSTANCE}`;
+const LIVE: Status[] = ['queued', 'starting', 'running', 'blocked'];
+const FINAL: Status[] = ['done', 'incomplete', 'cancelled', 'error'];
+const SANDBOXES = 'sandboxes';
+const ATTACH_MS = 3 * 60_000; // a new sandbox must dial in by then
+const GRACE_MS = 60_000; // a lost supervisor must come back by then
 const provider: SandboxProvider = new DockerSandbox();
-const runs = new Map<number, Run>();
+const live = new Map<number, Live>();
+
+const personQueue = (personId: number) => `person:${personId}`;
+const runWorkflowId = (id: number) => `run-${id}`;
 
 // ---------- reads ----------
 
-export const getTask = (id: number) => db.query('SELECT * FROM tasks WHERE id = ?').get(id) as Task | null;
-export const byLlmToken = (token: string) =>
-	db.query("SELECT * FROM tasks WHERE llm_token = ? AND status IN ('starting','running')").get(token) as Task | null;
+/** `select ${RUN_SELECT} where ...`: a run as the API shows it, with the message that started it. */
+export const RUN_SELECT = `r.id, r.agent_id, r.person_id, r.model, r.status, r.state, r.container_id, r.workflow_id,
+	r.priority, r.cost, r.tokens, r.end_reason, r.answer, r.conversation_id, r.created_at, r.started_at, r.ended_at,
+	coalesce((select m.text from messages m where m.run_id = r.id and m.routed_as = 'new_run' order by m.id limit 1), '') as prompt
+	from runs r`;
 
-export function events(taskId: number, afterId = 0) {
-	return (db.query('SELECT id, at, kind, data FROM task_events WHERE task_id = ? AND id > ? ORDER BY id LIMIT 2000').all(taskId, afterId) as {
-		id: number; at: number; kind: string; data: string;
-	}[]).map((e) => ({ ...e, data: JSON.parse(e.data) }));
+export const getTask = (id: number) => row<Task>(`select ${RUN_SELECT} where r.id = $1`, [id]);
+
+export const byLlmToken = (token: string) =>
+	row<RunRef & { model: string }>(
+		`select id, person_id, agent_id, model from runs where llm_token_hash = $1 and status in ('starting','running','blocked')`,
+		[hash(token)]
+	);
+
+export function events(taskId: number, after = 0) {
+	return rows<{ id: number; at: number; kind: string; data: unknown }>(
+		'select seq as id, at, kind, data from run_events where run_id = $1 and seq > $2 order by seq limit 2000',
+		[taskId, after]
+	);
 }
 
 export function artifacts(taskId: number) {
-	return db.query('SELECT id, name, mime, size FROM artifacts WHERE task_id = ? ORDER BY name').all(taskId) as {
-		id: number; name: string; mime: string; size: number;
-	}[];
+	return rows<{ id: number; name: string; mime: string; size: number }>(
+		"select id, name, mime, size from files where run_id = $1 and direction = 'out' order by name",
+		[taskId]
+	);
 }
 
-/** Task id -> owner, for the tasks whose last frame a new viewer may get. */
+export async function file(taskId: number, name: string) {
+	const f = await row<{ path: string; mime: string }>(
+		"select path, mime from files where run_id = $1 and direction = 'out' and name = $2",
+		[taskId, name]
+	);
+	return f && { path: joinPath(DATA_DIR, f.path), mime: f.mime };
+}
+
+/** Run id -> owner, for the runs whose last frame a new viewer may get. */
 export function liveOwners() {
 	const m = new Map<number, number>();
-	for (const r of runs.values()) m.set(r.taskId, r.ownerId);
+	for (const [id, l] of live) if (l.sup) m.set(id, l.ref.person_id);
 	return m;
+}
+
+export function publicTask(t: Task) {
+	const { container_id, workflow_id, ...rest } = t;
+	return rest;
 }
 
 // ---------- writes that the UI sees ----------
 
-function event(task: { id: number; person_id: number; agent_id: number }, kind: string, data: unknown) {
-	const at = now();
-	const { lastInsertRowid } = db.query('INSERT INTO task_events (task_id, at, kind, data) VALUES (?, ?, ?, ?)').run(task.id, at, kind, JSON.stringify(data));
-	hub.publish(task.person_id, { t: 'event', taskId: task.id, agentId: task.agent_id, event: { id: Number(lastInsertRowid), at, kind, data } });
-}
-
-function update(taskId: number, patch: Partial<Task>) {
-	const keys = Object.keys(patch);
-	if (!keys.length) return;
-	db.query(`UPDATE tasks SET ${keys.map((k) => `${k} = ?`).join(', ')} WHERE id = ?`).run(...(Object.values(patch) as never[]), taskId);
-	const t = getTask(taskId)!;
-	hub.publish(t.person_id, { t: 'task', task: publicTask(t) });
-}
-
-export function publicTask(t: Task) {
-	const { token, llm_token, container_id, ...rest } = t;
-	return { ...rest, result: t.result ? JSON.parse(t.result) : null };
-}
-
-function setState(taskId: number, state: CharState) {
-	const t = getTask(taskId);
-	if (!t || t.state === state) return;
-	update(taskId, { state });
-}
-
-// ---------- queue ----------
-
-export async function enqueue(agent: { id: number; person_id: number; model: string }, prompt: string) {
-	const providerName = agent.model.split('/')[0] as Provider;
-	if (!proxyOf(agent.person_id) && !hasKey(agent.person_id, providerName)) {
-		throw new Error(`Falta tu CLIProxyAPI o tu API key de ${providerName === 'anthropic' ? 'Anthropic' : 'OpenAI'} (Ajustes).`);
-	}
-	await checkProxyModel(agent.person_id, agent.model);
-	// After the network check: simultaneous requests must not both enqueue the same agent.
-	if (db.query("SELECT 1 FROM tasks WHERE agent_id = ? AND status IN ('queued','starting','running')").get(agent.id)) {
-		throw new Error('Este agente ya tiene una tarea en curso.');
-	}
-	const { lastInsertRowid } = db
-		.query("INSERT INTO tasks (agent_id, person_id, prompt, model, status, state, created_at) VALUES (?, ?, ?, ?, 'queued', 'idle', ?)")
-		.run(agent.id, agent.person_id, prompt.trim(), agent.model, now());
-	const t = getTask(Number(lastInsertRowid))!;
-	hub.publish(t.person_id, { t: 'task', task: publicTask(t) });
-	void pump();
+async function publishTask(id: number) {
+	const t = await getTask(id);
+	if (t) hub.publish(t.person_id, { t: 'task', task: publicTask(t) });
 	return t;
 }
 
-let pumping = false;
-async function pump() {
-	if (pumping) return;
-	pumping = true;
-	try {
-		while (runs.size < settings().maxConcurrent) {
-			const next = db.query("SELECT * FROM tasks WHERE status = 'queued' ORDER BY id LIMIT 1").get() as Task | null;
-			if (!next) break;
-			await launch(next);
-		}
-	} finally {
-		pumping = false;
+async function event(ref: RunRef, kind: string, data: unknown) {
+	const e = await row<{ seq: number; at: number }>(
+		`with s as (update runs set event_seq = event_seq + 1 where id = $1 returning event_seq)
+		 insert into run_events (run_id, seq, kind, data) select $1, event_seq, $2, $3 from s returning seq, at`,
+		[ref.id, kind, JSON.stringify(data)]
+	);
+	if (e) hub.publish(ref.person_id, { t: 'event', taskId: ref.id, agentId: ref.agent_id, event: { id: e.seq, at: e.at, kind, data } });
+}
+
+async function setState(id: number, state: CharState) {
+	if (await exec('update runs set state = $2 where id = $1 and state <> $2', [id, state])) await publishTask(id);
+}
+
+async function setStatus(id: number, status: Status, state: CharState, from: Status[]) {
+	if (await exec('update runs set status = $2, state = $3 where id = $1 and status = any($4::text[])', [id, status, state, from])) {
+		await publishTask(id);
 	}
 }
 
-async function launch(task: Task) {
+function liveOf(ref: RunRef) {
+	let l = live.get(ref.id);
+	if (!l) live.set(ref.id, (l = { ref, chain: Promise.resolve() }));
+	return l;
+}
+
+/** The supervisor's messages are handled one at a time, in arrival order. */
+function serial(l: Live, fn: () => Promise<void>) {
+	l.chain = l.chain.then(fn).catch((err) => console.error(`run ${l.ref.id}:`, (err as Error).message));
+}
+
+// ---------- queues ----------
+
+const registered = new Map<string, number>();
+
+async function ensureQueue(name: string, concurrency: number) {
+	if (registered.get(name) === concurrency) return;
+	await DBOS.registerQueue(name, { concurrency, onConflict: 'always_update' });
+	registered.set(name, concurrency);
+}
+
+/** The global cap changed (Admin): the sandboxes queue follows it. */
+export const applyGlobalCap = () => ensureQueue(SANDBOXES, settings().maxConcurrent);
+
+/** A person's quota changed (Admin): their queue follows it. */
+export const applyQuota = (personId: number, quota: number) => ensureQueue(personQueue(personId), quota);
+
+// ---------- enqueue ----------
+
+export async function enqueue(agent: { id: number; person_id: number; model: string }, prompt: string, opts: { admin: boolean }) {
+	const providerName = agent.model.split('/')[0] as Provider;
+	if (providerName !== 'openai') throw new Error('Este agente usa un modelo que ya no está en el catálogo: cámbialo por uno GPT.');
+	if (!(await proxyOf(agent.person_id)) && !(await hasKey(agent.person_id, providerName))) {
+		throw new Error('Falta tu CLIProxyAPI o tu API key de OpenAI (Ajustes).');
+	}
+	await checkProxyModel(agent.person_id, agent.model);
+	const quota = await quotaOf(agent.person_id);
+	if (quota < 1) throw new Error('Tu cuota de tareas simultáneas es 0: pídele a un admin que la suba.');
+	const priority = opts.admin ? 0 : 10;
+	let id: number;
+	try {
+		id = await tx(async (c) => {
+			let conv = await row<{ id: number }>('select id from conversations where agent_id = $1 and archived_at is null', [agent.id], c);
+			conv ??= await row<{ id: number }>(
+				'insert into conversations (agent_id, pi_session_id) values ($1, gen_random_uuid()::text) returning id',
+				[agent.id],
+				c
+			);
+			const { id } = (await row<{ id: number }>("select nextval(pg_get_serial_sequence('runs', 'id')) as id", [], c))!;
+			await exec(
+				`insert into runs (id, agent_id, person_id, conversation_id, workflow_id, model, priority, status, state)
+				 overriding system value values ($1, $2, $3, $4, $5, $6, $7, 'queued', 'idle')`,
+				[id, agent.id, agent.person_id, conv!.id, runWorkflowId(id), agent.model, priority],
+				c
+			);
+			await exec(
+				`insert into messages (agent_id, source, person_id, text, run_id, routed_as, routed_at)
+				 values ($1, 'web', $2, $3, $4, 'new_run', now())`,
+				[agent.id, agent.person_id, prompt.trim(), id],
+				c
+			);
+			return id;
+		});
+	} catch (err) {
+		if ((err as { constraint?: string }).constraint === 'runs_one_live_per_agent') throw new Error('Este agente ya tiene una tarea en curso.');
+		throw err;
+	}
+	await publishTask(id);
+	try {
+		await applyQuota(agent.person_id, quota);
+		await DBOS.startWorkflow(admit, { workflowID: `admit-${id}`, queueName: personQueue(agent.person_id) })(id, priority);
+	} catch (err) {
+		await finish(id, { status: 'error', reason: `No se pudo encolar: ${(err as Error).message}` });
+		throw err;
+	}
+	return (await getTask(id))!;
+}
+
+// ---------- the durable part ----------
+
+async function admitFn(runId: number, priority: number) {
+	const h = await DBOS.startWorkflow(sandboxRun, { workflowID: runWorkflowId(runId), queueName: SANDBOXES, enqueueOptions: { priority } })(runId);
+	await h.getResult();
+}
+const admit = DBOS.registerWorkflow(admitFn, { name: 'admit' });
+
+async function sandboxRunFn(runId: number) {
+	const started = await DBOS.runStep(() => startSandbox(runId), { name: 'start' });
+	if (!started) return; // cancelled while it waited
+	let end: End;
+	if ('failed' in started) {
+		end = { status: 'error', reason: started.failed };
+	} else {
+		end = (await DBOS.recv<End>('end', { deadlineEpochMS: started.deadline })) ?? {
+			status: 'incomplete',
+			reason: `Se acabó el tiempo (${started.minutes} min).`
+		};
+		await DBOS.runStep(() => collect(runId), { name: 'collect' });
+	}
+	await DBOS.runStep(() => finish(runId, end), { name: 'finish' });
+}
+const sandboxRun = DBOS.registerWorkflow(sandboxRunFn, { name: 'sandboxRun' });
+
+/** Creates the sandbox. Run again after a crash, it replaces whatever the first try left. */
+async function startSandbox(runId: number): Promise<{ deadline: number; minutes: number } | { failed: string } | null> {
 	const s = settings();
 	const token = randomBytes(32).toString('base64url');
 	const llmToken = randomBytes(32).toString('base64url');
-	const run: Run = { taskId: task.id, ownerId: task.person_id, agentId: task.agent_id };
-	runs.set(task.id, run);
-	update(task.id, { status: 'starting', state: 'starting', token, llm_token: llmToken, started_at: now() });
-	event(task, 'status', { status: 'starting' });
+	const t = await row<RunRef & { model: string; started_at: number }>(
+		`update runs set status = 'starting', state = 'starting', started_at = coalesce(started_at, now()),
+		   bootstrap_token_hash = $2, llm_token_hash = $3, session_token_hash = null, container_id = null
+		 where id = $1 and status in ('queued', 'starting')
+		 returning id, person_id, agent_id, model, started_at`,
+		[runId, hash(token), hash(llmToken)]
+	);
+	if (!t) return null;
+	await publishTask(runId);
+	await event(t, 'status', { status: 'starting' });
+	const l = liveOf(t);
+	const agent = (await row<{ id: number; state_ref: string }>('select id, state_ref from agents where id = $1', [t.agent_id]))!;
 	try {
+		await removeContainers(runId);
 		const id = await provider.start({
-			name: `buyer-${INSTANCE}-task-${task.id}`,
+			name: `agents-${INSTANCE}-run-${runId}`,
 			image: s.sandboxImage,
 			memoryBytes: 1536 * 1024 * 1024,
 			cpus: 1,
-			labels: { 'buyer.instance': INSTANCE, 'buyer.task': String(task.id) },
+			labels: { 'agents.instance': INSTANCE, 'agents.run': String(runId) },
+			volumes: [stateMount(agent, INSTANCE)],
 			env: {
-				BUYER_TASK_ID: String(task.id),
-				BUYER_TASK_TOKEN: token,
-				BUYER_LLM_TOKEN: llmToken,
-				BUYER_SERVER_URL: SERVER_URL
+				AGENTS_RUN_ID: String(runId),
+				AGENTS_TASK_TOKEN: token,
+				AGENTS_LLM_TOKEN: llmToken,
+				AGENTS_SERVER_URL: SERVER_URL
 			}
 		});
-		update(task.id, { container_id: id });
-		run.deadline = setTimeout(() => void end(task.id, 'incomplete', `Se acabó el tiempo (${s.maxMinutes} min).`), s.maxMinutes * 60_000);
+		await exec('update runs set container_id = $2 where id = $1', [runId, id]);
 	} catch (err) {
-		event(task, 'error', { message: `No se pudo crear la computadora: ${(err as Error).message}` });
-		await finish(task.id, 'error', 'No se pudo crear la computadora.');
+		await event(t, 'error', { message: `No se pudo crear la computadora: ${(err as Error).message}` });
+		return { failed: 'No se pudo crear la computadora.' };
 	}
+	waitForSupervisor(l, ATTACH_MS, 'La computadora no arrancó.');
+	return { deadline: t.started_at + s.maxMinutes * 60_000, minutes: s.maxMinutes };
+}
+
+async function removeContainers(runId: number) {
+	for (const c of await provider.list(`agents.run=${runId}`)) {
+		if (c.labels['agents.instance'] === INSTANCE) await provider.destroy(c.id);
+	}
+}
+
+/** Tells the run's workflow it is over. The first message wins; later ones are ignored. */
+async function signalEnd(runId: number, end: End) {
+	const l = live.get(runId);
+	if (l?.ending) return;
+	if (l) {
+		l.ending = true;
+		clearTimeout(l.timer);
+	}
+	await DBOS.send(runWorkflowId(runId), end, 'end');
+}
+
+/** Keeps whatever the agent already wrote, even when it is cancelled. */
+async function collect(runId: number) {
+	const l = live.get(runId);
+	const sup = l?.sup;
+	if (!l || !sup) return;
+	sup.send(JSON.stringify({ t: 'pi_cmd', cmd: { type: 'abort' } }));
+	await new Promise<void>((resolve) => {
+		const timer = setTimeout(resolve, 20_000);
+		l.collected = () => {
+			clearTimeout(timer);
+			resolve();
+		};
+		sup.send(JSON.stringify({ t: 'collect' }));
+	});
+}
+
+async function finish(runId: number, end: End) {
+	const t = await getTask(runId);
+	if (!t || FINAL.includes(t.status)) return;
+	const { status, reason } = end;
+	const l = live.get(runId);
+	try {
+		l?.sup?.send(JSON.stringify({ t: 'bye' }));
+		l?.sup?.close();
+	} catch {}
+	if (l) clearTimeout(l.timer);
+	if (t.container_id) await provider.destroy(t.container_id).catch(() => {});
+	await removeContainers(runId).catch(() => {});
+	await exec(
+		`update runs set status = $2, state = $2, end_reason = $3, ended_at = now(),
+		   bootstrap_token_hash = null, session_token_hash = null, llm_token_hash = null
+		 where id = $1`,
+		[runId, status, reason]
+	);
+	await publishTask(runId);
+	await event(t, 'status', { status, reason });
+	hub.forgetFrame(runId);
+	live.delete(runId);
 }
 
 // ---------- the sandbox's side ----------
 
-/** The supervisor inside the sandbox connected. Burns its token; returns its handlers. */
-export function attach(token: string, sup: Supervisor) {
-	const task = db.query("SELECT * FROM tasks WHERE token = ? AND status = 'starting'").get(token) as Task | null;
-	const run = task && runs.get(task.id);
-	if (!task || !run || run.sup) return null;
-	db.query('UPDATE tasks SET token = NULL WHERE id = ?').run(task.id);
-	run.sup = sup;
-	const agent = db.query('SELECT name, role FROM agents WHERE id = ?').get(task.agent_id) as { name: string; role: string };
-	const s = settings();
-	sup.send(JSON.stringify({
-		t: 'start',
-		model: task.model,
-		prompt: task.prompt,
-		system: systemPrompt(agent, grantedNames(task.agent_id)),
-		blockedWaitMs: s.blockedWaitMinutes * 60_000
-	}));
-	update(task.id, { status: 'running', state: 'thinking' });
-	event(task, 'status', { status: 'running' });
+/** If the supervisor is not (back) on its socket within `ms`, the run ends in error. */
+function waitForSupervisor(l: Live, ms: number, reason: string) {
+	clearTimeout(l.timer);
+	l.timer = setTimeout(() => {
+		if (!l.sup) void signalEnd(l.ref.id, { status: 'error', reason });
+	}, ms);
+}
+
+/**
+ * The supervisor connected: with the bootstrap token (first time; burnt, and it gets the run's
+ * start and a session token) or with its session token (after the backend restarted).
+ */
+export async function attach(cred: { token?: string; session?: string }, sup: Supervisor) {
+	let t: (RunRef & { model: string }) | null = null;
+	let session: string | null = null;
+	if (cred.token) {
+		session = randomBytes(32).toString('base64url');
+		t = await row(
+			`update runs set bootstrap_token_hash = null, session_token_hash = $2, status = 'running', state = 'thinking'
+			 where bootstrap_token_hash = $1 and status = 'starting'
+			 returning id, person_id, agent_id, model`,
+			[hash(cred.token), hash(session)]
+		);
+	} else if (cred.session) {
+		t = await row(
+			`select id, person_id, agent_id, model from runs where session_token_hash = $1 and status in ('running', 'blocked')`,
+			[hash(cred.session)]
+		);
+	}
+	if (!t) return null;
+	const l = liveOf(t);
+	const replaced = l.sup;
+	l.sup = sup;
+	clearTimeout(l.timer);
+	try {
+		replaced?.close();
+	} catch {}
+	if (session) {
+		const agent = (await row<{ name: string; role: string }>('select name, role from agents where id = $1', [t.agent_id]))!;
+		const conv = (await row<{ pi_session_id: string }>(
+			'select c.pi_session_id from runs r join conversations c on c.id = r.conversation_id where r.id = $1',
+			[t.id]
+		))!;
+		const s = settings();
+		sup.send(JSON.stringify({
+			t: 'start',
+			session,
+			model: t.model,
+			prompt: (await getTask(t.id))!.prompt,
+			system: systemPrompt(agent, await grantedNames(t.agent_id)),
+			blockedWaitMs: s.blockedWaitMinutes * 60_000,
+			piSession: conv.pi_session_id,
+			purges: await pendingPurges(t.agent_id)
+		}));
+		await publishTask(t.id);
+		await event(t, 'status', { status: 'running' });
+	} else {
+		sup.send(JSON.stringify({ t: 'resumed' }));
+		await event(t, 'system', { message: 'La computadora se volvió a conectar.' });
+	}
 	return {
-		message: (raw: string) => onSupervisor(task.id, raw),
+		message: (raw: string) => onSupervisor(l, raw),
 		close: () => {
-			const r = runs.get(task.id);
-			if (!r) return;
-			r.sup = undefined;
-			if (!r.ending) void end(task.id, 'error', 'La computadora se desconectó.');
+			if (l.sup !== sup) return;
+			l.sup = undefined;
+			if (!l.ending) waitForSupervisor(l, GRACE_MS, 'La computadora se desconectó.');
 		}
 	};
 }
 
-function onSupervisor(taskId: number, raw: string) {
-	const task = getTask(taskId);
-	const run = runs.get(taskId);
-	if (!task || !run) return;
+function onSupervisor(l: Live, raw: string) {
 	let msg: any;
 	try {
 		msg = JSON.parse(raw);
 	} catch {
 		return;
 	}
-	switch (msg.t) {
-		case 'frame':
-			if (typeof msg.jpeg === 'string') hub.frame(task.person_id, task.id, task.agent_id, msg.jpeg, msg.meta ?? null);
-			break;
-		case 'pi':
-			onPi(task, run, msg.ev);
-			break;
-		case 'blocked':
-			event(task, 'blocked', { reason: String(msg.reason ?? '').slice(0, 2000) });
-			setState(task.id, 'blocked');
-			break;
-		case 'unblocked':
-			event(task, 'system', { message: msg.steered ? 'Recibió instrucciones y sigue.' : 'Nadie respondió: salta el sitio.' });
-			setState(task.id, 'thinking');
-			break;
-		case 'file':
-			saveFile(task, String(msg.name ?? ''), String(msg.mime ?? 'application/octet-stream'), String(msg.data ?? ''));
-			break;
-		case 'collected':
-			run.collected?.();
-			break;
-		case 'cred': {
-			// agent-browser's credential plugin asked for a login, through the supervisor.
-			const reply = resolveCredential(task, String(msg.name ?? ''), String(msg.url ?? ''));
-			if (reply.ok) event(task, 'credential', { name: msg.name, ok: true });
-			else event(task, 'credential', { name: msg.name, ok: false, error: reply.error });
-			run.sup?.send(JSON.stringify({ t: 'cred_res', id: msg.id, ...reply }));
-			break;
+	const ref = l.ref;
+	if (msg.t === 'frame') {
+		if (typeof msg.jpeg === 'string') hub.frame(ref.person_id, ref.id, ref.agent_id, msg.jpeg, msg.meta ?? null);
+		return;
+	}
+	if (msg.t === 'collected') {
+		// After the files queued before it, so they are saved by then.
+		serial(l, async () => l.collected?.());
+		return;
+	}
+	serial(l, async () => {
+		switch (msg.t) {
+			case 'pi':
+				await onPi(l, msg.ev);
+				break;
+			case 'blocked':
+				await event(ref, 'blocked', { reason: String(msg.reason ?? '').slice(0, 2000) });
+				await setStatus(ref.id, 'blocked', 'blocked', ['running']);
+				break;
+			case 'unblocked':
+				await event(ref, 'system', { message: msg.steered ? 'Recibió instrucciones y sigue.' : 'Nadie respondió: salta el sitio.' });
+				await setStatus(ref.id, 'running', 'thinking', ['blocked']);
+				break;
+			case 'file':
+				await saveFile(ref, String(msg.name ?? ''), String(msg.mime ?? 'application/octet-stream'), String(msg.data ?? ''));
+				break;
+			case 'cred': {
+				// agent-browser's credential plugin asked for a login, through the supervisor.
+				const reply = await resolveCredential(ref, String(msg.name ?? ''), String(msg.url ?? ''));
+				if (reply.ok) await event(ref, 'credential', { name: msg.name, ok: true });
+				else await event(ref, 'credential', { name: msg.name, ok: false, error: reply.error });
+				l.sup?.send(JSON.stringify({ t: 'cred_res', id: msg.id, ...reply }));
+				break;
+			}
+			case 'stderr':
+				// pi's diagnostics; kept for debugging, not shown as the agent's work.
+				if (msg.text) await event(ref, 'system', { message: String(msg.text).slice(0, 1000), stderr: true });
+				break;
+			case 'purged':
+				await recordPurges(ref, Array.isArray(msg.results) ? msg.results : []);
+				break;
+			case 'exit':
+				await signalEnd(ref.id, { status: 'error', reason: `El agente terminó inesperadamente (código ${msg.code}).` });
+				break;
 		}
-		case 'stderr':
-			// pi's diagnostics; kept for debugging, not shown as the agent's work.
-			if (msg.text) event(task, 'system', { message: String(msg.text).slice(0, 1000), stderr: true });
-			break;
-		case 'exit':
-			if (!run.ending) void end(task.id, 'error', `El agente terminó inesperadamente (código ${msg.code}).`);
-			break;
+	});
+}
+
+// ---------- the agent's browser profile ----------
+
+type Purge = { id: number; origin: string | null };
+
+/** What is waiting to be wiped from the agent's browser profile (null origin = all of it). */
+function pendingPurges(agentId: number) {
+	return rows<Purge>('select id, origin from profile_purges where agent_id = $1 and done_at is null order by id', [agentId]);
+}
+
+/** A live run applies origin purges at once (the whole profile waits: Chrome is using it). */
+export async function purgeNow(agentId: number) {
+	for (const l of live.values()) {
+		if (l.ref.agent_id !== agentId || !l.sup) continue;
+		const purges = (await pendingPurges(agentId)).filter((p) => p.origin);
+		if (purges.length) l.sup.send(JSON.stringify({ t: 'purge', purges }));
+	}
+}
+
+async function recordPurges(ref: RunRef, results: { id: number; ok: boolean; detail?: string }[]) {
+	for (const r of results) {
+		const p = await row<{ origin: string | null; credential_name: string | null; person_id: number | null }>(
+			`update profile_purges set done_at = now(), run_id = $2, ok = $3, detail = $4
+			 where id = $1 and agent_id = $5 and done_at is null returning origin, credential_name, person_id`,
+			[Number(r.id), ref.id, Boolean(r.ok), String(r.detail ?? '').slice(0, 500), ref.agent_id]
+		);
+		if (!p) continue;
+		const what = p.origin ? `borró cookies y almacenamiento de ${p.origin}` : 'borró el perfil del navegador';
+		await event(ref, 'system', { message: r.ok ? `El navegador ${what}.` : `No se pudo: ${what} (${r.detail ?? 'sin detalle'}).` });
+		if (p.credential_name && p.person_id) {
+			await exec(
+				`insert into credential_uses (credential_name, action, person_id, agent_id, run_id, ok, detail)
+				 values ($1, 'purge', $2, $3, $4, $5, $6)`,
+				[p.credential_name, p.person_id, ref.agent_id, ref.id, Boolean(r.ok), `${p.origin}${r.detail ? `: ${r.detail}` : ''}`]
+			);
+		}
 	}
 }
 
 function toolState(name: string, args: any): CharState {
 	const cmd = typeof args?.command === 'string' ? args.command : '';
 	const path = typeof args?.path === 'string' ? args.path : '';
-	if (name === 'bash' && /\bbuyer-blocked\b/.test(cmd)) return 'blocked';
+	if (name === 'bash' && /\bagents-blocked\b/.test(cmd)) return 'blocked';
 	if (name === 'bash' && /\bagent-browser\b/.test(cmd)) return 'browsing';
 	if ((name === 'write' || name === 'edit') && /out\//.test(path)) return 'writing';
-	if (name === 'bash' && /result\.json/.test(cmd)) return 'writing';
+	if (name === 'bash' && /work\/out\//.test(cmd)) return 'writing';
 	return 'running';
 }
 
@@ -270,52 +536,61 @@ function textOf(result: any) {
 	return parts.filter((p: any) => p?.type === 'text').map((p: any) => p.text).join('\n');
 }
 
-function onPi(task: Task, run: Run, ev: any) {
+async function onPi(l: Live, ev: any) {
 	if (!ev || typeof ev.type !== 'string') return;
-	const steered = run.steeredUntil && run.steeredUntil > now();
+	const ref = l.ref;
+	const steered = l.steeredUntil && l.steeredUntil > Date.now();
 	switch (ev.type) {
 		case 'message_update':
-			if (!steered && ['thinking_delta', 'text_delta', 'toolcall_delta'].includes(ev.assistantMessageEvent?.type)) setState(task.id, 'thinking');
+			if (!steered && ['thinking_delta', 'text_delta', 'toolcall_delta'].includes(ev.assistantMessageEvent?.type)) await setState(ref.id, 'thinking');
 			break;
 		case 'message_end': {
 			const m = ev.message;
 			if (m?.role !== 'assistant') break;
 			const text = (Array.isArray(m.content) ? m.content : []).filter((c: any) => c.type === 'text').map((c: any) => c.text).join('\n').trim();
-			if (text) event(task, 'text', { text });
+			if (text) {
+				await event(ref, 'text', { text });
+				// The answer is the agent's last message: each new one replaces the previous.
+				await exec('update runs set answer = $2 where id = $1', [ref.id, text]);
+				await publishTask(ref.id);
+			}
 			if (m.stopReason === 'error' && m.errorMessage) {
-				run.lastError = String(m.errorMessage).slice(0, 2000);
-				event(task, 'error', { message: run.lastError });
+				l.lastError = String(m.errorMessage).slice(0, 2000);
+				await event(ref, 'error', { message: l.lastError });
 			} else {
-				run.lastError = undefined;
+				l.lastError = undefined;
 			}
 			const cost = Number(m.usage?.cost?.total ?? 0);
 			const tokens = Number(m.usage?.totalTokens ?? 0);
 			if (cost || tokens) {
-				const t = getTask(task.id)!;
-				update(task.id, { cost: t.cost + cost, tokens: t.tokens + tokens });
+				const r = await row<{ cost: number }>(
+					'update runs set cost = cost + $2, tokens = tokens + $3 where id = $1 returning cost',
+					[ref.id, cost, tokens]
+				);
+				await publishTask(ref.id);
 				const max = settings().maxCostUsd;
-				if (t.cost + cost > max && !run.ending) void end(task.id, 'incomplete', `Llegó al tope de costo (US$${max}).`);
+				if (r && r.cost > max) await signalEnd(ref.id, { status: 'incomplete', reason: `Llegó al tope de costo (US$${max}).` });
 			}
 			break;
 		}
 		case 'tool_execution_start':
-			event(task, 'tool', { id: ev.toolCallId, name: ev.toolName, summary: summarize(ev.toolName, ev.args) });
-			setState(task.id, toolState(ev.toolName, ev.args));
+			await event(ref, 'tool', { id: ev.toolCallId, name: ev.toolName, summary: summarize(ev.toolName, ev.args) });
+			await setState(ref.id, toolState(ev.toolName, ev.args));
 			break;
 		case 'tool_execution_end': {
 			const out = textOf(ev.result);
-			event(task, 'tool_end', { id: ev.toolCallId, name: ev.toolName, isError: Boolean(ev.isError), output: out.length > 4000 ? out.slice(0, 2000) + '\n…\n' + out.slice(-1500) : out });
-			if (!steered) setState(task.id, 'thinking');
+			await event(ref, 'tool_end', { id: ev.toolCallId, name: ev.toolName, isError: Boolean(ev.isError), output: out.length > 4000 ? out.slice(0, 2000) + '\n…\n' + out.slice(-1500) : out });
+			if (!steered) await setState(ref.id, 'thinking');
 			break;
 		}
 		case 'auto_retry_start':
-			event(task, 'system', { message: `Reintento ${ev.attempt}/${ev.maxAttempts}: ${ev.errorMessage ?? ''}` });
+			await event(ref, 'system', { message: `Reintento ${ev.attempt}/${ev.maxAttempts}: ${ev.errorMessage ?? ''}` });
 			break;
-		case 'agent_settled':
-			if (run.ending) break;
-			if (run.lastError && !getTask(task.id)!.result) void end(task.id, 'error', `El proveedor respondió con error: ${providerError(run.lastError)}`);
-			else void end(task.id, ev.aborted ? 'incomplete' : 'done', ev.aborted ? 'Se interrumpió.' : null);
+		case 'agent_settled': {
+			if (l.lastError) await signalEnd(ref.id, { status: 'error', reason: `El proveedor respondió con error: ${providerError(l.lastError)}` });
+			else await signalEnd(ref.id, ev.aborted ? { status: 'incomplete', reason: 'Se interrumpió.' } : { status: 'done', reason: null });
 			break;
+		}
 	}
 }
 
@@ -326,110 +601,79 @@ function providerError(raw: string) {
 	return `${code} ${msg}`.trim();
 }
 
-function saveFile(task: Task, rawName: string, mime: string, b64: string) {
+async function saveFile(ref: RunRef, rawName: string, mime: string, b64: string) {
 	const name = rawName.replace(/[^\w.-]/g, '_').slice(0, 100);
 	if (!name || !b64) return;
 	const buf = Buffer.from(b64, 'base64');
 	if (buf.length > 15 * 1024 * 1024) return;
-	const dir = joinPath(DATA_DIR, 'tasks', String(task.id));
-	mkdirSync(dir, { recursive: true });
-	const path = joinPath(dir, name);
-	writeFileSync(path, buf);
-	db.query(
-		`INSERT INTO artifacts (task_id, name, path, mime, size) VALUES (?, ?, ?, ?, ?)
-		 ON CONFLICT(task_id, name) DO UPDATE SET path = excluded.path, mime = excluded.mime, size = excluded.size`
-	).run(task.id, name, path, mime, buf.length);
-	if (name === 'result.json') {
-		try {
-			const parsed = JSON.parse(buf.toString('utf8'));
-			update(task.id, { result: JSON.stringify(parsed) });
-		} catch {
-			event(task, 'error', { message: 'result.json no es JSON válido.' });
-		}
-	}
+	const rel = joinPath('runs', String(ref.id), name);
+	mkdirSync(joinPath(DATA_DIR, 'runs', String(ref.id)), { recursive: true });
+	writeFileSync(joinPath(DATA_DIR, rel), buf);
+	await exec(
+		`insert into files (direction, run_id, name, path, mime, size) values ('out', $1, $2, $3, $4, $5)
+		 on conflict (run_id, name) where direction = 'out' do update set path = excluded.path, mime = excluded.mime, size = excluded.size`,
+		[ref.id, name, rel, mime, buf.length]
+	);
 }
 
 // ---------- the human's side ----------
 
-export function steer(taskId: number, text: string, kind: 'steer' | 'follow_up') {
-	const task = getTask(taskId);
-	const run = runs.get(taskId);
-	if (!task || !run?.sup || task.status !== 'running') throw new Error('La tarea no está corriendo.');
+export async function steer(taskId: number, text: string, kind: 'steer' | 'follow_up') {
+	const t = await getTask(taskId);
+	const l = live.get(taskId);
+	if (!t || !l?.sup || (t.status !== 'running' && t.status !== 'blocked')) throw new Error('La tarea no está corriendo.');
 	const message = text.trim().slice(0, 4000);
 	if (!message) throw new Error('Mensaje vacío.');
-	run.sup.send(JSON.stringify({ t: 'pi_cmd', cmd: { type: kind, message } }));
-	if (kind === 'steer') run.sup.send(JSON.stringify({ t: 'unblock' }));
-	event(task, kind, { text: message });
+	l.sup.send(JSON.stringify({ t: 'pi_cmd', cmd: { type: kind, message } }));
+	if (kind === 'steer') l.sup.send(JSON.stringify({ t: 'unblock' }));
+	await event(t, kind, { text: message });
 	if (kind === 'steer') {
-		run.steeredUntil = now() + 2500;
-		setState(taskId, 'steered');
+		l.steeredUntil = Date.now() + 2500;
+		await setState(taskId, 'steered');
 	}
 }
 
-export function cancel(taskId: number) {
-	const task = getTask(taskId);
-	if (!task) throw new Error('No existe.');
-	if (task.status === 'queued') {
-		update(taskId, { status: 'cancelled', state: 'cancelled', ended_at: now(), end_reason: 'Cancelada antes de empezar.' });
-		return;
-	}
-	if (!runs.has(taskId)) throw new Error('La tarea ya terminó.');
-	void end(taskId, 'cancelled', 'Cancelada por un humano.');
-}
-
-// ---------- ending ----------
-
-function end(taskId: number, status: Status, reason: string | null) {
-	const run = runs.get(taskId);
-	if (!run) return Promise.resolve();
-	if (run.ending) return run.ending;
-	run.ending = (async () => {
-		clearTimeout(run.deadline);
-		const sup = run.sup;
-		if (sup) {
-			sup.send(JSON.stringify({ t: 'pi_cmd', cmd: { type: 'abort' } }));
-			// Keep whatever the agent already wrote, even when it is cancelled.
-			await new Promise<void>((resolve) => {
-				const timer = setTimeout(resolve, 20_000);
-				run.collected = () => {
-					clearTimeout(timer);
-					resolve();
-				};
-				sup.send(JSON.stringify({ t: 'collect' }));
-			});
+export async function cancel(taskId: number) {
+	const t = await getTask(taskId);
+	if (!t) throw new Error('No existe.');
+	if (t.status === 'queued') {
+		const n = await exec(
+			`update runs set status = 'cancelled', state = 'cancelled', ended_at = now(), end_reason = 'Cancelada antes de empezar.',
+			   bootstrap_token_hash = null, llm_token_hash = null
+			 where id = $1 and status = 'queued'`,
+			[taskId]
+		);
+		if (n) {
+			for (const wf of [`admit-${taskId}`, runWorkflowId(taskId)]) await DBOS.cancelWorkflow(wf, { cancelChildren: true }).catch(() => {});
+			await publishTask(taskId);
+			await event(t, 'status', { status: 'cancelled', reason: 'Cancelada antes de empezar.' });
+			return;
 		}
-		const t = getTask(taskId)!;
-		const final: Status = status === 'done' && !t.result ? 'incomplete' : status;
-		const why = status === 'done' && !t.result ? 'Terminó sin escribir result.json.' : reason;
-		await finish(taskId, final, why);
-	})();
-	return run.ending;
-}
-
-async function finish(taskId: number, status: Status, reason: string | null) {
-	const run = runs.get(taskId);
-	const t = getTask(taskId)!;
-	try {
-		run?.sup?.close();
-	} catch {}
-	if (t.container_id) await provider.destroy(t.container_id).catch(() => {});
-	update(taskId, { status, state: status as CharState, token: null, llm_token: null, ended_at: now(), end_reason: reason });
-	event(t, 'status', { status, reason });
-	hub.forgetFrame(taskId);
-	runs.delete(taskId);
-	void pump();
-}
-
-/** On boot: tasks the previous process left mid-way can't be resumed; their sandboxes go away. */
-export async function recover() {
-	const stale = db.query("SELECT * FROM tasks WHERE status IN ('starting','running')").all() as Task[];
-	for (const t of stale) {
-		update(t.id, { status: 'error', state: 'error', token: null, llm_token: null, ended_at: now(), end_reason: 'El servidor se reinició a mitad de la tarea.' });
 	}
+	if (!LIVE.includes(t.status)) throw new Error('La tarea ya terminó.');
+	await signalEnd(taskId, { status: 'cancelled', reason: 'Cancelada por un humano.' });
+}
+
+// ---------- boot ----------
+
+/**
+ * After DBOS.launch() (which resumes the workflows themselves): queues, timers for the
+ * supervisors that should dial back in, and sandboxes no live run owns.
+ */
+export async function recover() {
+	await applyGlobalCap();
+	for (const p of await rows<{ id: number; run_quota: number }>('select id, run_quota from people')) await applyQuota(p.id, p.run_quota);
+	const running = await rows<RunRef & { status: Status }>(
+		"select id, person_id, agent_id, status from runs where status in ('starting', 'running', 'blocked')"
+	);
+	for (const r of running) {
+		const l = liveOf(r);
+		if (!l.sup) waitForSupervisor(l, r.status === 'starting' ? ATTACH_MS : GRACE_MS + 30_000, 'La computadora se desconectó.');
+	}
+	const owned = new Set(running.map((r) => String(r.id)));
 	try {
-		for (const id of await provider.list(LABEL)) await provider.destroy(id);
+		for (const c of await provider.list(LABEL)) if (!owned.has(c.labels['agents.run'] ?? '')) await provider.destroy(c.id);
 	} catch (err) {
 		console.error('could not clean old sandboxes:', (err as Error).message);
 	}
-	void pump();
 }

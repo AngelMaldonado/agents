@@ -12,7 +12,7 @@ export const STATE_LABEL: Record<CharState, string> = {
 	thinking: 'Pensando',
 	browsing: 'Navegando',
 	running: 'Ejecutando',
-	writing: 'Escribiendo resultado',
+	writing: 'Escribiendo archivos',
 	blocked: 'Atascado: necesita ayuda',
 	steered: 'Recibió instrucciones',
 	done: 'Terminado',

@@ -65,7 +65,7 @@ export function App() {
 	return (
 		<div className="app">
 			<header className="top">
-				<a className="brand" href="#/">🛒 Buyer</a>
+				<a className="brand" href="#/">Agents</a>
 				<nav>
 					<a href="#/" className={hash === '/' ? 'on' : ''}>Galería</a>
 					<a href="#/settings" className={hash === '/settings' ? 'on' : ''}>Ajustes</a>

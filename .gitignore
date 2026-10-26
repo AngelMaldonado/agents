@@ -3,5 +3,6 @@ dist/
 data/
 .env*
 !.env.example
+!.env.production.example
 .codegraph/
 *.log

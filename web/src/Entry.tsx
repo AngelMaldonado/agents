@@ -22,7 +22,7 @@ export function Entry({ onIn }: { onIn: () => void }) {
 				<Character seed="beto" state="thinking" size={96} />
 				<Character seed="caro" state="done" size={96} />
 			</div>
-			<h1>Buyer</h1>
+			<h1>Agents</h1>
 			<p className="muted">Agentes que cotizan por ti, cada uno con su propia computadora. Míralos trabajar en vivo.</p>
 			<form onSubmit={submit} className="entry-form">
 				<input value={name} onChange={(e) => setName(e.target.value)} placeholder="¿Cómo te llamas?" autoFocus maxLength={40} />

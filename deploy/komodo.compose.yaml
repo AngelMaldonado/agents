@@ -1,51 +1,103 @@
-# The `buyer` stack of Komodo (reko-3), "Compose" field. https://agents.cubytest.space (LAN/tailnet only).
-# The stack's "Environment" sets BUYER_ADMIN_PIN, BUYER_MASTER_KEY (32 bytes base64: openssl rand -base64 32),
-# BUYER_PROXY_KEY (openssl rand -hex 24) and IMAGE_TAG to pin a commit.
-# Losing BUYER_MASTER_KEY makes every saved key and site login unreadable: keep it in 1Password.
+# The `agents` stack of Komodo (reko-3), "Compose" field. https://agents.cubytest.space (LAN/tailnet only).
+# The stack's "Environment" sets AGENTS_ADMIN_PIN, AGENTS_MASTER_KEY (32 bytes base64: openssl rand -base64 32),
+# AGENTS_PROXY_KEY (openssl rand -hex 24), AGENTS_DB_PASSWORD (openssl rand -hex 24) and IMAGE_TAG to pin a commit.
+# Losing AGENTS_MASTER_KEY makes every saved key and site login unreadable: keep it in 1Password.
 # The sandbox image is built on reko-3 itself: just deploy sandbox.
 services:
   server:
-    image: registry.cubytest.space/cuby/buyer:${IMAGE_TAG:-latest}
+    image: registry.cubytest.space/cuby/agents:${IMAGE_TAG:-latest}
     restart: unless-stopped
     environment:
-      BUYER_INSTANCE: prod
-      BUYER_ADMIN_PIN: ${BUYER_ADMIN_PIN:?set BUYER_ADMIN_PIN in the stack's Environment}
-      BUYER_MASTER_KEY: ${BUYER_MASTER_KEY:?set BUYER_MASTER_KEY in the stack's Environment}
-      BUYER_PROXY_KEY: ${BUYER_PROXY_KEY:?set BUYER_PROXY_KEY in the stack's Environment}
-      BUYER_CLIPROXY_CONFIG: /cliproxy/config.yaml
-      BUYER_CLIPROXY_URL: http://cliproxy:8317
-      BUYER_SANDBOX_NETWORK: buyer-prod-sandbox
-      BUYER_SANDBOX_SERVER_URL: http://buyer-prod-server:8787
-      BUYER_SANDBOX_IMAGE: buyer-sandbox:${IMAGE_TAG:-latest}
+      AGENTS_INSTANCE: prod
+      AGENTS_ADMIN_PIN: ${AGENTS_ADMIN_PIN:?set AGENTS_ADMIN_PIN in the stack's Environment}
+      AGENTS_MASTER_KEY: ${AGENTS_MASTER_KEY:?set AGENTS_MASTER_KEY in the stack's Environment}
+      AGENTS_PROXY_KEY: ${AGENTS_PROXY_KEY:?set AGENTS_PROXY_KEY in the stack's Environment}
+      AGENTS_CLIPROXY_CONFIG: /cliproxy/config.yaml
+      AGENTS_CLIPROXY_URL: http://cliproxy:8317
+      AGENTS_SANDBOX_NETWORK: agents-prod-sandbox
+      AGENTS_SANDBOX_SERVER_URL: http://agents-prod-server:8787
+      AGENTS_SANDBOX_IMAGE: agents-sandbox:${IMAGE_TAG:-latest}
+      AGENTS_DATABASE_URL: postgres://agents:${AGENTS_DB_PASSWORD:?set AGENTS_DB_PASSWORD in the stack's Environment}@postgres:5432/agents
+    depends_on:
+      postgres:
+        condition: service_healthy
     volumes:
-      - /srv/buyer/data:/data
-      - /srv/buyer/cliproxy:/cliproxy
+      - /srv/agents/data:/data
+      - /srv/agents/cliproxy:/cliproxy
       - /var/run/docker.sock:/var/run/docker.sock
     networks:
       internal: {}
       sandbox:
-        aliases: [buyer-prod-server]
+        aliases: [agents-prod-server]
       proxy: {}
     labels:
       - traefik.enable=true
       - traefik.docker.network=proxy
-      - traefik.http.routers.buyer.rule=Host(`agents.cubytest.space`)
-      - traefik.http.routers.buyer.entrypoints=websecure
-      - traefik.http.routers.buyer.service=buyer
-      - traefik.http.services.buyer.loadbalancer.server.port=8787
+      - traefik.http.routers.agents.rule=Host(`agents.cubytest.space`)
+      - traefik.http.routers.agents.entrypoints=websecure
+      - traefik.http.routers.agents.service=agents
+      - traefik.http.services.agents.loadbalancer.server.port=8787
+
+  # App tables in schema public, DBOS's in schema dbos: one database, one backup.
+  postgres:
+    image: postgres:18.6-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: agents
+      POSTGRES_PASSWORD: ${AGENTS_DB_PASSWORD:?set AGENTS_DB_PASSWORD in the stack's Environment}
+      POSTGRES_DB: agents
+    volumes:
+      # Since the 18 image, PGDATA is /var/lib/postgresql/18/docker: mount the parent.
+      - /srv/agents/postgres:/var/lib/postgresql
+    healthcheck:
+      test: ["CMD", "pg_isready", "-U", "agents", "-d", "agents"]
+      interval: 5s
+      timeout: 3s
+      retries: 30
+    networks: [internal]
+
+  # A pg_dump a day (custom format, restore with pg_restore), the last 14 kept.
+  backup:
+    image: postgres:18.6-alpine
+    restart: unless-stopped
+    environment:
+      PGHOST: postgres
+      PGUSER: agents
+      PGDATABASE: agents
+      PGPASSWORD: ${AGENTS_DB_PASSWORD:?set AGENTS_DB_PASSWORD in the stack's Environment}
+    entrypoint:
+      - sh
+      - -c
+      - |
+        until pg_isready -q; do sleep 5; done
+        while true; do
+          f=/backups/agents-$$(date +%F).dump
+          if pg_dump -Fc -f "$$f.tmp"; then mv "$$f.tmp" "$$f"; echo "backup $$f"; else rm -f "$$f.tmp"; echo "backup FAILED"; fi
+          find /backups -name 'agents-*.dump' -mtime +13 -delete
+          sleep 86400
+        done
+    volumes:
+      - /srv/agents/backups:/backups
+    depends_on:
+      postgres:
+        condition: service_healthy
+    networks: [internal]
 
   cliproxy:
     image: eceasy/cli-proxy-api:v8.0.40
     restart: unless-stopped
     entrypoint: ["sh", "-c", "until [ -f /cfg/config.yaml ]; do sleep 1; done; exec ./CLIProxyAPI -config /cfg/config.yaml"]
     volumes:
-      - /srv/buyer/cliproxy:/cfg
+      - /srv/agents/cliproxy:/cfg
     networks: [internal]
 
 networks:
   proxy:
     external: true
   internal:
-    name: buyer-prod-internal
+    name: agents-prod-internal
   sandbox:
-    name: buyer-prod-sandbox
+    name: agents-prod-sandbox
+    # Fixed bridge name: reko-3's egress lock matches on it (~/dev/work/reko-3, docker_egress_lock_interfaces).
+    driver_opts:
+      com.docker.network.bridge.name: agents-prd-sbx

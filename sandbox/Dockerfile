@@ -23,23 +23,27 @@ RUN npm install -g --ignore-scripts @earendil-works/pi-coding-agent@${PI_VERSION
 RUN HOME=/tmp/abhome agent-browser install \
     && mv /tmp/abhome/.agent-browser/browsers /opt/browsers && rm -rf /tmp/abhome \
     && chmod -R a+rX /opt/browsers \
-    && ln -s "$(find /opt/browsers -name chrome -type f -perm -u+x | head -1)" /usr/local/bin/buyer-chrome
+    && ln -s "$(find /opt/browsers -name chrome -type f -perm -u+x | head -1)" /usr/local/bin/agents-chrome
 
 RUN useradd -m -u 1001 -s /bin/bash agent
+# The agent's state volume mounts here; an empty volume takes this owner on its first mount.
+RUN mkdir -p /home/agent/state && chown agent:agent /home/agent/state
 COPY bin/ /usr/local/bin/
-COPY supervisor.mjs /opt/buyer/supervisor.mjs
+COPY supervisor.mjs /opt/agents/supervisor.mjs
 
 # --no-sandbox: the container is the sandbox (no new privileges, all capabilities dropped).
 # Headed on a virtual display (agent-browser starts Xvfb) and without the automation flag:
 # headless Chrome says "HeadlessChrome" and webdriver=true, and sites like MercadoLibre block it.
-ENV AGENT_BROWSER_EXECUTABLE_PATH=/usr/local/bin/buyer-chrome \
+# The profile (cookies, logins, storage) lives in the agent's volume; its cache does not.
+ENV AGENT_BROWSER_EXECUTABLE_PATH=/usr/local/bin/agents-chrome \
     AGENT_BROWSER_HEADED=1 \
-    AGENT_BROWSER_ARGS=--no-sandbox,--disable-blink-features=AutomationControlled,--lang=es-MX \
+    AGENT_BROWSER_PROFILE=/home/agent/state/browser \
+    AGENT_BROWSER_ARGS=--no-sandbox,--disable-blink-features=AutomationControlled,--lang=es-MX,--disk-cache-dir=/tmp/chrome-cache \
     AGENT_BROWSER_STREAM_PORT=9223 \
-    AGENT_BROWSER_PLUGINS='[{"name":"buyer","command":"buyer-vault","capabilities":["credential.read"]}]' \
+    AGENT_BROWSER_PLUGINS='[{"name":"agents","command":"agents-vault","capabilities":["credential.read"]}]' \
     TZ=America/Mexico_City \
     LANG=C.UTF-8
 
 USER agent
 WORKDIR /home/agent
-ENTRYPOINT ["tini", "--", "node", "/opt/buyer/supervisor.mjs"]
+ENTRYPOINT ["tini", "--", "node", "/opt/agents/supervisor.mjs"]

@@ -2,7 +2,7 @@
 import { useEffect, useState } from 'react';
 import { api, ago, type Agent, type Credential, type Person } from './api';
 
-type KeyRow = { provider: 'anthropic' | 'openai'; last4: string; updated_at: number };
+type KeyRow = { provider: 'openai'; last4: string; updated_at: number };
 
 export function Settings({ me, agents }: { me: Person; agents: Agent[] }) {
 	const mine = agents.filter((a) => a.person_id === me.id);
@@ -47,7 +47,7 @@ function Proxy() {
 		<section className="panel">
 			<h2>Tu CLIProxyAPI</h2>
 			<p className="muted">
-				Si tienes un CLIProxyAPI con tus cuentas de Claude y GPT, pon su URL y tu API key: todas tus tareas saldrán por él y las keys de abajo dejan de hacer falta. La key se guarda cifrada y no se vuelve a mostrar; los agentes nunca la ven.
+				Si tienes un CLIProxyAPI con tu cuenta de GPT, pon su URL y tu API key: todas tus tareas saldrán por él y la key de abajo deja de hacer falta. La key se guarda cifrada y no se vuelve a mostrar; los agentes nunca la ven.
 			</p>
 			<form
 				className="form"
@@ -98,11 +98,9 @@ function Keys() {
 	}, []);
 	return (
 		<section className="panel">
-			<h2>O tus API keys directas</h2>
-			<p className="muted">Se usan sólo si no tienes un CLIProxyAPI propio. Las tareas que lanzas consumen tu cuenta. Las keys se guardan cifradas y no se vuelven a mostrar, ni siquiera al admin; los agentes nunca las ven.</p>
-			<KeyRowForm provider="anthropic" label="Anthropic (Claude)" hint="sk-ant-api03-… · Console de Anthropic o créditos API de tu plan" row={keys.find((k) => k.provider === 'anthropic')} onSaved={setKeys} />
+			<h2>O tu API key de OpenAI</h2>
+			<p className="muted">Se usa sólo si no tienes un CLIProxyAPI propio. Las tareas que lanzas consumen tu cuenta. La key se guarda cifrada y no se vuelve a mostrar, ni siquiera al admin; los agentes nunca la ven.</p>
 			<KeyRowForm provider="openai" label="OpenAI (GPT)" hint="sk-proj-… · platform.openai.com" row={keys.find((k) => k.provider === 'openai')} onSaved={setKeys} />
-			<p className="muted small">Claude sólo con API key: usar el login de una suscripción Claude Pro/Max a través de un proxy viola los términos de Anthropic.</p>
 		</section>
 	);
 }
@@ -153,7 +151,7 @@ function Vault({ agents }: { agents: Agent[] }) {
 	return (
 		<section className="panel">
 			<h2>Accesos a sitios</h2>
-			<p className="muted">Usuario y contraseña de sitios donde tus agentes necesitan entrar. El agente sólo conoce el nombre: escribe <code>buyer-login nombre</code> y el navegador llena el formulario sin que el modelo vea el secreto. Sólo los agentes que marques pueden usar cada acceso, y sólo en su dominio.</p>
+			<p className="muted">Usuario y contraseña de sitios donde tus agentes necesitan entrar. El agente sólo conoce el nombre: escribe <code>agents-login nombre</code> y el navegador llena el formulario sin que el modelo vea el secreto. Sólo los agentes que marques pueden usar cada acceso, y sólo en su dominio.</p>
 			<table className="vault">
 				<thead><tr><th>Nombre</th><th>Sitio</th><th>Agentes con acceso</th><th /></tr></thead>
 				<tbody>

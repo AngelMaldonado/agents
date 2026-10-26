@@ -5,7 +5,9 @@ import type { SandboxProvider, SandboxSpec } from './provider';
 
 const SOCKET = process.env.DOCKER_SOCKET ?? '/var/run/docker.sock';
 const API = 'http://docker/v1.45';
-const NETWORK = process.env.BUYER_SANDBOX_NETWORK ?? 'buyer-sandbox';
+const NETWORK = process.env.AGENTS_SANDBOX_NETWORK ?? 'agents-sandbox';
+// Public resolvers: the sandbox bridge is egress-locked away from the LAN, its DNS included.
+const DNS = (process.env.AGENTS_SANDBOX_DNS ?? '1.1.1.1,9.9.9.9').split(',').filter(Boolean);
 
 async function call(method: string, path: string, body?: unknown, ok: number[] = []) {
 	const res = await fetch(`${API}${path}`, {
@@ -37,6 +39,13 @@ export class DockerSandbox implements SandboxProvider {
 				SecurityOpt: ['no-new-privileges'],
 				CapDrop: ['ALL'],
 				NetworkMode: NETWORK,
+				Dns: DNS,
+				Mounts: (spec.volumes ?? []).map((v) => ({
+					Type: 'volume',
+					Source: v.name,
+					Target: v.target,
+					VolumeOptions: { Labels: v.labels ?? {} }
+				})),
 				AutoRemove: false,
 				LogConfig: { Type: 'json-file', Config: { 'max-size': '5m', 'max-file': '1' } }
 			}
@@ -52,7 +61,7 @@ export class DockerSandbox implements SandboxProvider {
 
 	async list(label: string) {
 		const filters = encodeURIComponent(JSON.stringify({ label: [label] }));
-		const rows = (await call('GET', `/containers/json?all=true&filters=${filters}`)) as { Id: string }[];
-		return rows.map((r) => r.Id);
+		const rows = (await call('GET', `/containers/json?all=true&filters=${filters}`)) as { Id: string; Labels: Record<string, string> | null }[];
+		return rows.map((r) => ({ id: r.Id, labels: r.Labels ?? {} }));
 	}
 }

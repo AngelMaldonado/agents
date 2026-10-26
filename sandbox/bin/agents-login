@@ -1,0 +1,6 @@
+#!/bin/sh
+# Log in with a saved credential. You never see the username or password.
+# Usage: agents-login <nombre>   (add --no-navigate if you are already on the login form)
+if [ -z "$1" ]; then echo 'Uso: agents-login <nombre> [--no-navigate]' >&2; exit 2; fi
+name="$1"; shift
+exec agent-browser auth login "$name" --credential-provider agents --item "$name" "$@"

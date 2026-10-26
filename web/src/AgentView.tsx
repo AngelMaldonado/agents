@@ -1,11 +1,13 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
-import { api, ago, isLive, money, type Agent, type Artifact, type Person, type PublicSettings, type Task, type TaskEvent } from './api';
+import Markdown from 'react-markdown';
+import remarkGfm from 'remark-gfm';
+import { api, ago, isLive, isWorking, type Agent, type Artifact, type Conversation, type Person, type PublicSettings, type Task, type TaskEvent } from './api';
 import { Character, STATE_LABEL } from './Character';
 import { Browser } from './Browser';
 import { onEvent, onTask, useTick } from './live';
 import { stateOf } from './Gallery';
 
-type Tab = 'activity' | 'terminal' | 'result' | 'history';
+type Tab = 'activity' | 'terminal' | 'answer' | 'history';
 
 export function AgentView({ agent, me, settings, onBack, onChanged }: {
 	agent: Agent; me: Person; settings: PublicSettings; onBack: () => void; onChanged: () => void;
@@ -20,7 +22,15 @@ export function AgentView({ agent, me, settings, onBack, onChanged }: {
 	const [tab, setTab] = useState<Tab>('activity');
 	const [editing, setEditing] = useState(false);
 
-	const loadHistory = () => api(`/agents/${agent.id}/tasks`).then((r) => setHistory(r.tasks));
+	const [conversations, setConversations] = useState<Conversation[]>([]);
+	const [profileReset, setProfileReset] = useState(false);
+	const loadHistory = () => {
+		void api(`/agents/${agent.id}/conversations`).then((r) => {
+			setConversations(r.conversations);
+			setProfileReset(r.profileResetPending);
+		});
+		return api(`/agents/${agent.id}/tasks`).then((r) => setHistory(r.tasks));
+	};
 	useEffect(() => {
 		void loadHistory();
 	}, [agent.id]);
@@ -38,7 +48,7 @@ export function AgentView({ agent, me, settings, onBack, onChanged }: {
 			setTask(r.task);
 			setEvents(r.events);
 			setFiles(r.artifacts);
-			if (r.task.result) setTab((t) => (t === 'activity' && !isLive(r.task) ? 'result' : t));
+			if (r.task.answer) setTab((t) => (t === 'activity' && !isLive(r.task) ? 'answer' : t));
 		});
 		const offE = onEvent((id, e) => id === taskId && setEvents((es) => (es.some((x) => x.id === e.id) ? es : [...es, e])));
 		const offT = onTask((t) => {
@@ -47,7 +57,7 @@ export function AgentView({ agent, me, settings, onBack, onChanged }: {
 			if (!isLive(t)) {
 				api(`/tasks/${taskId}`).then((r) => setFiles(r.artifacts));
 				void loadHistory();
-				if (t.result) setTab('result');
+				if (t.answer) setTab('answer');
 			}
 		});
 		return () => {
@@ -78,6 +88,14 @@ export function AgentView({ agent, me, settings, onBack, onChanged }: {
 				{mine && (
 					<div className="agent-actions">
 						<button className="ghost" onClick={() => setEditing((v) => !v)}>Editar</button>
+						<button className="ghost" title="Archiva esta conversación: la siguiente tarea empieza sin memoria de las anteriores (~/work se conserva)" onClick={async () => {
+							if (!confirm('¿Empezar una conversación nueva? La actual queda archivada en el historial.')) return;
+							setConversations((await api(`/agents/${agent.id}/conversations`, { method: 'POST' })).conversations);
+						}}>Conversación nueva</button>
+						<button className="ghost danger" disabled={profileReset} title="Cookies, sesiones iniciadas y almacenamiento de todos los sitios" onClick={async () => {
+							if (!confirm('¿Borrar el perfil del navegador? Se pierden las sesiones iniciadas; se aplica al empezar su siguiente tarea.')) return;
+							setProfileReset((await api(`/agents/${agent.id}/profile/reset`, { method: 'POST' })).profileResetPending);
+						}}>{profileReset ? 'Perfil: se borra en la siguiente tarea' : 'Borrar perfil del navegador'}</button>
 					</div>
 				)}
 			</div>
@@ -109,24 +127,34 @@ export function AgentView({ agent, me, settings, onBack, onChanged }: {
 			</div>
 
 			<div className="tabs">
-				{(['activity', 'terminal', 'result', 'history'] as Tab[]).map((t) => (
+				{(['activity', 'terminal', 'answer', 'history'] as Tab[]).map((t) => (
 					<button key={t} className={tab === t ? 'on' : ''} onClick={() => setTab(t)}>
-						{{ activity: 'Actividad', terminal: 'Terminal', result: 'Cotización', history: `Historial (${history.length})` }[t]}
+						{{ activity: 'Actividad', terminal: 'Terminal', answer: 'Respuesta', history: `Historial (${history.length})` }[t]}
 					</button>
 				))}
 			</div>
 			{tab === 'activity' && <Activity events={events} />}
 			{tab === 'terminal' && <Terminal events={events} />}
-			{tab === 'result' && <Result task={task} files={files} />}
+			{tab === 'answer' && <Answer task={task} files={files} />}
 			{tab === 'history' && (
 				<div className="history">
-					{history.map((t) => (
-						<button key={t.id} className={`history-row ${t.id === taskId ? 'on' : ''}`} onClick={() => { setTaskId(t.id); setTab(t.result ? 'result' : 'activity'); }}>
-							<span className={`pill s-${t.status === 'running' ? t.state : t.status}`}>{t.status}</span>
-							<span className="prompt">{t.prompt}</span>
-							<span className="muted small">{ago(t.created_at)} · US${t.cost.toFixed(2)}</span>
-						</button>
-					))}
+					{conversations.map((c) => {
+						const runs = history.filter((t) => t.conversation_id === c.id);
+						return (
+							<div key={c.id} className="conversation">
+								<div className="muted small">
+									{c.archived_at ? `Conversación archivada · ${ago(c.started_at)} → ${ago(c.archived_at)}` : `Conversación actual · desde ${ago(c.started_at)}`} · {c.runs} {c.runs === 1 ? 'tarea' : 'tareas'}
+								</div>
+								{runs.map((t) => (
+									<button key={t.id} className={`history-row ${t.id === taskId ? 'on' : ''}`} onClick={() => { setTaskId(t.id); setTab(t.answer ? 'answer' : 'activity'); }}>
+										<span className={`pill s-${isWorking(t) ? t.state : t.status}`}>{t.status}</span>
+										<span className="prompt">{t.prompt}</span>
+										<span className="muted small">{ago(t.created_at)} · US${t.cost.toFixed(2)}</span>
+									</button>
+								))}
+							</div>
+						);
+					})}
 					{!history.length && <p className="muted">Sin tareas.</p>}
 				</div>
 			)}
@@ -157,7 +185,7 @@ function NewTask({ agentId, onStarted }: { agentId: number; onStarted: (t: Task)
 			}}
 		>
 			<label>Nueva tarea
-				<textarea value={prompt} onChange={(e) => setPrompt(e.target.value)} rows={5} placeholder="Cotiza 10 Raspberry Pi 5 de 8 GB en tiendas de México. Quiero precio, envío y disponibilidad." />
+				<textarea value={prompt} onChange={(e) => setPrompt(e.target.value)} rows={5} placeholder="Qué quieres que haga. Sigue la conversación anterior: puedes referirte a lo que ya hizo." />
 			</label>
 			{error && <p className="error">{error}</p>}
 			<button className="primary" disabled={busy || !prompt.trim()}>Empezar</button>
@@ -180,7 +208,7 @@ function Steer({ task, canSteer, canCancel }: { task: Task; canSteer: boolean; c
 	return (
 		<div className="form">
 			{task.state === 'blocked' && <div className="callout">✋ Está atascado y espera tu respuesta.</div>}
-			{canSteer && task.status === 'running' && (
+			{canSteer && isWorking(task) && (
 				<>
 					<label>Dirigir al agente
 						<textarea value={text} onChange={(e) => setText(e.target.value)} rows={3} placeholder="Ignora Amazon, busca sólo en distribuidores autorizados." />
@@ -191,7 +219,7 @@ function Steer({ task, canSteer, canCancel }: { task: Task; canSteer: boolean; c
 					</div>
 				</>
 			)}
-			{task.status !== 'running' && <p className="muted">{task.status === 'queued' ? 'En cola: empieza cuando haya lugar.' : 'Prendiendo la computadora…'}</p>}
+			{!isWorking(task) && <p className="muted">{task.status === 'queued' ? 'En cola: empieza cuando haya lugar.' : 'Prendiendo la computadora…'}</p>}
 			{canCancel && (
 				<button className="danger" onClick={() => confirm('¿Cancelar la tarea? Se guarda lo que lleve.') && api(`/tasks/${task.id}/cancel`, { method: 'POST' }).catch((e) => setError(e.message))}>
 					Cancelar tarea
@@ -258,7 +286,7 @@ function Terminal({ events }: { events: TaskEvent[] }) {
 			{lines.map((e) =>
 				e.kind === 'tool' ? (
 					<div key={e.id} className="cmd">
-						<span className="prompt-sign">{e.data.name === 'bash' ? 'agent@buyer:~/work$' : `[${e.data.name}]`}</span> {e.data.summary}
+						<span className="prompt-sign">{e.data.name === 'bash' ? 'agent@agents:~/work$' : `[${e.data.name}]`}</span> {e.data.summary}
 					</div>
 				) : (
 					<pre key={e.id} className={e.data.isError ? 'out err' : 'out'}>{e.data.output || ' '}</pre>
@@ -269,48 +297,30 @@ function Terminal({ events }: { events: TaskEvent[] }) {
 	);
 }
 
-function Result({ task, files }: { task: Task | null; files: Artifact[] }) {
+/** The answer: the agent's last message, as markdown (no raw HTML), and the files it left in ~/work/out. */
+function Answer({ task, files }: { task: Task | null; files: Artifact[] }) {
 	if (!task) return <p className="muted pad">Sin tarea.</p>;
-	const q = task.result;
 	const imgs = files.filter((f) => f.mime.startsWith('image/'));
-	if (!q) {
-		return (
-			<div className="pad">
-				<p className="muted">{isLive(task) ? 'Todavía trabajando: la cotización aparece al terminar.' : 'Esta tarea no dejó cotización.'}</p>
-				{imgs.length > 0 && <Shots task={task} imgs={imgs} />}
-			</div>
-		);
-	}
-	const best = q.recommendation?.option;
 	return (
 		<div className="result">
-			{q.summary && <p className="summary">{q.summary}</p>}
-			{q.recommendation && <div className="callout good">⭐ Recomienda la opción {best}: {q.recommendation.why}</div>}
-			<div className="table-wrap">
-				<table>
-					<thead>
-						<tr><th>#</th><th>Producto</th><th>Proveedor</th><th>Precio</th><th>Envío</th><th>Disponibilidad</th><th>Evidencia</th><th>Notas</th></tr>
-					</thead>
-					<tbody>
-						{q.options.map((o, i) => (
-							<tr key={i} className={best === i + 1 ? 'best' : ''}>
-								<td>{i + 1}</td>
-								<td><a href={o.url} target="_blank" rel="noreferrer noopener">{o.product}</a></td>
-								<td>{o.vendor}</td>
-								<td className="num">{money(o.price, o.currency)}</td>
-								<td>{o.shipping ?? '—'}</td>
-								<td>{o.availability}</td>
-								<td>{o.screenshot && files.some((f) => f.name === o.screenshot) ? <a href={`/api/tasks/${task.id}/files/${o.screenshot}`} target="_blank" rel="noreferrer"><img className="thumb" src={`/api/tasks/${task.id}/files/${o.screenshot}`} alt="" /></a> : <span className="muted">sin captura</span>}</td>
-								<td className="small">{o.notes}</td>
-							</tr>
+			{task.answer ? (
+				<div className="markdown">
+					<Markdown remarkPlugins={[remarkGfm]} components={{ a: ({ node, ...p }) => <a {...p} target="_blank" rel="noreferrer noopener" /> }}>{task.answer}</Markdown>
+				</div>
+			) : (
+				<p className="muted">{isLive(task) ? 'Todavía trabajando: la respuesta aparece cuando el agente escribe.' : 'Esta tarea terminó sin respuesta.'}</p>
+			)}
+			{files.length > 0 && (
+				<>
+					<h3>Archivos</h3>
+					<ul className="files">
+						{files.map((f) => (
+							<li key={f.id}><a href={`/api/tasks/${task.id}/files/${f.name}`} target="_blank" rel="noreferrer">{f.name}</a> <span className="muted small">{(f.size / 1024).toFixed(1)} KB</span></li>
 						))}
-					</tbody>
-				</table>
-			</div>
-			<div className="row">
-				<a className="button" href={`/api/tasks/${task.id}/quote.csv`}>Descargar CSV</a>
-				<a className="button ghost" href={`/api/tasks/${task.id}/files/result.json`} target="_blank" rel="noreferrer">result.json</a>
-			</div>
+					</ul>
+				</>
+			)}
+			{imgs.length > 0 && <Shots task={task} imgs={imgs} />}
 		</div>
 	);
 }

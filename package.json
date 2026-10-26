@@ -1,5 +1,5 @@
 {
-  "name": "buyer",
+  "name": "agents",
   "private": true,
   "workspaces": ["server", "web"]
 }

@@ -1,5 +1,5 @@
 #!/bin/sh
 # Tell the human you are stuck and wait for an answer (steer) or the timeout.
-# Usage: buyer-blocked "qué pasó y qué necesitas"
-if [ -z "$*" ]; then echo 'Uso: buyer-blocked "qué pasó y qué necesitas"' >&2; exit 2; fi
+# Usage: agents-blocked "qué pasó y qué necesitas"
+if [ -z "$*" ]; then echo 'Uso: agents-blocked "qué pasó y qué necesitas"' >&2; exit 2; fi
 exec curl -sS --max-time 3700 -X POST --data-binary "$*" http://127.0.0.1:7777/blocked

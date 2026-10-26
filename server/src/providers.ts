@@ -1,57 +1,61 @@
 // Each person's provider keys and the CLIProxyAPI config built from them.
 //
 // CLIProxyAPI can't bind a client key to an upstream account, so this backend is the only client
-// it has (one internal key, BUYER_PROXY_KEY) and each person's keys live under the prefix u<id>.
-// With routing.force-model-prefix, "u7/claude-sonnet-4-6" can only use person 7's key.
+// it has (one internal key, AGENTS_PROXY_KEY) and each person's keys live under the prefix u<id>.
+// With routing.force-model-prefix, "u7/gpt-6.1-sol" can only use person 7's key.
 import { writeFileSync, readFileSync, existsSync, mkdirSync } from 'node:fs';
 import { dirname } from 'node:path';
 import YAML from 'yaml';
-import { db, now } from './db';
+import { row, rows, exec } from './db';
 import { seal, open } from './crypto';
 
-export type Provider = 'anthropic' | 'openai';
-export const PROVIDERS: Provider[] = ['anthropic', 'openai'];
+// GPT only (no Claude in Agents): OpenAI is the one provider.
+export type Provider = 'openai';
+export const PROVIDERS: Provider[] = ['openai'];
 
-const CONFIG = process.env.BUYER_CLIPROXY_CONFIG ?? 'data/cliproxy/config.yaml';
+const CONFIG = process.env.AGENTS_CLIPROXY_CONFIG ?? 'data/cliproxy/config.yaml';
 
 export const prefixOf = (personId: number) => `u${personId}`;
 
 export function keysOf(personId: number) {
-	return db
-		.query('SELECT provider, last4, updated_at FROM provider_keys WHERE person_id = ?')
-		.all(personId) as { provider: Provider; last4: string; updated_at: number }[];
+	return rows<{ provider: Provider; last4: string; updated_at: number }>(
+		'select provider, last4, updated_at from provider_keys where person_id = $1',
+		[personId]
+	);
 }
 
-export function hasKey(personId: number, provider: Provider) {
-	return Boolean(db.query('SELECT 1 FROM provider_keys WHERE person_id = ? AND provider = ?').get(personId, provider));
+export async function hasKey(personId: number, provider: Provider) {
+	return Boolean(await row('select 1 from provider_keys where person_id = $1 and provider = $2', [personId, provider]));
 }
 
-export function setKey(personId: number, provider: Provider, key: string) {
+export async function setKey(personId: number, provider: Provider, key: string) {
 	const k = key.trim();
-	db.query(
-		`INSERT INTO provider_keys (person_id, provider, enc, last4, updated_at) VALUES (?, ?, ?, ?, ?)
-		 ON CONFLICT(person_id, provider) DO UPDATE SET enc = excluded.enc, last4 = excluded.last4, updated_at = excluded.updated_at`
-	).run(personId, provider, seal(k), k.slice(-4), now());
-	writeProxyConfig();
+	await exec(
+		`insert into provider_keys (person_id, provider, key_enc, last4) values ($1, $2, $3, $4)
+		 on conflict (person_id, provider) do update set key_enc = excluded.key_enc, last4 = excluded.last4, updated_at = now()`,
+		[personId, provider, seal(k), k.slice(-4)]
+	);
+	await writeProxyConfig();
 }
 
-export function deleteKey(personId: number, provider: Provider) {
-	db.query('DELETE FROM provider_keys WHERE person_id = ? AND provider = ?').run(personId, provider);
-	writeProxyConfig();
+export async function deleteKey(personId: number, provider: Provider) {
+	await exec('delete from provider_keys where person_id = $1 and provider = $2', [personId, provider]);
+	await writeProxyConfig();
 }
 
 // ---------- a person's own CLIProxyAPI ----------
 
 export function proxyOf(personId: number) {
-	return db.query('SELECT url, last4, updated_at FROM proxy_accounts WHERE person_id = ?').get(personId) as
-		| { url: string; last4: string; updated_at: number }
-		| null;
+	return row<{ url: string; last4: string; updated_at: number }>(
+		'select url, last4, updated_at from proxy_accounts where person_id = $1',
+		[personId]
+	);
 }
 
 /** URL and key, decrypted: only for the LLM gateway. */
-export function proxyCredentials(personId: number) {
-	const row = db.query('SELECT url, enc_key FROM proxy_accounts WHERE person_id = ?').get(personId) as { url: string; enc_key: string } | null;
-	return row ? { url: row.url, key: open(row.enc_key) } : null;
+export async function proxyCredentials(personId: number) {
+	const r = await row<{ url: string; key_enc: string }>('select url, key_enc from proxy_accounts where person_id = $1', [personId]);
+	return r ? { url: r.url, key: open(r.key_enc) } : null;
 }
 
 /** https://host:8317/v1/ -> https://host:8317 */
@@ -78,47 +82,41 @@ export async function proxyModels(url: string, key: string) {
 
 /** Fail before allocating a sandbox when the person's proxy does not advertise the model. */
 export async function checkProxyModel(personId: number, model: string) {
-	const own = proxyCredentials(personId);
+	const own = await proxyCredentials(personId);
 	if (!own) return;
-	const [provider, id] = model.split('/', 2);
+	const id = model.split('/', 2)[1];
 	const ids = await proxyModels(own.url, own.key);
 	if (ids.includes(id)) return;
-	const alternatives = ids.filter((m) => m.startsWith(provider === 'openai' ? 'gpt-' : 'claude-')).slice(0, 8);
+	const alternatives = ids.filter((m) => m.startsWith('gpt-')).slice(0, 8);
 	throw new Error(`Tu CLIProxyAPI no ofrece ${id}. Cambia el modelo del agente.${alternatives.length ? ` Disponibles: ${alternatives.join(', ')}.` : ''}`);
 }
 
-export function setProxy(personId: number, url: string, key: string) {
-	db.query(
-		`INSERT INTO proxy_accounts (person_id, url, enc_key, last4, updated_at) VALUES (?, ?, ?, ?, ?)
-		 ON CONFLICT(person_id) DO UPDATE SET url = excluded.url, enc_key = excluded.enc_key, last4 = excluded.last4, updated_at = excluded.updated_at`
-	).run(personId, url, seal(key), key.slice(-4), now());
+export async function setProxy(personId: number, url: string, key: string) {
+	await exec(
+		`insert into proxy_accounts (person_id, url, key_enc, last4) values ($1, $2, $3, $4)
+		 on conflict (person_id) do update set url = excluded.url, key_enc = excluded.key_enc, last4 = excluded.last4, updated_at = now()`,
+		[personId, url, seal(key), key.slice(-4)]
+	);
 }
 
-export function deleteProxy(personId: number) {
-	db.query('DELETE FROM proxy_accounts WHERE person_id = ?').run(personId);
+export async function deleteProxy(personId: number) {
+	await exec('delete from proxy_accounts where person_id = $1', [personId]);
 }
 
 /** Rewrites CLIProxyAPI's config; it reloads the file on its own. */
-export function writeProxyConfig() {
-	const proxyKey = process.env.BUYER_PROXY_KEY;
-	if (!proxyKey) throw new Error('BUYER_PROXY_KEY is not set');
-	const rows = db.query('SELECT person_id, provider, enc FROM provider_keys ORDER BY person_id').all() as {
-		person_id: number;
-		provider: Provider;
-		enc: string;
-	}[];
-	const claude = rows
-		.filter((r) => r.provider === 'anthropic')
-		.map((r) => ({ name: `${prefixOf(r.person_id)}-claude`, prefix: prefixOf(r.person_id), 'request-retry': 0, keys: [{ 'api-key': open(r.enc) }] }));
-	const codex = rows
-		.filter((r) => r.provider === 'openai')
-		.map((r) => ({
-			name: `${prefixOf(r.person_id)}-openai`,
-			prefix: prefixOf(r.person_id),
-			'base-url': 'https://api.openai.com/v1',
-			'request-retry': 0,
-			keys: [{ 'api-key': open(r.enc), 'disable-codex-cloaking': true }]
-		}));
+export async function writeProxyConfig() {
+	const proxyKey = process.env.AGENTS_PROXY_KEY;
+	if (!proxyKey) throw new Error('AGENTS_PROXY_KEY is not set');
+	const keys = await rows<{ person_id: number; key_enc: string }>(
+		"select person_id, key_enc from provider_keys where provider = 'openai' order by person_id"
+	);
+	const codex = keys.map((r) => ({
+		name: `${prefixOf(r.person_id)}-openai`,
+		prefix: prefixOf(r.person_id),
+		'base-url': 'https://api.openai.com/v1',
+		'request-retry': 0,
+		keys: [{ 'api-key': open(r.key_enc), 'disable-codex-cloaking': true }]
+	}));
 	const config: Record<string, unknown> = {
 		'config-version': 8,
 		server: { host: '', port: 8317 },
@@ -127,13 +125,10 @@ export function writeProxyConfig() {
 		routing: { strategy: 'fill-first', 'force-model-prefix': true },
 		'usage-statistics-enabled': false
 	};
-	const apiKeys: Record<string, unknown> = {};
-	if (claude.length) apiKeys.claude = claude;
-	if (codex.length) apiKeys.codex = codex;
-	if (Object.keys(apiKeys).length) config['api-keys'] = apiKeys;
+	if (codex.length) config['api-keys'] = { codex };
 	mkdirSync(dirname(CONFIG), { recursive: true });
 	// Written in place, not renamed over: CLIProxyAPI's watcher follows the file and misses a rename.
-	const text = '# Written by the Buyer backend. Do not edit: it is rewritten on every key change.\n' + YAML.stringify(config);
+	const text = '# Written by the Agents backend. Do not edit: it is rewritten on every key change.\n' + YAML.stringify(config);
 	if (existsSync(CONFIG) && readFileSync(CONFIG, 'utf8') === text) return;
 	writeFileSync(CONFIG, text, { mode: 0o600 });
 }

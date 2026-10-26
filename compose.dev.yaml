@@ -1,11 +1,13 @@
-# Buyer's dev environment, on reko-3 (just dev up). The code is rsynced to ~/dev/work/buyer on
+# Agents' dev environment, on reko-3 (just dev up). The code is rsynced to ~/dev/work/agents on
 # reko-3 and bind-mounted; bun --watch and Vite pick up changes. https://agents-dev.cubytest.space
 #
 # Networks:
 #   proxy              Traefik (shared, external)
-#   buyer-dev-internal backend <-> CLIProxyAPI (and web -> backend); no sandbox here
-#   buyer-dev-sandbox  task containers -> backend only (they never see CLIProxyAPI)
-name: buyer-dev
+#   agents-dev-internal backend <-> CLIProxyAPI (and web -> backend); no sandbox here
+#   agents-dev-sandbox  task containers -> backend only (they never see CLIProxyAPI or Postgres)
+#
+# Postgres here is dev-only and throwaway: fixed password, internal network, no backups.
+name: agents-dev
 
 services:
   server:
@@ -14,25 +16,30 @@ services:
     # .env.dev holds the secrets; it exists only on reko-3, so it is read here, not by compose.
     command: ["sh", "-c", "set -a && . /app/.env.dev && set +a && bun install && cd server && exec bun --watch src/index.ts"]
     environment:
-      BUYER_INSTANCE: dev
-      BUYER_DATA: /data
-      BUYER_CLIPROXY_CONFIG: /cliproxy/config.yaml
+      AGENTS_INSTANCE: dev
+      AGENTS_DATA: /data
+      AGENTS_CLIPROXY_CONFIG: /cliproxy/config.yaml
       # `just dev fake on` points this at the scripted fake LLM (no tokens spent).
-      BUYER_CLIPROXY_URL: ${BUYER_CLIPROXY_URL:-http://cliproxy:8317}
-      BUYER_SANDBOX_NETWORK: buyer-dev-sandbox
-      BUYER_SANDBOX_SERVER_URL: http://buyer-dev-server:8787
-      BUYER_SANDBOX_IMAGE: buyer-sandbox:dev
-      BUYER_WEB_DIST: /nonexistent
+      AGENTS_CLIPROXY_URL: ${AGENTS_CLIPROXY_URL:-http://cliproxy:8317}
+      AGENTS_SANDBOX_NETWORK: agents-dev-sandbox
+      AGENTS_SANDBOX_SERVER_URL: http://agents-dev-server:8787
+      AGENTS_SANDBOX_IMAGE: agents-sandbox:dev
+      AGENTS_WEB_DIST: /nonexistent
+      AGENTS_DATABASE_URL: postgres://agents:agents@postgres:5432/agents
+      AGENTS_TEST_DATABASE_URL: postgres://agents:agents@postgres:5432/agents_test
       PORT: "8787"
+    depends_on:
+      postgres:
+        condition: service_healthy
     volumes:
       - ./:/app
       - data:/data
       - cliproxy:/cliproxy
       - /var/run/docker.sock:/var/run/docker.sock
     networks:
-      buyer-dev-internal:
-      buyer-dev-sandbox:
-        aliases: [buyer-dev-server]
+      agents-dev-internal:
+      agents-dev-sandbox:
+        aliases: [agents-dev-server]
     restart: unless-stopped
 
   web:
@@ -40,17 +47,35 @@ services:
     working_dir: /app/web
     command: ["sh", "-c", "until [ -d /app/node_modules ]; do sleep 1; done; exec bun --bun vite --host 0.0.0.0 --port 5173"]
     environment:
-      BUYER_API: http://server:8787
+      AGENTS_API: http://server:8787
     volumes:
       - ./:/app
-    networks: [proxy, buyer-dev-internal]
+    networks: [proxy, agents-dev-internal]
     labels:
       traefik.enable: "true"
       traefik.docker.network: proxy
-      traefik.http.routers.buyer-dev.entrypoints: websecure
-      traefik.http.routers.buyer-dev.rule: Host(`agents-dev.cubytest.space`)
-      traefik.http.routers.buyer-dev.service: buyer-dev
-      traefik.http.services.buyer-dev.loadbalancer.server.port: "5173"
+      traefik.http.routers.agents-dev.entrypoints: websecure
+      traefik.http.routers.agents-dev.rule: Host(`agents-dev.cubytest.space`)
+      traefik.http.routers.agents-dev.service: agents-dev
+      traefik.http.services.agents-dev.loadbalancer.server.port: "5173"
+    restart: unless-stopped
+
+  postgres:
+    image: postgres:18.6-alpine
+    environment:
+      POSTGRES_USER: agents
+      POSTGRES_PASSWORD: agents
+      POSTGRES_DB: agents
+    volumes:
+      # Since the 18 image, PGDATA is /var/lib/postgresql/18/docker: mount the parent.
+      - pgdata:/var/lib/postgresql
+      - ./scripts/dev-postgres-init.sql:/docker-entrypoint-initdb.d/dev-postgres-init.sql:ro
+    healthcheck:
+      test: ["CMD", "pg_isready", "-U", "agents", "-d", "agents"]
+      interval: 2s
+      timeout: 3s
+      retries: 30
+    networks: [agents-dev-internal]
     restart: unless-stopped
 
   cliproxy:
@@ -58,7 +83,7 @@ services:
     entrypoint: ["sh", "-c", "until [ -f /cfg/config.yaml ]; do sleep 1; done; exec ./CLIProxyAPI -config /cfg/config.yaml"]
     volumes:
       - cliproxy:/cfg
-    networks: [buyer-dev-internal]
+    networks: [agents-dev-internal]
     restart: unless-stopped
 
   fake-llm:
@@ -67,16 +92,20 @@ services:
     command: ["bun", "/app/scripts/fake-llm.ts"]
     volumes:
       - ./scripts:/app/scripts:ro
-    networks: [buyer-dev-internal]
+    networks: [agents-dev-internal]
 
 volumes:
   data:
   cliproxy:
+  pgdata:
 
 networks:
   proxy:
     external: true
-  buyer-dev-internal:
-    name: buyer-dev-internal
-  buyer-dev-sandbox:
-    name: buyer-dev-sandbox
+  agents-dev-internal:
+    name: agents-dev-internal
+  agents-dev-sandbox:
+    name: agents-dev-sandbox
+    # Fixed bridge name: reko-3's egress lock matches on it (~/dev/work/reko-3, docker_egress_lock_interfaces).
+    driver_opts:
+      com.docker.network.bridge.name: agents-dev-sbx

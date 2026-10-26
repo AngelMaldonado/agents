@@ -7,6 +7,8 @@ export type SandboxSpec = {
 	memoryBytes: number;
 	cpus: number;
 	labels: Record<string, string>;
+	/** Named volumes mounted into the sandbox (an agent's state); created on first use. */
+	volumes?: { name: string; target: string; labels?: Record<string, string> }[];
 };
 
 export interface SandboxProvider {
@@ -14,6 +16,6 @@ export interface SandboxProvider {
 	start(spec: SandboxSpec): Promise<string>;
 	/** Stops and removes it. Never throws if it is already gone. */
 	destroy(id: string): Promise<void>;
-	/** Ids of every sandbox carrying the given label, running or not. */
-	list(label: string): Promise<string[]>;
+	/** Every sandbox carrying the given label (key=value), running or not, with its labels. */
+	list(label: string): Promise<{ id: string; labels: Record<string, string> }[]>;
 }

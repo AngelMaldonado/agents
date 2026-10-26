@@ -1,6 +1,0 @@
-#!/bin/sh
-# Log in with a saved credential. You never see the username or password.
-# Usage: buyer-login <nombre>   (add --no-navigate if you are already on the login form)
-if [ -z "$1" ]; then echo 'Uso: buyer-login <nombre> [--no-navigate]' >&2; exit 2; fi
-name="$1"; shift
-exec agent-browser auth login "$name" --credential-provider buyer --item "$name" "$@"
