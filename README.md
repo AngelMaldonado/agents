@@ -2,6 +2,8 @@
 
 Agentes IA con su propia computadora (shell + Chrome) y un navegador que se ve en vivo. Herramienta interna de Cuby en `agents.cubytest.space`, sólo LAN/tailnet. El plan, las decisiones de v2 y lo descartado viven en Cuby Bubble, proyecto `agents` (README y módulo «Agents v2»).
 
+Código: [AngelMaldonado/agents](https://github.com/AngelMaldonado/agents) (privado, rama `v2`).
+
 Viene del POC **Buyer** (oct-2026), que cotizaba compras. Hoy son agentes generales sobre Postgres + DBOS: el rol de cada uno es texto libre, la conversación continúa entre tareas y responden en markdown. Sólo modelos GPT. v2 lo vuelve una plataforma de agentes generales.
 
 ## Hacia dónde va (v2)
@@ -83,7 +85,7 @@ En dev, `just dev fake on` también levanta un receptor de prueba en `http://fak
 
 - **Por tópicos** (`server/src/hub.ts`): la galería recibe el estado de las tareas y una miniatura por segundo por agente; el stream completo (~5 fps) y los eventos de una tarea sólo llegan a quien tiene abierta la vista de ese agente, y el supervisor sólo lo manda mientras alguien la mira. Al reconectar, la web vuelve a pedir lo que se perdió.
 - **Monitor** (pestaña Monitor, `server/src/monitor.ts`): cada persona ve sus computadoras (CPU, RAM, red, tiempo, costo) y su lugar en la cola; el admin ve todas, el host y los huérfanos, que puede limpiar.
-- **`/metrics`** en el puerto 9464 (no pasa por Traefik): corridas por estado, cola por persona, CPU y RAM por sandbox, host, costo por persona, arranque promedio e imágenes enviadas. El panel «Agents» de Grafana y sus dos alertas viven en `~/dev/work/reko-3` (`roles/monitoring/files/dashboards/Cuby/agents.json`, `roles/monitoring/files/alerting/agents.yaml`, job `agents` en `prometheus_extra_scrape_configs`).
+- **`/metrics`** en el puerto 9464 (no pasa por Traefik): corridas por estado, cola por persona, CPU y RAM por sandbox, host, costo por persona, arranque promedio e imágenes enviadas. El panel «Agents» de Grafana y sus dos alertas viven en `~/dev/work/reko-3` (`roles/monitoring/files/dashboards/cuby/agents.json`, `roles/monitoring/files/alerting/agents.yaml`, job `agents` en `prometheus_extra_scrape_configs`).
 
 ## Ejemplo de rol: compras
 
@@ -97,6 +99,14 @@ Lo que el POC traía cableado ahora es un rol que se pega en el agente:
 - CLIProxyAPI sólo es alcanzable por el backend (red `*-internal`); los sandboxes están en otra red.
 - Nadie toca el navegador ni la terminal del agente: la vista es sólo lectura; el humano hace steer o cancela.
 - Los sandboxes salen a internet y a su propia red (el backend), nunca a la LAN, otras redes Docker, la tailnet, link-local/metadata ni al host. La regla es del host y vive en `~/dev/work/reko-3` (`docker_egress_lock_interfaces` y `firewall_deny_interfaces`, sobre los bridges `agents-dev-sbx` y `agents-prd-sbx`); `just sandbox egress` la verifica. Los sandboxes resuelven DNS con resolvers públicos (`AGENTS_SANDBOX_DNS`).
+
+## Producción
+
+- Stack `agents` de Komodo en reko-3; imágenes fijadas al commit (`IMAGE_TAG`), sin auto-update. `just deploy image` publica el server y `just deploy sandbox` construye el sandbox en reko-3; después se actualiza el compose y el tag del stack y se despliega desde Komodo.
+- Datos: `/srv/agents/{data,cliproxy,postgres}`; respaldos: `/srv/agents/backups/agents-AAAA-MM-DD.dump`. El primer `pg_dump` espera a las tablas de la app y DBOS para no respaldar una base recién creada todavía vacía; luego corre cada 24 h y conserva 14 días.
+- Secretos y PIN de administrador: **1Password, bóveda Cuby, ítem `agents`**. No perder `AGENTS_MASTER_KEY`: cifra las keys y el vault de la app. `.env.production` contiene el acceso operativo con prefijo `AGENTS_PROD_`, modo 600 e ignorado por git; nunca se copia al entorno de la app.
+- El POC Buyer nunca se desplegó en producción: no había `/srv/buyer` ni stack `buyer`, por lo que no existe un archivo de datos del POC que restaurar. No se migran las keys ni los datos de dev; cada persona registra su credencial GPT en Ajustes.
+- Panel: [Agents en Grafana](https://grafana.cubytest.space/d/cuby-agents/agents). Las alertas de Agents usan el receptor ntfy de la plataforma, tema `cuby-agents`.
 
 ## Desarrollo (todo corre en reko-3)
 

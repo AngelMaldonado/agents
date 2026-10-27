@@ -131,6 +131,11 @@ prod action:
           port="$(source "{{prod_dir}}/lib.sh" && prod_pick_port "$AGENTS_PROD_TUNNEL_PORT")"
           tmux new-session -d -s "$session" -e "PROD_TUNNEL_PORT=$port" -n tunnel -c "{{justfile_directory()}}" "{{prod_dir}}/tunnel.sh"
           tmux set-option -t "$session" @purpose 'agents production database: tunnel + read-only psql'
+        elif ! tmux list-windows -t "$session" -F '#W' | grep -qx tunnel; then
+          # A visible deploy/inspection may already own this session without a DB tunnel.
+          port="$(source "{{prod_dir}}/lib.sh" && prod_pick_port "$AGENTS_PROD_TUNNEL_PORT")"
+          tmux set-environment -t "$session" PROD_TUNNEL_PORT "$port"
+          tmux new-window -t "$session" -n tunnel -c "{{justfile_directory()}}" "{{prod_dir}}/tunnel.sh"
         fi
         if ! tmux list-windows -t "$session" -F '#W' | grep -qx psql; then
           tmux new-window -t "$session" -n psql -c "{{justfile_directory()}}" "{{prod_dir}}/psql.sh"

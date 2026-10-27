@@ -32,9 +32,9 @@ prod_ssh_setup
 resolve_postgres_ip() {
   # Found by its compose labels: the stack's name and the service. The ssh user is in the docker group.
   "${PROD_SSH[@]}" "$PROD_SSH_TARGET" \
-    "c=\$(docker ps --filter 'label=com.docker.compose.project=${AGENTS_PROD_PG_PROJECT}' --filter 'label=com.docker.compose.service=${AGENTS_PROD_PG_SERVICE}' --format '{{.Names}}' | head -n 1) \
+    "c=\$(docker --context default ps --filter 'label=com.docker.compose.project=${AGENTS_PROD_PG_PROJECT}' --filter 'label=com.docker.compose.service=${AGENTS_PROD_PG_SERVICE}' --format '{{.Names}}' | head -n 1) \
      && [ -n \"\$c\" ] \
-     && docker inspect -f '{{(index .NetworkSettings.Networks \"${AGENTS_PROD_PG_NETWORK}\").IPAddress}}' \"\$c\""
+     && docker --context default inspect -f '{{(index .NetworkSettings.Networks \"${AGENTS_PROD_PG_NETWORK}\").IPAddress}}' \"\$c\""
 }
 
 while true; do

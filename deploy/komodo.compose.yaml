@@ -71,6 +71,8 @@ services:
       - -c
       - |
         until pg_isready -q; do sleep 5; done
+        # The first dump must include app and DBOS migrations, not an empty new database.
+        until psql -Atqc "SELECT to_regclass('public.runs') IS NOT NULL AND to_regclass('dbos.workflow_status') IS NOT NULL" | grep -qx t; do sleep 5; done
         while true; do
           f=/backups/agents-$$(date +%F).dump
           if pg_dump -Fc -f "$$f.tmp"; then mv "$$f.tmp" "$$f"; echo "backup $$f"; else rm -f "$$f.tmp"; echo "backup FAILED"; fi
