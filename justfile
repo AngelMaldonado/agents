@@ -108,7 +108,7 @@ deploy verb="image":
     tag=$(git rev-parse --short HEAD)
     case "{{verb}}" in
       image)
-        docker buildx build --platform linux/amd64 -t registry.cubytest.space/cuby/agents:$tag -t registry.cubytest.space/cuby/agents:latest --push .
+        docker --context {{ctx}} buildx build --platform linux/amd64 -t registry.cubytest.space/cuby/agents:$tag -t registry.cubytest.space/cuby/agents:latest --push .
         echo "pushed registry.cubytest.space/cuby/agents:$tag"
         ;;
       sandbox)
