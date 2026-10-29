@@ -1,23 +1,23 @@
 // The agent's inbox: every message, from any channel (web, webhook, cron), lands here and is
 // routed by what the agent is doing (Q15, Q23 and the accepted proposals 5 and 6):
-//   asleep                → a new run (new_conversation: the current conversation is archived first)
+//   asleep                → a new run, always in the current conversation
 //   queued / starting     → joins that run: it goes into the run's first prompt
 //   running               → follow-up: pi takes it as its next turn, same container
 //   blocked               → it is the answer: unblocks and goes in as a steer
-//   new_conversation while a run is live → waits for that run to end
+// Conversation resets are not supported, including legacy pending messages carrying that flag.
 // Routing is one agent at a time, in arrival order. It never runs inside a DBOS workflow (it starts
 // workflows): code that is in one asks for it with requestRoute and a plain loop does it.
 import { mkdirSync, writeFileSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { row, rows, exec, tx, DATA_DIR } from './db';
-import { checkRunnable, startRun, failRun, liveRunOf, toSupervisor, recordEvent, type Status } from './tasks';
-import { newConversation } from './agents';
+import { defaultConversation } from './conversations';
+import { checkRunnable, startRun, failRun, liveRunOf, toSupervisor, recordEvent, deliverHelp, type Status } from './tasks';
 
 export type Source = 'web' | 'hook' | 'cron';
 export type Attachment = { name: string; mime?: string; data: string };
 type Message = {
 	id: number; agent_id: number; source: Source; sender: string | null; schedule_name: string | null;
-	text: string; new_conversation: boolean; run_id: number | null; routed_as: string | null;
+	text: string; run_id: number | null; routed_as: string | null; conversation_id:number;
 };
 
 const MAX_FILES = 10;
@@ -33,10 +33,11 @@ export async function receive(
 	m: {
 		agentId: number; source: Source; text: string; sender?: string | null; personId?: number | null;
 		scheduleName?: string | null; context?: unknown; newConversation?: boolean; dedupeKey?: string | null;
-		attachments?: Attachment[];
+		attachments?: Attachment[]; conversationId?:number;
 	},
 	opts: { routeNow?: boolean } = {}
 ) {
+	if (m.newConversation) throw new Error('No se puede reiniciar la conversación del agente.');
 	const files = (m.attachments ?? []).slice(0, MAX_FILES + 1);
 	if (files.length > MAX_FILES) throw new Error(`Máximo ${MAX_FILES} adjuntos.`);
 	const decoded = files.map((f) => {
@@ -50,12 +51,21 @@ export async function receive(
 	if (!text && !decoded.length) throw new Error('El mensaje no tiene texto ni adjuntos.');
 
 	const stored = await tx(async (c) => {
+		const owner=await row<{person_id:number}>('select person_id from agents where id=$1 and deleted_at is null for update',[m.agentId],c);
+		if(!owner)throw new Error('El agente ya no existe.');
+		if(m.conversationId!==undefined && (m.source!=='web'||m.personId!==owner.person_id))throw new Error('Sólo el dueño puede escribir en esta conversación.');
+		if(m.dedupeKey){
+			const previous=await row<{conversation_id:number;text:string}>('select conversation_id,text from messages where agent_id=$1 and dedupe_key=$2',[m.agentId,m.dedupeKey],c);
+			if(previous){if(m.conversationId!==undefined && (previous.conversation_id!==m.conversationId||previous.text!==text))throw new Error('Esta petición ya contiene otro mensaje.');return null;}
+		}
+		const conv=m.conversationId===undefined?await defaultConversation(m.agentId,c):await row<{id:number}>('select id from conversations where id=$1 and agent_id=$2 and archived_at is null',[m.conversationId,m.agentId],c);
+		if(!conv)throw new Error('Reabre esta conversación antes de escribir.');
 		const ins = await row<{ id: number }>(
-			`insert into messages (agent_id, source, sender, person_id, schedule_name, text, context, new_conversation, dedupe_key)
+			`insert into messages (agent_id, source, sender, person_id, schedule_name, text, context, dedupe_key, conversation_id)
 			 values ($1, $2, $3, $4, $5, $6, $7, $8, $9)
 			 on conflict (agent_id, dedupe_key) do nothing returning id`,
 			[m.agentId, m.source, m.sender ?? null, m.personId ?? null, m.scheduleName ?? null, text,
-				m.context === undefined ? null : JSON.stringify(m.context), Boolean(m.newConversation), m.dedupeKey ?? null],
+				m.context === undefined ? null : JSON.stringify(m.context), m.dedupeKey ?? null,conv.id],
 			c
 		);
 		if (!ins) return null;
@@ -115,13 +125,19 @@ export async function startRouter() {
 
 const pending = (agentId: number) =>
 	rows<Message>(
-		`select id, agent_id, source, sender, schedule_name, text, new_conversation, run_id, routed_as
+		`select id, agent_id, source, sender, schedule_name, text, run_id, routed_as, conversation_id
 		 from messages where agent_id = $1 and routed_at is null order by id`,
 		[agentId]
 	);
 
 async function routeOnce(agentId: number) {
 	for (const m of await pending(agentId)) {
+		// Only the dedicated owner API creates pending run-bound unblock messages.
+		// Webhook context alone can never opt into this route or escape its old run.
+		if (m.routed_as === 'unblock' && m.run_id !== null) {
+			if (!await deliverHelp(m.id)) return;
+			continue;
+		}
 		const live = await liveRunOf(agentId);
 		if (!live) {
 			const agent = await row<{ id: number; person_id: number; model: string }>(
@@ -132,7 +148,6 @@ async function routeOnce(agentId: number) {
 				await exec('update messages set routed_at = now() where id = $1', [m.id]);
 				continue;
 			}
-			if (m.new_conversation) await newConversation(agentId);
 			try {
 				await checkRunnable(agent);
 				await startRun(agent, m.id, 10);
@@ -141,26 +156,29 @@ async function routeOnce(agentId: number) {
 			}
 			continue;
 		}
-		if (m.new_conversation) return; // after the live run ends (proposal 6)
+		if (live.conversation_id !== m.conversation_id) continue; // Another tab waits; never inject into its pi context.
+		if (live.kind === 'browser') continue; // The owner's browser session has no agent to hear it: it waits for the session to end.
 		if (await joinQueued(m.id, live.id)) continue;
 		const status = (await row<{ status: Status }>('select status from runs where id = $1', [live.id]))!.status;
 		if (status === 'queued' || status === 'starting') continue; // joinQueued lost a race: next pass
 		const files = await filesFor([m.id]);
 		const text = render(m, files.map((f) => f.name));
-		const ok = status === 'blocked'
+		const unblocks=status==='blocked' && m.source!=='web'; // Web answers use the exact run/round outbox above.
+		const ok = unblocks
 			? toSupervisor(live.id, [{ t: 'files', files }, { t: 'pi_cmd', cmd: { type: 'steer', message: text } }, { t: 'unblock' }])
 			: toSupervisor(live.id, [{ t: 'files', files }, { t: 'pi_cmd', cmd: { type: 'follow_up', message: text } }]);
 		if (!ok) return; // its supervisor is reconnecting: route again when it is back
-		const as = status === 'blocked' ? 'unblock' : 'follow_up';
+		const as = unblocks ? 'unblock' : 'follow_up';
 		await exec('update messages set run_id = $2, routed_as = $3, routed_at = now() where id = $1', [m.id, live.id, as]);
-		await recordEvent(live.id, status === 'blocked' ? 'steer' : 'follow_up', { text, source: m.source, message_id: m.id });
+		await recordEvent(live.id, unblocks ? 'steer' : 'follow_up', { text, source: m.source, message_id: m.id });
 	}
 }
 
 /** Joins a queued or starting run, under the run's row lock so the start can't miss it. */
 async function joinQueued(messageId: number, runId: number) {
 	return tx(async (c) => {
-		const r = await row<{ status: Status }>('select status from runs where id = $1 for update', [runId], c);
+		const r = await row<{ status: Status;conversation_id:number }>('select status,conversation_id from runs where id = $1 for update', [runId], c);
+		if (!await row('select 1 from messages where id=$1 and conversation_id=$2',[messageId,r?.conversation_id],c))return false;
 		if (r?.status !== 'queued' && r?.status !== 'starting') return false;
 		await exec("update messages set run_id = $2, routed_as = 'queued_with', routed_at = now() where id = $1", [messageId, runId], c);
 		return true;
@@ -191,7 +209,7 @@ export async function filesFor(messageIds: number[]) {
 /** A run's first prompt: the message that started it and every one that joined while it waited. */
 export async function startPrompt(runId: number) {
 	const ms = await rows<Message>(
-		`select id, agent_id, source, sender, schedule_name, text, new_conversation, run_id, routed_as
+		`select id, agent_id, source, sender, schedule_name, text, run_id, routed_as
 		 from messages where run_id = $1 and routed_as in ('new_run', 'queued_with') order by id`,
 		[runId]
 	);

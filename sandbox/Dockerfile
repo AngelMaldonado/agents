@@ -28,8 +28,23 @@ RUN HOME=/tmp/abhome agent-browser install \
 RUN useradd -m -u 1001 -s /bin/bash agent
 # The agent's state volume mounts here; an empty volume takes this owner on its first mount.
 RUN mkdir -p /home/agent/state && chown agent:agent /home/agent/state
+# pi's find requires --no-require-git (fd >=8.7); Bookworm has 8.6. Pin and verify
+# the upstream release at build time, never download executables during a run.
+RUN set -eu; \
+    case "$(dpkg --print-architecture)" in \
+      amd64) arch=x86_64; sha=2b6bfaae8c48f12050813c2ffe1884c61ea26e750d803df9c9114550a314cd14 ;; \
+      arm64) arch=aarch64; sha=996b9b1366433b211cb3bbedba91c9dbce2431842144d925428ead0adf32020b ;; \
+      *) echo 'Unsupported fd architecture' >&2; exit 1 ;; \
+    esac; \
+    curl -fsSL --retry 3 --connect-timeout 10 --max-time 90 "https://github.com/sharkdp/fd/releases/download/v10.3.0/fd-v10.3.0-${arch}-unknown-linux-musl.tar.gz" -o /tmp/fd.tar.gz; \
+    echo "$sha  /tmp/fd.tar.gz" | sha256sum -c -; \
+    tar -xzf /tmp/fd.tar.gz -C /tmp; \
+    install -m 0755 "/tmp/fd-v10.3.0-${arch}-unknown-linux-musl/fd" /usr/local/bin/fd; \
+    rm -rf /tmp/fd.tar.gz "/tmp/fd-v10.3.0-${arch}-unknown-linux-musl"
 COPY bin/ /usr/local/bin/
-COPY supervisor.mjs /opt/agents/supervisor.mjs
+COPY supervisor.mjs harness*.mjs harness*.ts /opt/agents/
+# Resolve pi's pinned TypeBox/API dependencies for the platform-owned extension (no npm at runtime).
+RUN ln -s /usr/local/lib/node_modules/@earendil-works/pi-coding-agent/node_modules /opt/agents/node_modules
 
 # --no-sandbox: the container is the sandbox (no new privileges, all capabilities dropped).
 # Headed on a virtual display (agent-browser starts Xvfb) and without the automation flag:
@@ -40,6 +55,7 @@ ENV AGENT_BROWSER_EXECUTABLE_PATH=/usr/local/bin/agents-chrome \
     AGENT_BROWSER_PROFILE=/home/agent/state/browser \
     AGENT_BROWSER_ARGS=--no-sandbox,--disable-blink-features=AutomationControlled,--lang=es-MX,--disk-cache-dir=/tmp/chrome-cache \
     AGENT_BROWSER_STREAM_PORT=9223 \
+    AGENT_BROWSER_STREAM_QUALITY=60 \
     AGENT_BROWSER_PLUGINS='[{"name":"agents","command":"agents-vault","capabilities":["credential.read"]}]' \
     TZ=America/Mexico_City \
     LANG=C.UTF-8

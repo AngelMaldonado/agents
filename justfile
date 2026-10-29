@@ -13,8 +13,9 @@ default:
 
 # ---- dev environment on reko-3 ----
 
-# dev: init | sync | watch | up | down | restart | logs [svc] | ps | open | session | stop | fake on|off | test | psql
-dev verb="up" arg="":
+# dev defaults to session: start the stack, continuous sync and logs in tmux.
+# dev: init | sync | watch | up | down | restart | logs [svc] | ps | open | session | stop | fake on|off | test | design | psql
+dev verb="session" arg="":
     #!/usr/bin/env bash
     set -euo pipefail
     case "{{verb}}" in
@@ -68,7 +69,12 @@ dev verb="up" arg="":
       test)
         # The server's tests against the dev Postgres' agents_test database, inside the server container.
         just dev sync
-        {{dc}} --project-directory {{remote}} exec -T server sh -c 'cd server && bun test'
+        {{dc}} --project-directory {{remote}} exec -T server sh -c 'cd server && AGENTS_DATABASE_URL="${AGENTS_TEST_DATABASE_URL:?missing test database}" bun test'
+        ;;
+      design)
+        # Isolated DB/API and fake GPT; actual dev sandbox initialization. Cleans up its own labels.
+        just dev sync
+        {{dc}} --project-directory {{remote}} exec -T server bun run scripts/design-smoke.ts
         ;;
       psql)
         # The dev database (throwaway; read-write).
@@ -97,6 +103,7 @@ check:
     cd server && bunx tsc --noEmit
     cd web && bunx tsc --noEmit
     cd server && bun test
+    cd web && bun test
 
 # ---- production (Komodo stack `agents` on reko-3) ----
 

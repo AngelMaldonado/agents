@@ -10,9 +10,10 @@ const NETWORK = process.env.AGENTS_SANDBOX_NETWORK ?? 'agents-sandbox';
 // Public resolvers: the sandbox bridge is egress-locked away from the LAN, its DNS included.
 const DNS = (process.env.AGENTS_SANDBOX_DNS ?? '1.1.1.1,9.9.9.9').split(',').filter(Boolean);
 
-async function call(method: string, path: string, body?: unknown, ok: number[] = []) {
+async function call(method: string, path: string, body?: unknown, ok: number[] = [], timeout?: number) {
 	const res = await fetch(`${API}${path}`, {
 		method,
+		signal: timeout ? AbortSignal.timeout(timeout) : undefined,
 		unix: SOCKET,
 		headers: body ? { 'content-type': 'application/json' } : undefined,
 		body: body ? JSON.stringify(body) : undefined
@@ -25,6 +26,37 @@ async function call(method: string, path: string, body?: unknown, ok: number[] =
 }
 
 export class DockerSandbox implements SandboxProvider {
+	async imageId(image: string): Promise<string> {
+		return (await call('GET', `/images/${encodeURIComponent(image)}/json`, undefined, [], 10000)).Id;
+	}
+
+	/** Only platform-owned code, fresh tmpfs, no volumes/secrets/network/model requests. */
+	async probeHarness(imageId: string, harness: unknown, instance: string) {
+		const created = await call('POST', '/containers/create', {
+			Image: imageId, Entrypoint: ['node', '/opt/agents/harness-probe.mjs'], Cmd: [], User: 'agent', Tty: true,
+			Env: [`AGENTS_HARNESS=${JSON.stringify(harness)}`],
+			Labels: { 'agents.instance': instance, 'agents.harness-validation': 'true' },
+			HostConfig: { NetworkMode: 'none', ReadonlyRootfs: true, CapDrop: ['ALL'], SecurityOpt: ['no-new-privileges'],
+				Memory: 512 * 1024 * 1024, MemorySwap: 512 * 1024 * 1024, NanoCpus: 1e9, PidsLimit: 64,
+				Tmpfs: { '/tmp': 'rw,nosuid,nodev,size=64m,mode=1777' }, LogConfig: { Type: 'json-file', Config: { 'max-size': '1m', 'max-file': '1' } } }
+		}, [], 10000);
+		try {
+			await call('POST', `/containers/${created.Id}/start`, undefined, [], 10000);
+			const deadline = Date.now() + 35000;
+			while ((await call('GET', `/containers/${created.Id}/json`, undefined, [], 5000)).State.Running) {
+				if (Date.now() > deadline) throw new Error('La prueba aislada agotó 35 segundos.');
+				await new Promise(r => setTimeout(r, 200));
+			}
+			const response = await fetch(`${API}/containers/${created.Id}/logs?stdout=true&stderr=true&tail=100`, { unix: SOCKET, signal: AbortSignal.timeout(10000) } as RequestInit);
+			const logs = await response.text();
+			const marker = logs.split(/\r?\n/).find(line => line.startsWith('AGENTS_HARNESS_PROBE '));
+			if (!marker) throw new Error(`La imagen no confirmó la prueba del harness: ${logs.slice(-1000)}`);
+			const report = JSON.parse(marker.slice('AGENTS_HARNESS_PROBE '.length));
+			if (!report.ok) throw new Error(String(report.error ?? 'pi no cargó el harness.').slice(0, 1000));
+			return report.runtime as { digest: string; tools: string[]; skills: string[]; plugins: unknown[] };
+		} finally { await call('DELETE', `/containers/${created.Id}?force=true&v=true`, undefined, [404,409], 10000); }
+	}
+
 	async start(spec: SandboxSpec) {
 		const created = await call('POST', `/containers/create?name=${encodeURIComponent(spec.name)}`, {
 			Image: spec.image,

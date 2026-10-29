@@ -1,8 +1,9 @@
 // The supervisor: PID 1's child inside every task's container (no dependencies, Node 24).
 //
 // It dials the backend with the bootstrap token (burnt on connect), opens the browser, relays its
-// frames read-only, runs `pi --mode rpc`, passes steer/follow-up/abort through, serves
-// agents-blocked and the vault plugin on 127.0.0.1:7777, and sends ~/work/out back when asked.
+// frames, runs `pi --mode rpc`, passes steer/follow-up/abort through, serves agents-blocked and the
+// vault plugin on 127.0.0.1:7777, and sends ~/work/out back when asked. While the owner has control
+// of the browser (takeover), pi's process group is stopped and the owner's input reaches Chrome.
 // If the link drops without a goodbye (the backend restarted: a deploy), it dials back with the
 // session token it got at start and sends what it could not, meanwhile pi keeps working.
 //
@@ -11,9 +12,11 @@
 // browser/ (the Chrome profile, AGENT_BROWSER_PROFILE).
 import { spawn } from 'node:child_process';
 import { createServer } from 'node:http';
-import { mkdirSync, writeFileSync, readdirSync, readFileSync, statSync, rmSync, symlinkSync, lstatSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, writeFileSync, readdirSync, readFileSync, statSync, rmSync, symlinkSync, lstatSync } from 'node:fs';
 import { join, extname } from 'node:path';
 import { execFile } from 'node:child_process';
+import { defaultHarness, runtimeToolNames } from './harness.ts';
+import { prepareHarness } from './harness-runtime.mjs';
 
 const SERVER = process.env.AGENTS_SERVER_URL;
 const TOKEN = process.env.AGENTS_TASK_TOKEN;
@@ -44,6 +47,8 @@ const log = (...a) => console.error('[supervisor]', ...a);
 let backend = null;
 let pi = null;
 let piReady = false; // the prompt went in: pi takes commands now
+let harnessReady = null;
+let expectedHarness = null;
 const piQueue = []; // steer/follow-up/abort that arrived before that
 let blockedWaitMs = 10 * 60_000;
 let session = null; // from the backend's start message; reconnects with it
@@ -81,11 +86,13 @@ function onBackend(raw) {
 	}
 	switch (msg.t) {
 		case 'start':
+			send({ t: 'caps', takeover: true }); // images before takeover never say so
 			session = msg.session ?? null;
 			blockedWaitMs = msg.blockedWaitMs ?? blockedWaitMs;
-			void start(msg);
+			void start(msg).catch((err) => send({ t: 'startup_error', message: err.message }));
 			break;
 		case 'resumed':
+			send({ t: 'caps', takeover: true });
 			log(`back on the backend; sending ${backlog.length} queued messages`);
 			while (backlog.length && backend?.readyState === 1) backend.send(JSON.stringify(backlog.shift()));
 			break;
@@ -120,28 +127,71 @@ function onBackend(raw) {
 			// A vault access was revoked mid-run: wipe that origin now.
 			void purgeOrigins(msg.purges ?? []).then((results) => send({ t: 'purged', results }));
 			break;
+		case 'control':
+			setControl(Boolean(msg.on));
+			break;
+		case 'input':
+			// Already checked by the backend: only the owner's events, only while in control.
+			if (control && stream?.readyState === 1) stream.send(JSON.stringify(msg.e));
+			break;
+		case 'nav':
+			if (control) void navigate(msg);
+			break;
 	}
+}
+
+// ---------- takeover: the owner drives the browser ----------
+
+let control = false;
+
+/** pi and everything it started (bash, agents-blocked) freeze while the owner drives. */
+function setControl(on) {
+	if (on === control) return;
+	control = on;
+	if (pi) {
+		try {
+			process.kill(-pi.pid, on ? 'SIGSTOP' : 'SIGCONT');
+		} catch (err) {
+			log(`could not ${on ? 'stop' : 'continue'} pi: ${err.message}`);
+		}
+	}
+	// The wait for an answer does not run out while the owner is busy in the browser.
+	if (blocked) {
+		clearTimeout(blocked.timer);
+		if (!on) blocked.timer = setTimeout(() => releaseBlocked(false), blockedWaitMs);
+	}
+}
+
+async function navigate(msg) {
+	const r = msg.action === 'open' ? await ab('open', String(msg.url ?? '')) : ['back', 'forward', 'reload'].includes(msg.action) ? await ab(msg.action) : null;
+	if (r?.err) send({ t: 'stderr', text: `navegación (${msg.action}): ${String(r.stderr || r.err.message).slice(0, 300)}` });
 }
 
 // ---------- the browser ----------
 
-function ab(...args) {
-	return new Promise((resolve) => execFile('agent-browser', args, { cwd: WORK, timeout: 60_000 }, (err, stdout, stderr) => resolve({ err, stdout, stderr })));
+function browserCommand(args, timeout) {
+	return new Promise((resolve) => execFile('agent-browser', args, { cwd: WORK, timeout }, (err, stdout, stderr) => resolve({ err, stdout, stderr })));
 }
+function ab(...args) { return browserCommand(args, 60_000); }
 
+let browserReady = false;
 let lastUrl = '';
+let lastBrowserFrame = null;
 let pending = null;
 let flushing = null;
 let watched = false; // someone has this agent's view open (the backend says so)
 let lastThumb = 0;
 const THUMB_MS = 1000;
+let stream = null;
 
 /**
- * Frames, read-only: nothing is ever written to the stream socket. A thumbnail a second always
- * (the gallery); the full stream, at most ~5 per second, only while someone watches the agent.
+ * Frames: a thumbnail a second always (the gallery); the full stream, at most ~5 per second (~10
+ * while the owner drives), only while someone watches the agent. Only takeover input is written
+ * to the stream socket.
  */
 function watchBrowser() {
 	const ws = new WebSocket(STREAM);
+	stream = ws;
 	ws.onmessage = (e) => {
 		let m;
 		try {
@@ -154,7 +204,10 @@ function watchBrowser() {
 		if (m.type !== 'frame') return;
 		const meta = { ...m.metadata, url: lastUrl };
 		const now = Date.now();
-		if (now - lastThumb >= THUMB_MS) {
+		lastBrowserFrame = { t: 'snapshot', jpeg: m.data, meta, at: now };
+		// A frame the link cannot take now is dropped, never queued: the next one replaces it.
+		const behind = (backend?.bufferedAmount ?? 0) > 512 * 1024;
+		if (now - lastThumb >= THUMB_MS && !behind) {
 			lastThumb = now;
 			send({ t: 'thumb', jpeg: m.data, meta });
 		}
@@ -163,12 +216,15 @@ function watchBrowser() {
 		if (!flushing) {
 			flushing = setTimeout(() => {
 				flushing = null;
-				if (pending && watched) send(pending);
+				if (pending && watched && (backend?.bufferedAmount ?? 0) <= 512 * 1024) send(pending);
 				pending = null;
-			}, 200);
+			}, control ? 66 : 200);
 		}
 	};
-	ws.onclose = () => setTimeout(watchBrowser, 1000);
+	ws.onclose = () => {
+		if (stream === ws) stream = null;
+		setTimeout(watchBrowser, 1000);
+	};
 	ws.onerror = () => {};
 }
 
@@ -245,11 +301,24 @@ async function purgeOrigins(purges) {
 // ---------- pi ----------
 
 async function start(msg) {
+	const prepared = prepareHarness(msg.harness ?? defaultHarness(), mkdtempSync('/tmp/agents-harness-'));
+	if (msg.harnessDigest && msg.harnessDigest !== prepared.digest) throw new Error('El manifiesto no coincide con la revisión fijada a la corrida.');
+	expectedHarness = prepared;
 	// GPT only: pi's one provider is OpenAI, through the backend's gateway.
 	writeFileSync(join(PI_DIR, 'models.json'), JSON.stringify({ providers: { openai: { baseUrl: `${SERVER}/llm/openai/v1` } } }));
-	const systemFile = join(HOME, '.pi', 'agents-system.md');
+	const systemFile = join(STATE, 'contract.md');
 	writeFileSync(systemFile, msg.system);
 	writeInbox(msg.files ?? []);
+	if (msg.kind === 'initialize') {
+		send({ t: 'initialization', step: 'workspace' });
+		await new Promise((resolve, reject) => execFile('/bin/sh', ['-ec', 'command -v pi; command -v agent-browser; command -v agents-login; command -v agents-blocked; pi --version; agent-browser --version'], { cwd: WORK, timeout: 30000 }, (err) => err ? reject(new Error('Faltan herramientas o no arrancan en esta imagen.')) : resolve()));
+		const probe = await new Promise((resolve, reject) => execFile('node', ['/opt/agents/harness-probe.mjs'], { timeout: 30000, maxBuffer: 1024 * 1024, env: { PATH: process.env.PATH, AGENTS_HARNESS: JSON.stringify(prepared.harness) } }, (err, stdout) => {
+			const marker = stdout.split(/\r?\n/).find(line => line.startsWith('AGENTS_HARNESS_PROBE '));
+			try { const report = JSON.parse(marker?.slice('AGENTS_HARNESS_PROBE '.length) ?? 'null'); if (err || !report?.ok || report.runtime.digest !== prepared.digest) throw new Error(report?.error ?? 'pi no confirmó el harness.'); resolve(report.runtime); } catch (error) { reject(error); }
+		}));
+		send({ t: 'harness', ...probe });
+		send({ t: 'initialization', step: 'tools' });
+	}
 
 	// The profile: wiped whole if asked, and freed from the locks a previous container left
 	// (Chrome refuses a profile "in use on another computer": every container has its own hostname).
@@ -259,31 +328,51 @@ async function start(msg) {
 	for (const f of ['SingletonLock', 'SingletonCookie', 'SingletonSocket']) rmSync(join(PROFILE, f), { force: true });
 
 	// A blank browser from the start, so the human sees the screen before the first command.
-	await ab('open', 'about:blank');
+	const opened = await ab('open', 'about:blank');
+	if (opened.err) throw new Error('Chrome no pudo abrirse.');
+	browserReady = true;
 	watchBrowser();
 	const origins = await purgeOrigins(purges.filter((p) => p.origin));
 	if (purges.length) send({ t: 'purged', results: [...whole.map((p) => ({ id: p.id, ok: true })), ...origins] });
+	if (msg.kind === 'initialize') {
+		const probe = await ab('get', 'url');
+		if (probe.err || !probe.stdout.includes('about:blank')) throw new Error('Chrome no respondió a la comprobación.');
+		send({ t: 'initialization', step: 'browser' });
+		send({ t: 'initialized' });
+		return; // No LLM turn or work is executed until the owner gives this agent a task.
+	}
+	// The owner's own browser session: Chrome only, driven by the owner; pi never starts.
+	if (msg.kind === 'browser') return;
 
 	// pi gets only the LLM token, as its provider key. The bootstrap token stays out of its env.
 	// Its session is the conversation's: same id, same history, in the agent's volume.
-	const env = { ...process.env, OPENAI_API_KEY: LLM_TOKEN, PI_CODING_AGENT_DIR: PI_DIR };
+	const env = { ...process.env, ...prepared.env, OPENAI_API_KEY: LLM_TOKEN, PI_CODING_AGENT_DIR: PI_DIR };
 	delete env.AGENTS_TASK_TOKEN;
 	delete env.AGENTS_LLM_TOKEN;
 	const session = msg.piSession ? ['--session-dir', PI_SESSIONS, '--session-id', msg.piSession] : ['--no-session'];
+	const loaded = new Promise((resolve, reject) => { harnessReady = { resolve, reject }; });
 	pi = spawn(
 		'pi',
-		['--mode', 'rpc', ...session, '--offline', '-ne', '-ns', '-nc', '--no-mcp', '--model', msg.model, '--append-system-prompt', systemFile],
-		{ cwd: WORK, env, stdio: ['pipe', 'pipe', 'pipe'] }
+		['--mode', 'rpc', ...session, '--offline', ...prepared.args, '--model', msg.model, '--append-system-prompt', systemFile],
+		// Its own process group, so a takeover can stop pi and whatever it started at once.
+		{ cwd: WORK, env, stdio: ['pipe', 'pipe', 'pipe'], detached: true }
 	);
+	if (control) setTimeout(() => { try { process.kill(-pi.pid, 'SIGSTOP'); } catch {} });
 	readLines(pi.stdout, onPiLine);
 	let stderrLines = 0;
 	readLines(pi.stderr, (line) => {
-		if (line.trim() && stderrLines++ < 50) send({ t: 'stderr', text: line });
+		if (line.startsWith('AGENTS_HARNESS_READY ')) onPiLine(line.slice('AGENTS_HARNESS_READY '.length));
+		else if (line.trim() && stderrLines++ < 50) send({ t: 'stderr', text: line });
 	});
+	pi.on('error', err => harnessReady?.reject(err));
 	pi.on('exit', (code) => {
+		harnessReady?.reject(new Error(`pi terminó antes de confirmar el harness (${code}).`));
 		send({ t: 'exit', code });
 		pi = null;
 	});
+	let timer;
+	try { await Promise.race([loaded, new Promise((_, reject) => { timer = setTimeout(() => reject(new Error('pi no confirmó el harness aprobado.')), 30000); })]); }
+	finally { clearTimeout(timer); harnessReady = null; }
 	pi.stdin.write(JSON.stringify({ id: 'task', type: 'prompt', message: msg.prompt }) + '\n');
 	piReady = true;
 	for (const cmd of piQueue.splice(0)) pi.stdin.write(JSON.stringify(cmd) + '\n');
@@ -312,6 +401,11 @@ function onPiLine(line) {
 	try {
 		ev = JSON.parse(line);
 	} catch {
+		return;
+	}
+	if (ev.type === 'agents_harness_ready') {
+		if (!expectedHarness || ev.digest !== expectedHarness.digest || JSON.stringify(ev.tools) !== JSON.stringify(runtimeToolNames(expectedHarness.harness))) harnessReady?.reject(new Error('Las herramientas efectivas no coinciden con el harness aprobado.'));
+		else { send({ t: 'harness', digest: ev.digest, tools: ev.tools, skills: ev.skills, plugins: ev.plugins }); harnessReady?.resolve(); }
 		return;
 	}
 	if (ev.type === 'response') {
@@ -395,6 +489,21 @@ async function collect() {
 		if (statSync(path).size > 10 * 1024 * 1024) continue;
 		send({ t: 'file', name, mime: MIME[extname(name).toLowerCase()] ?? 'application/octet-stream', data: readFileSync(path).toString('base64') });
 	}
+	// A quick initialization can finish before the stream's first frame. Capture the already
+	// opened browser in that case (5 s bound), without manufacturing an image or agent output.
+	if (!lastBrowserFrame && browserReady) {
+		const temp = mkdtempSync('/tmp/agents-final-browser-'), path = join(temp, 'screen.jpg');
+		try {
+			const [shot, url] = await Promise.all([
+				browserCommand(['screenshot', '--screenshot-format', 'jpeg', '--screenshot-quality', '70', path], 5000),
+				browserCommand(['get', 'url'], 1500)
+			]);
+			if (!shot.err && statSync(path).size <= 3 * 1024 * 1024) lastBrowserFrame = { t: 'snapshot', jpeg: readFileSync(path).toString('base64'), meta: { url: url.err ? lastUrl : url.stdout.trim() }, at: Date.now() };
+		} catch (err) { log(`No final browser capture: ${err.message}`); }
+		finally { rmSync(temp, { recursive: true, force: true }); }
+	}
+	// Preserve the last observed image even with no web viewer. It is not an agent output file.
+	if (lastBrowserFrame) send(lastBrowserFrame);
 	// The container is removed right after: close Chrome cleanly so cookies and storage reach the
 	// profile on disk (it writes them lazily, and a killed Chrome loses the last ones).
 	await ab('close');
@@ -405,6 +514,7 @@ async function collect() {
 
 function stop(why) {
 	log(why);
+	if (control) setControl(false);
 	pi?.kill('SIGTERM');
 	setTimeout(() => process.exit(0), 500);
 }

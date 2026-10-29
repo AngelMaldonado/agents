@@ -1,23 +1,23 @@
 // Each person's own: provider keys (write-only) and site logins for their agents (write-only).
 import { useEffect, useState } from 'react';
 import { api, ago, type Agent, type Credential, type Person } from './api';
+import { Button } from '@/components/ui/button';
+import { Input } from '@/components/ui/input';
+import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
 
 type KeyRow = { provider: 'openai'; last4: string; updated_at: number };
+type ProxyRow = { url: string; last4: string; updated_at: number };
+type Check = { total: number; catalog: { id: string; label: string; served: boolean }[] };
 
 export function Settings({ me, agents }: { me: Person; agents: Agent[] }) {
 	const mine = agents.filter((a) => a.person_id === me.id);
 	return (
 		<div className="page">
-			<h1>Ajustes de {me.name}</h1>
-			<Proxy />
-			<Keys />
-			<Vault agents={mine} />
+			<div className="page-head"><div><h1>Ajustes</h1><p className="muted">Credenciales y accesos de {me.name}. Los secretos se guardan cifrados.</p></div></div>
+			<Proxy /><Keys /><Vault agents={mine} />
 		</div>
 	);
 }
-
-type ProxyRow = { url: string; last4: string; updated_at: number };
-type Check = { total: number; catalog: { id: string; label: string; served: boolean }[] };
 
 function Proxy() {
 	const [proxy, setProxy] = useState<ProxyRow | null>(null);
@@ -26,66 +26,33 @@ function Proxy() {
 	const [check, setCheck] = useState<Check | null>(null);
 	const [error, setError] = useState('');
 	const [busy, setBusy] = useState(false);
-	useEffect(() => {
-		api('/keys').then((r) => {
-			setProxy(r.proxy);
-			if (r.proxy) setUrl(r.proxy.url);
-		});
-	}, []);
+	useEffect(() => { api('/keys').then((r) => { setProxy(r.proxy); if (r.proxy) setUrl(r.proxy.url); }); }, []);
 	const run = async (fn: () => Promise<any>) => {
-		setBusy(true);
-		setError('');
-		try {
-			await fn();
-		} catch (err) {
-			setError((err as Error).message);
-		} finally {
-			setBusy(false);
-		}
+		setBusy(true); setError('');
+		try { await fn(); } catch (err) { setError((err as Error).message); } finally { setBusy(false); }
 	};
 	return (
 		<section className="panel">
 			<h2>Tu CLIProxyAPI</h2>
-			<p className="muted">
-				Si tienes un CLIProxyAPI con tu cuenta de GPT, pon su URL y tu API key: todas tus tareas saldrán por él y la key de abajo deja de hacer falta. La key se guarda cifrada y no se vuelve a mostrar; los agentes nunca la ven.
-			</p>
-			<form
-				className="form"
-				onSubmit={(e) => {
-					e.preventDefault();
-					void run(async () => {
-						const r = await api('/proxy', { method: 'PUT', body: { url, key } });
-						setProxy(r.proxy);
-						setCheck(r.check);
-						setKey('');
-					});
-				}}
-			>
-				<div className="row wrap">
-					<input value={url} onChange={(e) => setUrl(e.target.value)} placeholder="http://192.168.20.x:8317 o https://proxy.ejemplo.com" />
-					<input type="password" value={key} onChange={(e) => setKey(e.target.value)} placeholder={proxy ? `Guardada · termina en …${proxy.last4}` : 'API key del proxy'} autoComplete="off" />
-					<button className="primary" disabled={busy || !url.trim() || !key.trim()}>{busy ? 'Probando…' : proxy ? 'Reemplazar' : 'Guardar'}</button>
-					{proxy && (
-						<>
-							<button type="button" disabled={busy} onClick={() => run(async () => setCheck((await api('/proxy/test', { method: 'POST' })).check))}>Probar</button>
-							<button type="button" className="ghost" onClick={() => run(async () => { await api('/proxy', { method: 'DELETE' }); setProxy(null); setCheck(null); })}>Quitar</button>
-						</>
-					)}
+			<p className="muted">Si tienes un CLIProxyAPI con tu cuenta de GPT, todas tus tareas saldrán por él y la key de abajo no hace falta. La key no se vuelve a mostrar; los agentes nunca la ven.</p>
+			<form className="form" onSubmit={(e) => {
+				e.preventDefault();
+				void run(async () => {
+					const r = await api('/proxy', { method: 'PUT', body: { url, key } });
+					setProxy(r.proxy); setCheck(r.check); setKey('');
+				});
+			}}>
+				<div className="grid items-end gap-4 xl:grid-cols-[minmax(0,1.3fr)_minmax(0,1fr)_auto]">
+					<label>URL del proxy<Input value={url} onChange={(e) => setUrl(e.target.value)} placeholder="https://proxy.ejemplo.com" /></label>
+					<label>API key del proxy<Input type="password" value={key} onChange={(e) => setKey(e.target.value)} placeholder={proxy ? `Guardada · termina en …${proxy.last4}` : 'API key'} autoComplete="off" /></label>
+					<div className="row wrap"><Button disabled={busy || !url.trim() || !key.trim()}>{busy ? 'Probando…' : proxy ? 'Reemplazar' : 'Guardar'}</Button>
+						{proxy && <><Button type="button" variant="outline" disabled={busy} onClick={() => run(async () => setCheck((await api('/proxy/test', { method: 'POST' })).check))}>Probar</Button><Button type="button" variant="ghost" disabled={busy} onClick={() => run(async () => { await api('/proxy', { method: 'DELETE' }); setProxy(null); setCheck(null); })}>Quitar</Button></>}
+					</div>
 				</div>
 				{proxy && <p className="muted small">En uso: {proxy.url} · key …{proxy.last4} · {ago(proxy.updated_at)}</p>}
-				{error && <p className="error">{error}</p>}
-				{check && (
-					<div className="small">
-						<p className="ok">Conectó: el proxy sirve {check.total} modelos.</p>
-						{check.catalog.map((m) => (
-							<div key={m.id} className={m.served ? 'ok' : 'muted'}>
-								{m.served ? '✓' : '✗'} {m.label} <code>{m.id.split('/')[1]}</code>
-								{!m.served && ' — tu proxy no lo sirve: los agentes con este modelo fallarán'}
-							</div>
-						))}
-					</div>
-				)}
-				<p className="muted small">La URL la abre el servidor en reko-3, no tu navegador: <code>localhost</code> de tu Mac no sirve; usa una IP de la LAN o de la tailnet.</p>
+				{error && <p role="alert" className="error">{error}</p>}
+				{check && <div className="rounded-md border bg-muted/30 p-4 text-xs"><p className="ok mb-2">Conectó: el proxy sirve {check.total} modelos.</p>{check.catalog.map((m) => <div key={m.id} className={m.served ? 'ok' : 'muted'}>{m.served ? '✓' : '—'} {m.label} <code>{m.id.split('/')[1]}</code>{!m.served && ' — tu proxy no lo sirve'}</div>)}</div>}
+				<p className="muted small">La URL la abre el servidor en reko-3, no tu navegador. Usa una IP de la LAN o tailnet; <code>localhost</code> de tu Mac no sirve.</p>
 			</form>
 		</section>
 	);
@@ -93,44 +60,30 @@ function Proxy() {
 
 function Keys() {
 	const [keys, setKeys] = useState<KeyRow[]>([]);
-	useEffect(() => {
-		api('/keys').then((r) => setKeys(r.keys));
-	}, []);
+	useEffect(() => { api('/keys').then((r) => setKeys(r.keys)); }, []);
 	return (
 		<section className="panel">
 			<h2>O tu API key de OpenAI</h2>
-			<p className="muted">Se usa sólo si no tienes un CLIProxyAPI propio. Las tareas que lanzas consumen tu cuenta. La key se guarda cifrada y no se vuelve a mostrar, ni siquiera al admin; los agentes nunca la ven.</p>
-			<KeyRowForm provider="openai" label="OpenAI (GPT)" hint="sk-proj-… · platform.openai.com" row={keys.find((k) => k.provider === 'openai')} onSaved={setKeys} />
+			<p className="muted">Se usa sólo si no tienes un CLIProxyAPI propio. Las tareas consumen tu cuenta. La key no se vuelve a mostrar, ni siquiera al admin.</p>
+			<KeyRowForm provider="openai" label="OpenAI (GPT)" hint="sk-proj-…" row={keys.find((k) => k.provider === 'openai')} onSaved={setKeys} />
 		</section>
 	);
 }
 
-function KeyRowForm({ provider, label, hint, row, onSaved }: { provider: string; label: string; hint: string; row?: KeyRow; onSaved: (k: KeyRow[]) => void }) {
+function KeyRowForm({ provider, label, hint, row, onSaved }: { provider: string; label: string; hint: string; row?: KeyRow; onSaved: (keys: KeyRow[]) => void }) {
 	const [value, setValue] = useState('');
 	const [error, setError] = useState('');
 	return (
-		<form
-			className="key-row"
-			onSubmit={async (e) => {
-				e.preventDefault();
-				setError('');
-				try {
-					const r = await api(`/keys/${provider}`, { method: 'PUT', body: { key: value } });
-					setValue('');
-					onSaved(r.keys);
-				} catch (err) {
-					setError((err as Error).message);
-				}
-			}}
-		>
-			<div className="key-label">
-				<b>{label}</b>
-				<div className="muted small">{row ? `Guardada · termina en …${row.last4} · ${ago(row.updated_at)}` : 'Sin key'}</div>
-			</div>
-			<input type="password" value={value} onChange={(e) => setValue(e.target.value)} placeholder={hint} autoComplete="off" />
-			<button className="primary" disabled={!value.trim()}>{row ? 'Reemplazar' : 'Guardar'}</button>
-			{row && <button type="button" className="ghost" onClick={async () => onSaved((await api(`/keys/${provider}`, { method: 'DELETE' })).keys)}>Quitar</button>}
-			{error && <p className="error">{error}</p>}
+		<form className="key-row" onSubmit={async (e) => {
+			e.preventDefault(); setError('');
+			try { const r = await api(`/keys/${provider}`, { method: 'PUT', body: { key: value } }); setValue(''); onSaved(r.keys); }
+			catch (err) { setError((err as Error).message); }
+		}}>
+			<div className="key-label"><b className="font-medium">{label}</b><div className="muted small mt-1">{row ? `Guardada · …${row.last4} · ${ago(row.updated_at)}` : 'Sin key'}</div></div>
+			<Input type="password" aria-label={`API key de ${label}`} value={value} onChange={(e) => setValue(e.target.value)} placeholder={hint} autoComplete="off" />
+			<Button disabled={!value.trim()}>{row ? 'Reemplazar' : 'Guardar'}</Button>
+			{row && <Button type="button" variant="ghost" onClick={async () => onSaved((await api(`/keys/${provider}`, { method: 'DELETE' })).keys)}>Quitar</Button>}
+			{error && <p role="alert" className="error">{error}</p>}
 		</form>
 	);
 }
@@ -141,9 +94,7 @@ function Vault({ agents }: { agents: Agent[] }) {
 	const [form, setForm] = useState({ name: '', loginUrl: '', username: '', password: '' });
 	const [error, setError] = useState('');
 	const load = () => api('/vault').then((r) => { setCreds(r.credentials); setUses(r.uses); });
-	useEffect(() => {
-		void load();
-	}, []);
+	useEffect(() => { void load(); }, []);
 	const toggle = async (c: Credential, agentId: number) => {
 		const next = c.agents.includes(agentId) ? c.agents.filter((a) => a !== agentId) : [...c.agents, agentId];
 		setCreds((await api(`/vault/${c.id}/grants`, { method: 'PUT', body: { agents: next } })).credentials);
@@ -151,74 +102,44 @@ function Vault({ agents }: { agents: Agent[] }) {
 	return (
 		<section className="panel">
 			<h2>Accesos a sitios</h2>
-			<p className="muted">Usuario y contraseña de sitios donde tus agentes necesitan entrar. El agente sólo conoce el nombre: escribe <code>agents-login nombre</code> y el navegador llena el formulario sin que el modelo vea el secreto. Sólo los agentes que marques pueden usar cada acceso, y sólo en su dominio.</p>
-			<table className="vault">
-				<thead><tr><th>Nombre</th><th>Sitio</th><th>Agentes con acceso</th><th /></tr></thead>
-				<tbody>
-					{creds.map((c) => (
-						<tr key={c.id}>
-							<td><code>{c.name}</code></td>
-							<td className="small">{c.origin}</td>
-							<td>
-								{agents.map((a) => (
-									<label key={a.id} className="chip">
-										<input type="checkbox" checked={c.agents.includes(a.id)} onChange={() => toggle(c, a.id)} /> {a.name}
-									</label>
-								))}
-								{!agents.length && <span className="muted small">Crea un agente primero</span>}
-							</td>
-							<td><button className="ghost" onClick={async () => confirm(`¿Borrar ${c.name}?`) && setCreds((await api(`/vault/${c.id}`, { method: 'DELETE' })).credentials)}>Borrar</button></td>
-						</tr>
-					))}
-					{!creds.length && <tr><td colSpan={4} className="muted">Sin accesos guardados.</td></tr>}
-				</tbody>
-			</table>
-			<form
-				className="form inline"
-				onSubmit={async (e) => {
-					e.preventDefault();
-					setError('');
-					try {
-						setCreds((await api('/vault', { body: form })).credentials);
-						setForm({ name: '', loginUrl: '', username: '', password: '' });
-					} catch (err) {
-						setError((err as Error).message);
-					}
-				}}
-			>
-				<h3>Agregar o reemplazar un acceso</h3>
-				<div className="row wrap">
-					<input placeholder="nombre (p. ej. steren)" value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} />
-					<input placeholder="URL de la página de login" value={form.loginUrl} onChange={(e) => setForm({ ...form, loginUrl: e.target.value })} />
-					<input placeholder="usuario" value={form.username} onChange={(e) => setForm({ ...form, username: e.target.value })} autoComplete="off" />
-					<input placeholder="contraseña" type="password" value={form.password} onChange={(e) => setForm({ ...form, password: e.target.value })} autoComplete="new-password" />
-					<button className="primary">Guardar</button>
+			<p className="muted">El agente conoce sólo el nombre: <code>agents-login nombre</code> llena el formulario sin mostrar el secreto al modelo. Sólo los agentes autorizados pueden usar el acceso, y sólo en su dominio.</p>
+			<Table className="vault"><TableHeader><TableRow><TableHead>Nombre</TableHead><TableHead>Sitio</TableHead><TableHead>Agentes con acceso</TableHead><TableHead><span className="sr-only">Acciones</span></TableHead></TableRow></TableHeader>
+				<TableBody>{creds.map((c) => <TableRow key={c.id}>
+					<TableCell><code>{c.name}</code></TableCell><TableCell className="text-xs">{c.origin}</TableCell>
+					<TableCell>{agents.map((a) => <label key={a.id} className="chip"><input type="checkbox" checked={c.agents.includes(a.id)} onChange={() => toggle(c, a.id)} />{a.name}</label>)}{!agents.length && <span className="muted small">Crea un agente primero</span>}</TableCell>
+					<TableCell><Button variant="danger-ghost" size="sm" onClick={async () => confirm(`¿Borrar ${c.name}?`) && setCreds((await api(`/vault/${c.id}`, { method: 'DELETE' })).credentials)}>Borrar</Button></TableCell>
+				</TableRow>)}{!creds.length && <TableRow><TableCell colSpan={4} className="py-8 text-center text-muted-foreground">Sin accesos guardados.</TableCell></TableRow>}</TableBody>
+			</Table>
+			<form className="form mt-6 border-t pt-5" onSubmit={async (e) => {
+				e.preventDefault(); setError('');
+				try { setCreds((await api('/vault', { body: form })).credentials); setForm({ name: '', loginUrl: '', username: '', password: '' }); }
+				catch (err) { setError((err as Error).message); }
+			}}>
+				<h3 className="!mt-0 !mb-0">Agregar o reemplazar un acceso</h3>
+				<div className="grid gap-4 md:grid-cols-2 2xl:grid-cols-4">
+					<label>Nombre del acceso<Input placeholder="p. ej. proveedor" value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} /></label>
+					<label>URL de inicio de sesión<Input placeholder="https://sitio.com/login" value={form.loginUrl} onChange={(e) => setForm({ ...form, loginUrl: e.target.value })} /></label>
+					<label>Usuario<Input value={form.username} onChange={(e) => setForm({ ...form, username: e.target.value })} autoComplete="off" /></label>
+					<label>Contraseña<Input type="password" value={form.password} onChange={(e) => setForm({ ...form, password: e.target.value })} autoComplete="new-password" /></label>
 				</div>
-				{error && <p className="error">{error}</p>}
+				<div><Button>Guardar acceso</Button></div>
+				{error && <p role="alert" className="error">{error}</p>}
 				<p className="muted small">Sin segundo factor por ahora: si un sitio lo pide, el agente se declara atascado y lo salta.</p>
 			</form>
-			<h3>Últimos usos</h3>
-			<UsesTable uses={uses} />
+			<h3>Últimos usos</h3><UsesTable uses={uses} />
 		</section>
 	);
 }
 
 export function UsesTable({ uses, showPerson }: { uses: any[]; showPerson?: boolean }) {
 	return (
-		<table className="uses">
-			<tbody>
-				{uses.map((u) => (
-					<tr key={u.id}>
-						<td className="small">{new Date(u.at).toLocaleString('es-MX')}</td>
-						{showPerson && <td>{u.person}</td>}
-						<td><code>{u.credential_name}</code></td>
-						<td className="small">tarea #{u.task_id}</td>
-						<td className={u.ok ? 'ok' : 'error'}>{u.ok ? 'entregada' : 'negada'}</td>
-						<td className="small muted">{u.detail}</td>
-					</tr>
-				))}
-				{!uses.length && <tr><td className="muted">Nadie ha usado un acceso.</td></tr>}
-			</tbody>
-		</table>
+		<Table className="uses"><TableBody>
+			{uses.map((u) => <TableRow key={u.id}>
+				<TableCell className="text-xs">{new Date(u.at).toLocaleString('es-MX')}</TableCell>{showPerson && <TableCell>{u.person}</TableCell>}
+				<TableCell><code>{u.credential_name}</code></TableCell><TableCell className="text-xs">tarea #{u.task_id}</TableCell>
+				<TableCell className={u.ok ? 'ok' : 'error'}>{u.ok ? 'entregada' : 'negada'}</TableCell><TableCell className="text-xs text-muted-foreground">{u.detail}</TableCell>
+			</TableRow>)}
+			{!uses.length && <TableRow><TableCell colSpan={showPerson ? 6 : 5} className="py-6 text-muted-foreground">Nadie ha usado un acceso.</TableCell></TableRow>}
+		</TableBody></Table>
 	);
 }

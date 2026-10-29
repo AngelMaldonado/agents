@@ -8,7 +8,9 @@ import { migrate } from './db';
 import { startDbos } from './dbos';
 import * as people from './people';
 import * as agents from './agents';
+import * as designs from './designs';
 import * as tasks from './tasks';
+import * as conversations from './conversations';
 import * as vault from './vault';
 import * as hub from './hub';
 import { settings, saveSettings, loadSettings } from './settings';
@@ -22,6 +24,7 @@ import * as channels from './channels';
 import * as inbox from './inbox';
 import * as monitor from './monitor';
 import { verify, checkLink } from './sign';
+import { artifactHeaders, readPreview } from './artifact-preview';
 
 checkMasterKey();
 await migrate();
@@ -101,6 +104,7 @@ app.post('/hooks/:token', async (c) => {
 		return c.json({ error: 'invalid JSON' }, 400);
 	}
 	if (typeof body !== 'object' || body === null) return c.json({ error: 'the body must be a JSON object' }, 400);
+	if (body.new_conversation !== undefined && body.new_conversation !== false) return c.json({ error: 'No se puede reiniciar la conversación del agente.' }, 400);
 	try {
 		const r = await inbox.receive({
 			agentId: hook.agent_id,
@@ -108,7 +112,6 @@ app.post('/hooks/:token', async (c) => {
 			text: typeof body.text === 'string' ? body.text : '',
 			sender: typeof body.from === 'string' ? body.from.slice(0, 200) : null,
 			context: body.context,
-			newConversation: body.new_conversation === true,
 			attachments: Array.isArray(body.attachments) ? body.attachments : [],
 			dedupeKey: c.req.header('idempotency-key')?.slice(0, 200) || null
 		});
@@ -132,7 +135,7 @@ app.get('/api/public/runs/:id/files/:name', async (c) => {
 	if (!checkLink(c.req.path, c.req.query('exp'), c.req.query('sig'))) return c.json({ error: 'expired or invalid link' }, 403);
 	const f = await tasks.file(Number(c.req.param('id')), decodeURIComponent(c.req.param('name')));
 	if (!f) return c.json({ error: 'not found' }, 404);
-	return new Response(Bun.file(f.path), { headers: { 'content-type': f.mime } });
+	return new Response(Bun.file(f.path), { headers: artifactHeaders(c.req.param('name'), true) });
 });
 
 // ---------- session ----------
@@ -249,12 +252,39 @@ app.delete('/api/keys/:provider', async (c) => {
 
 app.get('/api/agents', async (c) => c.json({ agents: await agents.visible(c.get('me')) }));
 
-app.post('/api/agents', async (c) => {
+// Creation is now an explicit approval of a stored contract, not a form bypass.
+app.post('/api/agents', (c) => c.json({ error: 'Define y aprueba el contrato en Nuevo agente.' }, 409));
+
+app.post('/api/designs', async (c) => {
+	try { return c.json({ design: await designs.create(c.get('me').id, await c.req.json()) }); }
+	catch (err) { return fail(c, err); }
+});
+app.get('/api/designs/:id', async (c) => {
+	try { return c.json({ design: await designs.get(c.get('me').id, c.req.param('id')) }); }
+	catch (err) { return fail(c, err, 404); }
+});
+app.post('/api/designs/:id/messages', async (c) => {
+	try { return c.json({ design: await designs.message(c.get('me').id, c.req.param('id'), await c.req.json(), c.req.raw.signal) }); }
+	catch (err) { return fail(c, err); }
+});
+app.post('/api/designs/:id/validate', async (c) => {
+	try { return c.json({ design: await designs.testHarness(c.get('me').id, c.req.param('id'), (await c.req.json()).version) }); }
+	catch (err) { return fail(c, err); }
+});
+app.post('/api/designs/:id/approve', async (c) => {
 	try {
-		return c.json({ agent: await agents.create(c.get('me').id, await c.req.json()) });
-	} catch (err) {
-		return fail(c, err);
-	}
+		let design = await designs.approve(c.get('me').id, c.req.param('id'), (await c.req.json()).version);
+		if (!design.agent_id && !design.init_run_id && !design.last_error) design = await designs.initialize(c.get('me').id, design.id, c.get('me').admin, { retry: false });
+		return c.json({ design });
+	} catch (err) { return fail(c, err); }
+});
+app.post('/api/designs/:id/initialize', async (c) => {
+	try { return c.json({ design: await designs.initialize(c.get('me').id, c.req.param('id'), c.get('me').admin, { previousRunId: (await c.req.json().catch(() => ({}))).runId }) }); }
+	catch (err) { return fail(c, err); }
+});
+app.get('/api/agents/:id/configuration', async (c) => {
+	try { return c.json(await designs.configuration(c.get('me'), Number(c.req.param('id')))); }
+	catch (err) { return fail(c, err, 404); }
 });
 
 async function ownAgent(c: Context<Env>) {
@@ -275,6 +305,8 @@ app.patch('/api/agents/:id', async (c) => {
 app.delete('/api/agents/:id', async (c) => {
 	const a = await ownAgent(c);
 	if (!a) return c.json({ error: 'No es tuyo.' }, 404);
+	const input = await c.req.json().catch(() => null);
+	if (input?.confirmName !== a.name) return c.json({ error: 'Escribe el nombre exacto del agente para confirmar el retiro.' }, 400);
 	await agents.retire(a);
 	// Its schedules would keep firing at a retired agent: they go too.
 	for (const s of await channels.schedules(a.id)) await channels.deleteSchedule(a.id, s.name);
@@ -315,6 +347,14 @@ app.get('/api/tasks/:id', async (c) => {
 	});
 });
 
+// Same ownership rules as task details/files; never expose a browser image publicly.
+app.get('/api/tasks/:id/snapshot', async (c) => {
+	const t = await seeableTask(c);
+	if (!t) return c.json({ error: 'No existe.' }, 404);
+	c.header('Cache-Control', 'private, no-store');
+	return c.json({ snapshot: tasks.snapshot(t.id) });
+});
+
 // Steer and follow-up: only the owner. The admin can watch and cancel, never steer.
 app.post('/api/tasks/:id/steer', async (c) => {
 	const t = await tasks.getTask(Number(c.req.param('id')));
@@ -322,6 +362,60 @@ app.post('/api/tasks/:id/steer', async (c) => {
 	const { text, kind } = await c.req.json();
 	try {
 		await tasks.steer(t.id, String(text ?? ''), kind === 'follow_up' ? 'follow_up' : 'steer');
+		return c.json({ ok: true });
+	} catch (err) {
+		return fail(c, err);
+	}
+});
+
+app.post('/api/tasks/:id/help', async (c) => {
+ const t = await tasks.getTask(Number(c.req.param('id')));
+ if (!t || t.person_id !== c.get('me').id) return c.json({ error: 'Sólo el dueño de la tarea la dirige.' }, 403);
+ try { return c.json({ ok: true, ...await tasks.answerHelp(t.id, await c.req.json()) }); }
+ catch (err) { return fail(c, err); }
+});
+
+// ---------- takeover: only the owner drives the agent's browser; the admin can only watch ----------
+
+app.post('/api/agents/:id/browser', async (c) => {
+	const a = await ownAgent(c);
+	if (!a) return c.json({ error: 'Sólo el dueño abre el navegador de su agente.' }, 403);
+	try {
+		const prompt = 'Abrí el navegador del agente para iniciar sesión o guardar métodos de pago.';
+		return c.json({ task: tasks.publicTask(await tasks.enqueue(a, prompt, { admin: c.get('me').admin, kind: 'browser' })) });
+	} catch (err) {
+		return fail(c, err);
+	}
+});
+
+app.post('/api/tasks/:id/control', async (c) => {
+	const t = await tasks.getTask(Number(c.req.param('id')));
+	if (!t || t.person_id !== c.get('me').id) return c.json({ error: 'Sólo el dueño toma el control del navegador.' }, 403);
+	try {
+		await tasks.setControl(t.id, Boolean((await c.req.json()).on));
+		return c.json({ ok: true });
+	} catch (err) {
+		return fail(c, err);
+	}
+});
+
+app.post('/api/tasks/:id/navigate', async (c) => {
+	const t = await tasks.getTask(Number(c.req.param('id')));
+	if (!t || t.person_id !== c.get('me').id) return c.json({ error: 'Sólo el dueño maneja el navegador.' }, 403);
+	try {
+		const { action, url } = await c.req.json();
+		await tasks.navigate(t.id, String(action ?? ''), url);
+		return c.json({ ok: true });
+	} catch (err) {
+		return fail(c, err);
+	}
+});
+
+app.post('/api/tasks/:id/close', async (c) => {
+	const t = await tasks.getTask(Number(c.req.param('id')));
+	if (!t || t.person_id !== c.get('me').id) return c.json({ error: 'Sólo el dueño cierra su navegador.' }, 403);
+	try {
+		await tasks.closeBrowser(t.id);
 		return c.json({ ok: true });
 	} catch (err) {
 		return fail(c, err);
@@ -339,12 +433,23 @@ app.post('/api/tasks/:id/cancel', async (c) => {
 	}
 });
 
+app.get('/api/tasks/:id/files/:name/preview', async (c) => {
+ const t = await seeableTask(c);
+ if (!t) return c.json({ error: 'No existe.' }, 404);
+ c.header('Cache-Control', 'private, no-store');
+ const name = c.req.param('name');
+ const f = await tasks.file(t.id, name);
+ if (!f) return c.json({ error: 'No existe.' }, 404);
+ try { return c.json({ agentId: t.agent_id, runId: t.id, ...await readPreview(f.path, name), artifacts: await tasks.artifacts(t.id) }); }
+ catch (err) { return fail(c, err); }
+});
+
 app.get('/api/tasks/:id/files/:name', async (c) => {
 	const t = await seeableTask(c);
 	if (!t) return c.json({ error: 'No existe.' }, 404);
 	const f = await tasks.file(t.id, c.req.param('name'));
 	if (!f) return c.json({ error: 'No existe.' }, 404);
-	return new Response(Bun.file(f.path), { headers: { 'content-type': f.mime, 'cache-control': 'private, max-age=86400' } });
+	return new Response(Bun.file(f.path), { headers: artifactHeaders(c.req.param('name'), c.req.query('download') === '1') });
 });
 
 // ---------- an agent's channels (owner only: they hold its secrets) ----------
@@ -429,13 +534,47 @@ app.delete('/api/agents/:id/schedules/:name', async (c) => {
 app.get('/api/agents/:id/conversations', async (c) => {
 	const a = await agents.seeable(c.get('me'), Number(c.req.param('id')));
 	if (!a) return c.json({ error: 'No existe.' }, 404);
+	c.header('Cache-Control','private, no-store');
 	return c.json({ conversations: await agents.conversations(a.id), profileResetPending: await agents.pendingProfileReset(a.id) });
 });
 
 app.post('/api/agents/:id/conversations', async (c) => {
 	const a = await ownAgent(c);
-	if (!a) return c.json({ error: 'Sólo el dueño empieza una conversación nueva.' }, 403);
-	return c.json({ conversations: await agents.newConversation(a.id) });
+	if (!a) return c.json({ error: 'Sólo el dueño puede consultar esta operación.' }, 403);
+	const body=await c.req.json().catch(()=>null);
+	// The old empty POST was a destructive reset. It stays unavailable; new tabs require an explicit identity.
+	if(!body?.requestId)return c.json({error:'No se reinicia la conversación. Abre una nueva explícitamente.'},410);
+	try{return c.json({conversation:await conversations.create(a.id,body.requestId)});}catch(err){return fail(c,err);}
+});
+
+app.patch('/api/agents/:id/conversations/:conversation',async c=>{
+ const a=await ownAgent(c);if(!a)return c.json({error:'Sólo el dueño administra las conversaciones.'},403);
+ const body=await c.req.json().catch(()=>null);if(typeof body?.archived!=='boolean')return c.json({error:'Indica si quieres cerrar o reabrir el tab.'},400);
+ try{return c.json({conversation:await conversations.archive(a.id,Number(c.req.param('conversation')),body.archived)});}catch(err){return fail(c,err);}
+});
+app.get('/api/agents/:id/conversations/:conversation',async c=>{
+ const a=await agents.seeable(c.get('me'),Number(c.req.param('id')));if(!a)return c.json({error:'No existe.'},404);
+ const id=Number(c.req.param('conversation'));if(!await conversations.get(a.id,id))return c.json({error:'No existe.'},404);
+ const before=c.req.query('before')===undefined?undefined:Number(c.req.query('before'));
+ if(before!==undefined&&(!Number.isSafeInteger(before)||before<=0))return c.json({error:'Página inválida.'},400);
+ c.header('Cache-Control','private, no-store');return c.json(await conversations.transcript(a.id,id,before));
+});
+app.post('/api/agents/:id/conversations/:conversation/messages',async c=>{
+ const a=await ownAgent(c);if(!a)return c.json({error:'Sólo el dueño puede escribir en esta conversación.'},403);
+ const id=Number(c.req.param('conversation'));if(!await conversations.get(a.id,id))return c.json({error:'No existe.'},404);
+ const body=await c.req.json().catch(()=>null);
+ if(typeof body?.text!=='string'||!body.text.trim()||body.text.length>4000)return c.json({error:'Escribe un mensaje de hasta 4000 caracteres.'},400);
+ try{
+  const key=conversations.requestKey(body.requestId);
+  if(body.replyTo!==undefined){
+   const {runId,round}=body.replyTo??{};
+   if(!Number.isSafeInteger(runId)||!Number.isSafeInteger(round))throw new Error('La solicitud de ayuda cambió. Recarga antes de responder.');
+   const t=await tasks.getTask(runId);if(!t||t.agent_id!==a.id||t.conversation_id!==id)throw new Error('La solicitud no pertenece a esta conversación.');
+   return c.json({ok:true,...await tasks.answerHelpText(runId,round,body.text,key)});
+  }
+  const routing=await inbox.receive({agentId:a.id,personId:c.get('me').id,source:'web',conversationId:id,text:body.text,dedupeKey:`chat:${key}`},{routeNow:false});
+  return c.json({ok:true,...routing});
+ }catch(err){return fail(c,err);}
 });
 
 app.post('/api/agents/:id/profile/reset', async (c) => {
@@ -516,7 +655,8 @@ app.delete('/api/admin/people/:id', async (c) => {
 
 // ---------- browsers' live feed ----------
 
-// The browser says what it is looking at: {t:'watch'|'unwatch', agentId} and {t:'monitor', on}.
+// The browser says what it is looking at: {t:'watch'|'unwatch', agentId} and {t:'monitor', on};
+// during a takeover it also sends {t:'input', agentId, e}.
 app.get(
 	'/ws',
 	upgradeWebSocket((c) => {
@@ -528,7 +668,7 @@ app.get(
 				void me.then((person) => {
 					if (closed) return;
 					if (!person) return ws.close(4401, 'login');
-					viewer = hub.join(person, (d: string) => ws.send(d));
+					viewer = hub.join(person, (d: string) => ws.send(d), () => ((ws.raw as { getBufferedAmount?: () => number } | undefined)?.getBufferedAmount?.() ?? 0) > hub.BACKLOG_BYTES);
 				});
 			},
 			async onMessage(e) {
@@ -539,7 +679,10 @@ app.get(
 				} catch {
 					return;
 				}
-				if (m.t === 'watch') {
+				if (m.t === 'input') {
+					// Takeover input; tasks.input drops it unless this person has control of that agent.
+					tasks.input(viewer.person.id, Number(m.agentId), m.e);
+				} else if (m.t === 'watch') {
 					const a = await agents.seeable(viewer.person, Number(m.agentId));
 					if (a && viewer) hub.watch(viewer, a.id, a.person_id);
 				} else if (m.t === 'unwatch') {

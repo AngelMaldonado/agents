@@ -1,108 +1,79 @@
-import { useState } from 'react';
-import { api, isLive, ago, type Agent, type Person, type PublicSettings } from './api';
+import { ArrowUpRight, Bot, Plus } from 'lucide-react';
+import { isLive, ago, type Agent, type Person, type PublicSettings } from './api';
 import { Character, STATE_LABEL, type CharState } from './Character';
 import { Browser } from './Browser';
 import { useTick } from './live';
+import { Badge } from '@/components/ui/badge';
+import { Button } from '@/components/ui/button';
+import { Card } from '@/components/ui/card';
 
 export function stateOf(a: Agent): CharState {
-	if (!a.task) return 'idle';
-	if (a.task.status === 'queued') return 'idle';
+	if (!a.task || a.task.status === 'queued') return 'idle';
 	return a.task.state;
 }
 
-export function Gallery({ agents, me, settings, onOpen, onChanged }: {
+export function Gallery({ agents, me, settings, onOpen }: {
 	agents: Agent[]; me: Person; settings: PublicSettings; onOpen: (id: number) => void; onChanged: () => void;
 }) {
 	useTick(5000);
-	const [creating, setCreating] = useState(false);
 	const mine = agents.filter((a) => a.person_id === me.id);
 	const others = agents.filter((a) => a.person_id !== me.id);
 	const running = agents.filter((a) => isLive(a.task) && a.task!.status !== 'queued').length;
 	return (
 		<div className="page">
-			<div className="page-head">
-				<div>
-					<h1>Tus agentes</h1>
-					<p className="muted">{running} trabajando ahora · hasta {settings.maxConcurrent} a la vez</p>
+				<div className="page-head">
+					<div>
+						<div className="flex items-center gap-3"><h1>Tus agentes</h1><Badge variant="secondary">{mine.length}</Badge></div>
+						<p className="muted">{running} trabajando ahora · hasta {settings.maxConcurrent} a la vez</p>
+					</div>
+					<Button asChild><a href="#/new"><Plus aria-hidden="true" />Nuevo agente</a></Button>
 				</div>
-				<button className="primary" onClick={() => setCreating(true)}>+ Nuevo agente</button>
-			</div>
-			{creating && <NewAgent settings={settings} onClose={() => setCreating(false)} onCreated={(id) => { setCreating(false); onChanged(); onOpen(id); }} />}
-			{!mine.length && !creating && (
+			{!mine.length && (
 				<div className="empty">
-					<p>Aún no tienes agentes. Crea uno, dale un rol (p. ej. «investiga proveedores y resume lo que encuentres») y escríbele una tarea.</p>
+					<Bot className="mx-auto mb-4 size-8 text-muted-foreground" aria-hidden="true" />
+					<h2 className="text-foreground">Tu primer agente empieza con una conversación</h2>
+					<p className="mx-auto mt-2 max-w-md">Cuéntale a la IA qué trabajo quieres delegar. Revisarás su contrato antes de crearlo y después podrás seguir su trabajo en vivo.</p>
 				</div>
 			)}
-			<div className="grid">{mine.map((a) => <Card key={a.id} agent={a} onOpen={onOpen} />)}</div>
+			<div className="agent-grid">{mine.map((a) => <AgentCard key={a.id} agent={a} onOpen={onOpen} />)}</div>
 			{others.length > 0 && (
-				<>
-					<h2 className="section">De otras personas <span className="muted">(admin)</span></h2>
-					<div className="grid">{others.map((a) => <Card key={a.id} agent={a} onOpen={onOpen} showOwner />)}</div>
-				</>
+				<section aria-label="Agentes de otras personas">
+					<h2 className="section">De otras personas <Badge variant="outline">Admin</Badge></h2>
+					<div className="agent-grid">{others.map((a) => <AgentCard key={a.id} agent={a} onOpen={onOpen} showOwner />)}</div>
+				</section>
 			)}
 		</div>
 	);
 }
 
-function Card({ agent, onOpen, showOwner }: { agent: Agent; onOpen: (id: number) => void; showOwner?: boolean }) {
+function AgentCard({ agent, onOpen, showOwner }: { agent: Agent; onOpen: (id: number) => void; showOwner?: boolean }) {
 	const state = stateOf(agent);
 	const t = agent.task;
 	const live = isLive(t) && t!.status !== 'queued';
+	const setup = !showOwner && agent.setup_design_id && (!t || (t.kind === 'initialize' && t.status !== 'done'));
 	return (
-		<button className={`card state-${state}`} onClick={() => onOpen(agent.id)}>
+		<Card className={`agent-card relative gap-0 overflow-hidden rounded-card p-0 shadow-none state-${state}`}>
+			<a href={setup ? `#/new/${agent.setup_design_id}` : `#/agent/${agent.id}`} className="agent-card-link" aria-label={`Abrir ${agent.name}`} onClick={(e) => {
+				if (e.metaKey || e.ctrlKey || e.shiftKey || e.altKey) return;
+				e.preventDefault(); if (setup) location.hash = `/new/${agent.setup_design_id}`; else onOpen(agent.id);
+			}} />
 			<div className="card-top">
-				<Character seed={agent.seed} state={state} size={88} />
+				<Character seed={agent.seed} state={state} size={56} />
 				<div className="card-id">
-					<div className="name">{agent.name}</div>
-					{showOwner && <div className="muted small">de {agent.owner}</div>}
-					<div className={`pill s-${state}`}>{t?.status === 'queued' ? 'En cola' : STATE_LABEL[state]}</div>
-					<div className="muted small">{agent.model.split('/')[1]}</div>
+					<h2 className="name">{agent.name}</h2>
+					<p className="truncate text-xs text-muted-foreground">{showOwner ? `${agent.owner} · ` : ''}{agent.model.split('/')[1]}</p>
 				</div>
+				<ArrowUpRight className="size-4 shrink-0 text-muted-foreground" aria-hidden="true" />
+			</div>
+			<div className="flex min-w-0 items-center gap-2 px-5 pb-4">
+				<Badge variant="outline" className={`pill s-${state}`}>{setup ? (t && ['error', 'cancelled', 'incomplete'].includes(t.status) ? 'Revisar inicialización' : 'Inicializando') : t?.status === 'queued' ? 'En cola' : STATE_LABEL[state]}</Badge>
+				<span className="truncate text-xs text-muted-foreground">{agent.role || 'Sin rol definido'}</span>
 			</div>
 			<Browser agentId={agent.id} live={live} compact />
 			<div className="card-foot">
-				{t ? (
-					<>
-						<span className="prompt" title={t.prompt}>{t.prompt}</span>
-						<span className="muted small">{ago(t.created_at)}</span>
-					</>
-				) : (
-					<span className="muted">{agent.role || 'Sin tareas todavía'}</span>
-				)}
+				<span className="prompt text-muted-foreground" title={t?.prompt}>{t?.prompt || 'Sin tareas todavía'}</span>
+				{t && <span className="shrink-0 text-muted-foreground">{ago(t.created_at)}</span>}
 			</div>
-		</button>
-	);
-}
-
-function NewAgent({ settings, onClose, onCreated }: { settings: PublicSettings; onClose: () => void; onCreated: (id: number) => void }) {
-	const [name, setName] = useState('');
-	const [role, setRole] = useState('');
-	const [model, setModel] = useState(settings.models[0]?.id ?? '');
-	const [error, setError] = useState('');
-	const submit = async (e: React.FormEvent) => {
-		e.preventDefault();
-		try {
-			const { agent } = await api('/agents', { body: { name, role, model } });
-			onCreated(agent.id);
-		} catch (err) {
-			setError((err as Error).message);
-		}
-	};
-	return (
-		<form className="panel form" onSubmit={submit}>
-			<h3>Nuevo agente</h3>
-			<label>Nombre<input value={name} onChange={(e) => setName(e.target.value)} placeholder="Ana" autoFocus maxLength={40} /></label>
-			<label>Rol e instrucciones<textarea value={role} onChange={(e) => setRole(e.target.value)} rows={3} placeholder="Compras de electrónica y componentes. Prefiere distribuidores autorizados en México." /></label>
-			<label>Modelo
-				<select value={model} onChange={(e) => setModel(e.target.value)}>
-					{settings.models.map((m) => <option key={m.id} value={m.id}>{m.label}</option>)}
-				</select>
-			</label>
-			{error && <p className="error">{error}</p>}
-			<div className="row">
-				<button type="button" onClick={onClose}>Cancelar</button>
-				<button className="primary" disabled={!name.trim()}>Crear</button>
-			</div>
-		</form>
+		</Card>
 	);
 }

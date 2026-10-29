@@ -5,4 +5,5 @@ data
 .env*
 .git
 .codegraph
-sandbox
+sandbox/*
+!sandbox/harness.ts

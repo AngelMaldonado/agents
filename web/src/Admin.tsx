@@ -2,6 +2,10 @@
 import { useEffect, useState } from 'react';
 import { api, ago, type Person } from './api';
 import { UsesTable } from './Settings';
+import { Button } from '@/components/ui/button';
+import { Input } from '@/components/ui/input';
+import { Textarea } from '@/components/ui/textarea';
+import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
 
 export function Admin({ me, pinIsSet, onChanged }: { me: Person; pinIsSet: boolean; onChanged: () => void }) {
 	if (!me.admin) return <Unlock pinIsSet={pinIsSet} onUnlocked={onChanged} />;
@@ -14,8 +18,8 @@ function Unlock({ pinIsSet, onUnlocked }: { pinIsSet: boolean; onUnlocked: () =>
 	if (!pinIsSet) return <div className="page"><p className="muted">Todavía no hay PIN: falta poner AGENTS_ADMIN_PIN en el stack.</p></div>;
 	return (
 		<div className="page narrow">
-			<h1>Admin</h1>
-			<p className="muted">Escribe el PIN de admin. Dura 30 días en este navegador.</p>
+			<h1 className="mb-2">Administración</h1>
+			<p className="muted mb-6">Escribe el PIN de admin. Dura 30 días en este navegador.</p>
 			<form className="row" onSubmit={async (e) => {
 				e.preventDefault();
 				try {
@@ -25,8 +29,8 @@ function Unlock({ pinIsSet, onUnlocked }: { pinIsSet: boolean; onUnlocked: () =>
 					setError((err as Error).message);
 				}
 			}}>
-				<input type="password" inputMode="numeric" value={pin} onChange={(e) => setPin(e.target.value)} autoFocus />
-				<button className="primary">Entrar</button>
+				<Input type="password" aria-label="PIN de administrador" inputMode="numeric" value={pin} onChange={(e) => setPin(e.target.value)} autoFocus />
+				<Button>Entrar</Button>
 			</form>
 			{error && <p className="error">{error}</p>}
 		</div>
@@ -49,7 +53,7 @@ function Quota({ person, onSaved }: { person: { id: number; run_quota: number };
 	};
 	return (
 		<>
-			<input type="number" min={0} max={60} value={value} style={{ width: '4.5em' }}
+			<Input type="number" aria-label={`Cuota de la persona ${person.id}`} min={0} max={60} value={value} className="w-20"
 				onChange={(e) => setValue(Number(e.target.value))} onBlur={save} onKeyDown={(e) => e.key === 'Enter' && save()} />
 			{error && <span className="error small"> {error}</span>}
 		</>
@@ -72,13 +76,13 @@ function Panel({ onChanged }: { onChanged: () => void }) {
 	}, []);
 	if (!data) return <div className="page"><p className="muted">Cargando…</p></div>;
 	const num = (k: string) => (
-		<input type="number" value={draft[k]} onChange={(e) => setDraft({ ...draft, [k]: Number(e.target.value) })} step={k === 'maxCostUsd' ? 0.5 : 1} />
+		<Input type="number" value={draft[k]} onChange={(e) => setDraft({ ...draft, [k]: Number(e.target.value) })} step={k === 'maxCostUsd' ? 0.5 : 1} />
 	);
 	return (
 		<div className="page">
 			<div className="page-head">
-				<h1>Admin</h1>
-				<button className="ghost" onClick={async () => { await api('/admin/lock', { method: 'POST' }); onChanged(); }}>Salir de admin</button>
+				<div><h1>Administración</h1><p className="muted">Límites, modelos y acceso del equipo.</p></div>
+				<Button variant="outline" onClick={async () => { await api('/admin/lock', { method: 'POST' }); onChanged(); }}>Salir de admin</Button>
 			</div>
 			<section className="panel">
 				<h2>Límites</h2>
@@ -87,13 +91,13 @@ function Panel({ onChanged }: { onChanged: () => void }) {
 					<label>Minutos máximos por tarea{num('maxMinutes')}</label>
 					<label>Tope de costo por tarea (US$){num('maxCostUsd')}</label>
 					<label>Minutos que espera un agente atascado{num('blockedWaitMinutes')}</label>
-					<label>Imagen del sandbox<input value={draft.sandboxImage} onChange={(e) => setDraft({ ...draft, sandboxImage: e.target.value })} /></label>
+					<label>Imagen del sandbox<Input value={draft.sandboxImage} onChange={(e) => setDraft({ ...draft, sandboxImage: e.target.value })} /></label>
 				</div>
 				<label>Catálogo de modelos (uno por línea: <code>proveedor/modelo | nombre</code>)
-					<textarea rows={6} value={models} onChange={(e) => setModels(e.target.value)} className="mono" />
+					<Textarea rows={6} value={models} onChange={(e) => setModels(e.target.value)} className="mono" />
 				</label>
-				<div className="row">
-					<button className="primary" onClick={async () => {
+				<div className="row wrap mt-4">
+					<Button onClick={async () => {
 						const list = models.split('\n').map((l) => l.trim()).filter(Boolean).map((l) => {
 							const [id, label] = l.split('|').map((s) => s.trim());
 							return { id, label: label || id };
@@ -106,30 +110,30 @@ function Panel({ onChanged }: { onChanged: () => void }) {
 						} catch (err) {
 							setMsg((err as Error).message);
 						}
-					}}>Guardar</button>
+					}}>Guardar</Button>
 					<span className="muted">{msg}</span>
 				</div>
 			</section>
 			<section className="panel">
 				<h2>Personas</h2>
 				<p className="muted">Quien vuelve desde otro navegador necesita un link de un solo uso (24 h). La cuota es cuántas tareas suyas corren a la vez; las tuyas con el PIN puesto pasan primero en la cola.</p>
-				{link && <div className="callout"><code>{link}</code> <button className="ghost" onClick={() => navigator.clipboard.writeText(link)}>Copiar</button></div>}
-				<table>
-					<thead><tr><th>Nombre</th><th>Agentes</th><th>Tareas</th><th>Cuota</th><th>Desde</th><th /></tr></thead>
-					<tbody>
+				{link && <div className="callout mb-4 break-all"><code>{link}</code> <Button variant="ghost" size="sm" onClick={() => navigator.clipboard.writeText(link)}>Copiar</Button></div>}
+				<Table>
+					<TableHeader><TableRow><TableHead>Nombre</TableHead><TableHead>Agentes</TableHead><TableHead>Tareas</TableHead><TableHead>Cuota</TableHead><TableHead>Desde</TableHead><TableHead><span className="sr-only">Acciones</span></TableHead></TableRow></TableHeader>
+					<TableBody>
 						{data.people.map((p: any) => (
-							<tr key={p.id}>
-								<td>{p.name}</td><td>{p.agents}</td><td>{p.tasks}</td>
-								<td><Quota person={p} onSaved={(people) => setData({ ...data, people })} /></td>
-								<td className="small">{ago(p.created_at)}</td>
-								<td className="row">
-									<button className="ghost" onClick={async () => { const { code } = await api(`/admin/people/${p.id}/invite`, { method: 'POST' }); setLink(`${location.origin}/#/invite/${code}`); }}>Link</button>
-									<button className="ghost danger" onClick={async () => { if (confirm(`¿Borrar a ${p.name} con sus agentes, tareas, keys y accesos?`)) { await api(`/admin/people/${p.id}`, { method: 'DELETE' }); await load(); onChanged(); } }}>Borrar</button>
-								</td>
-							</tr>
+							<TableRow key={p.id}>
+								<TableCell className="font-medium">{p.name}</TableCell><TableCell>{p.agents}</TableCell><TableCell>{p.tasks}</TableCell>
+								<TableCell><Quota person={p} onSaved={(people) => setData({ ...data, people })} /></TableCell>
+								<TableCell className="text-xs">{ago(p.created_at)}</TableCell>
+								<TableCell><div className="row">
+									<Button variant="ghost" size="sm" onClick={async () => { const { code } = await api(`/admin/people/${p.id}/invite`, { method: 'POST' }); setLink(`${location.origin}/#/invite/${code}`); }}>Enlace</Button>
+									<Button variant="danger-ghost" size="sm" onClick={async () => { if (confirm(`¿Borrar a ${p.name} con sus agentes, tareas, keys y accesos?`)) { await api(`/admin/people/${p.id}`, { method: 'DELETE' }); await load(); onChanged(); } }}>Borrar</Button>
+								</div></TableCell>
+							</TableRow>
 						))}
-					</tbody>
-				</table>
+					</TableBody>
+				</Table>
 			</section>
 			<section className="panel">
 				<h2>Uso de accesos (todos)</h2>

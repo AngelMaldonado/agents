@@ -28,6 +28,11 @@ function tell(msg: object) {
 	if (ws?.readyState === WebSocket.OPEN) ws.send(JSON.stringify(msg));
 }
 
+/** Takeover: one mouse or keyboard event for the agent's Chrome (the server drops it unless you have control). */
+export function sendInput(agentId: number, e: object) {
+	tell({ t: 'input', agentId, e });
+}
+
 let ws: WebSocket | null = null;
 export function connect() {
 	if (ws) return;
@@ -61,8 +66,9 @@ export function connect() {
 }
 
 /** While mounted, the agent's full stream and events come to this tab. */
-export function useWatch(agentId: number) {
+export function useWatch(agentId: number, enabled = true) {
 	useEffect(() => {
+		if (!enabled) return;
 		const n = (watching.get(agentId) ?? 0) + 1;
 		watching.set(agentId, n);
 		if (n === 1) tell({ t: 'watch', agentId });
@@ -72,7 +78,7 @@ export function useWatch(agentId: number) {
 			watching.delete(agentId);
 			tell({ t: 'unwatch', agentId });
 		};
-	}, [agentId]);
+	}, [agentId, enabled]);
 }
 
 /** While mounted, the monitor's snapshots (every few seconds) go to `fn`. */
