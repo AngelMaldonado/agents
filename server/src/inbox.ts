@@ -53,7 +53,9 @@ export async function receive(
 	const stored = await tx(async (c) => {
 		const owner=await row<{person_id:number}>('select person_id from agents where id=$1 and deleted_at is null for update',[m.agentId],c);
 		if(!owner)throw new Error('El agente ya no existe.');
-		if(m.conversationId!==undefined && (m.source!=='web'||m.personId!==owner.person_id))throw new Error('Sólo el dueño puede escribir en esta conversación.');
+		// In a chosen conversation, from the web: its owner or someone it is shared with.
+		const shared=m.source==='web'&&m.personId!=null&&m.personId!==owner.person_id&&!!await row('select 1 from agent_shares where agent_id=$1 and person_id=$2',[m.agentId,m.personId],c);
+		if(m.conversationId!==undefined && (m.source!=='web'||(m.personId!==owner.person_id&&!shared)))throw new Error('Sólo su dueño y quienes lo tienen compartido escriben en esta conversación.');
 		if(m.dedupeKey){
 			const previous=await row<{conversation_id:number;text:string}>('select conversation_id,text from messages where agent_id=$1 and dedupe_key=$2',[m.agentId,m.dedupeKey],c);
 			if(previous){if(m.conversationId!==undefined && (previous.conversation_id!==m.conversationId||previous.text!==text))throw new Error('Esta petición ya contiene otro mensaje.');return null;}
