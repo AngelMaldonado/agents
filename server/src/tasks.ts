@@ -73,7 +73,8 @@ type Live = {
 	ending?: boolean;
 	timer?: Timer; // waiting for the supervisor to (re)connect
 	kind?: Kind;
-	control?: boolean; // the owner drives the browser; pi is stopped
+	control?: boolean; // someone drives the browser; pi is stopped
+	controller?: number; // who: the owner or someone the agent is shared with
 	takeover?: boolean; // its supervisor said it can be driven (older images cannot)
 };
 
@@ -138,7 +139,7 @@ hub.onWatchChange((agentId, watched) => {
 
 export function publicTask(t: Task) {
 	const { container_id, workflow_id, definition: d, ...rest } = t;
-	return { ...rest, control: !!live.get(t.id)?.control, definition: d ? { revision: d.revision, digest: d.digest, harnessDigest: d.harnessDigest, image: d.image } : null };
+	return { ...rest, control: !!live.get(t.id)?.control, controller: live.get(t.id)?.control ? live.get(t.id)?.controller ?? t.person_id : null, definition: d ? { revision: d.revision, digest: d.digest, harnessDigest: d.harnessDigest, image: d.image } : null };
 }
 
 // ---------- writes that the UI sees ----------
@@ -274,7 +275,7 @@ export async function failRun(agent: AgentRef, messageId: number, reason: string
 }
 
 /** From the web: the owner launches a task on an idle agent. */
-export async function enqueue(agent: AgentRef, prompt: string, opts: { admin: boolean; kind?: Kind; context?: unknown }) {
+export async function enqueue(agent: AgentRef, prompt: string, opts: { admin: boolean; kind?: Kind; context?: unknown; sender?: string | null; personId?: number }) {
 	// A browser session calls no model: it only needs a free slot.
 	if (opts.kind === 'browser') {
 		if ((await quotaOf(agent.person_id)) < 1) throw new Error('Tu cuota de tareas simultáneas es 0: pídele a un admin que la suba.');
@@ -283,7 +284,7 @@ export async function enqueue(agent: AgentRef, prompt: string, opts: { admin: bo
 	const m = await tx(async c=>{
 		await row('select id from agents where id=$1 for update',[agent.id],c);
 		const conv=await defaultConversation(agent.id,c);
-		return (await row<{id:number}>("insert into messages (agent_id,conversation_id,source,person_id,text,context) values ($1,$2,'web',$3,$4,$5) returning id",[agent.id,conv.id,agent.person_id,prompt.trim(),opts.context===undefined?null:JSON.stringify(opts.context)],c))!;
+		return (await row<{id:number}>("insert into messages (agent_id,conversation_id,source,person_id,sender,text,context) values ($1,$2,'web',$3,$4,$5,$6) returning id",[agent.id,conv.id,opts.personId??agent.person_id,opts.sender??null,prompt.trim(),opts.context===undefined?null:JSON.stringify(opts.context)],c))!;
 	});
 	try {
 		return await startRun(agent, m.id, opts.admin ? 0 : 10, opts.kind);
@@ -562,6 +563,7 @@ export async function attach(cred: { token?: string; session?: string }, sup: Su
 	l.kind = (await row<{ kind: Kind }>('select kind from runs where id = $1', [t.id]))!.kind;
 	if (l.kind === 'browser' && !l.control) {
 		l.control = true;
+		l.controller = t.person_id; // a browser session is its owner's
 		await setState(t.id, 'browsing');
 		await event(t, 'control', { on: true, browser: true });
 	}
@@ -588,13 +590,13 @@ function onSupervisor(l: Live, raw: string) {
 	if (msg.t === 'frame' || msg.t === 'thumb') {
 		// While the owner drives, the screen can show what they type (a card number): it goes to the
 		// owner only and is never kept as the run's snapshot.
-		const ownerOnly = !!l.control;
-		if (!ownerOnly && !l.snapshotFinal && typeof msg.jpeg === 'string') {
+		const onlyPerson = l.control ? l.controller ?? ref.person_id : undefined;
+		if (onlyPerson === undefined && !l.snapshotFinal && typeof msg.jpeg === 'string') {
 			// Keep only the newest frame; disk is written once at collection/end, not at stream FPS.
 			const shot = browserSnapshot(msg.jpeg, msg.meta);
 			if (shot) l.browserSnapshot = shot;
 		}
-		if (typeof msg.jpeg === 'string') (msg.t === 'frame' ? hub.frame : hub.thumb)(ref.person_id, ref.id, ref.agent_id, msg.jpeg, msg.meta ?? null, ownerOnly);
+		if (typeof msg.jpeg === 'string') (msg.t === 'frame' ? hub.frame : hub.thumb)(ref.person_id, ref.id, ref.agent_id, msg.jpeg, msg.meta ?? null, onlyPerson);
 		return;
 	}
 	if (msg.t === 'caps') {
@@ -989,13 +991,14 @@ const BACK_FROM_CONTROL = 'Tomé el control del navegador y ya terminé (por eje
 function release(l: Live) {
 	if (!l.control || l.kind === 'browser') return false;
 	l.control = false;
+	l.controller = undefined;
 	l.sup?.send(JSON.stringify({ t: 'control', on: false }));
 	void event(l.ref, 'control', { on: false }).then(() => publishTask(l.ref.id));
 	return true;
 }
 
 /** The owner takes the browser (the agent freezes) or gives it back (the agent hears so). */
-export async function setControl(taskId: number, on: boolean) {
+export async function setControl(taskId: number, on: boolean, personId: number) {
 	const t = await getTask(taskId);
 	const l = live.get(taskId);
 	if (!t || !l?.sup || (t.status !== 'running' && t.status !== 'blocked')) throw new Error('La computadora no está prendida.');
@@ -1005,6 +1008,7 @@ export async function setControl(taskId: number, on: boolean) {
 		if (l.control) return;
 		if (!l.takeover) throw new Error('La computadora de este agente usa una imagen anterior que no permite tomar el control. Vuelve a validar y aprobar su configuración en Automejora para actualizarla.');
 		l.control = true;
+		l.controller = personId;
 		l.sup.send(JSON.stringify({ t: 'control', on: true }));
 		await event(t, 'control', { on: true });
 		await setState(taskId, 'browsing');
@@ -1031,7 +1035,7 @@ const BUTTONS = ['left', 'middle', 'right'];
  */
 export function input(personId: number, agentId: number, e: any) {
 	const l = [...live.values()].find((x) => x.ref.agent_id === agentId && x.control);
-	if (!l?.sup || l.ref.person_id !== personId || !e || typeof e !== 'object') return;
+	if (!l?.sup || (l.controller ?? l.ref.person_id) !== personId || !e || typeof e !== 'object') return;
 	const n = (v: unknown, max: number) => Math.max(-max, Math.min(max, Math.round(Number(v) || 0)));
 	const s = (v: unknown) => (typeof v === 'string' && v ? v.slice(0, 32) : undefined);
 	let out: object | null = null;
@@ -1051,9 +1055,9 @@ export function input(personId: number, agentId: number, e: any) {
 // Chrome's own pages where the owner saves passwords, cards and addresses into the profile.
 const CHROME_PAGES = ['chrome://settings/payments', 'chrome://settings/addresses', 'chrome://password-manager/passwords'];
 
-export async function navigate(taskId: number, action: string, url?: string) {
+export async function navigate(taskId: number, action: string, url: string | undefined, personId: number) {
 	const l = live.get(taskId);
-	if (!l?.sup || !l.control) throw new Error('Toma el control del navegador primero.');
+	if (!l?.sup || !l.control || (l.controller ?? l.ref.person_id) !== personId) throw new Error('Toma el control del navegador primero.');
 	if (action === 'open') {
 		const target = String(url ?? '').trim();
 		const page = CHROME_PAGES.find((p) => target === p);

@@ -33,6 +33,7 @@ await migrate();
 await loadSettings();
 await writeProxyConfig();
 await startDbos();
+await agents.loadShares();
 await tasks.recover();
 await inbox.startRouter();
 monitor.startMonitor();
@@ -263,7 +264,7 @@ app.delete('/api/keys/:provider', async (c) => {
 
 // ---------- agents and tasks ----------
 
-app.get('/api/agents', async (c) => c.json({ agents: await agents.visible(c.get('me')) }));
+app.get('/api/agents', async (c) => c.json({ agents: (await agents.visible(c.get('me'))).map((a) => agents.forViewer(a, c.get('me'))) }));
 
 // Creation is now an explicit approval of a stored contract, not a form bypass.
 app.post('/api/agents', (c) => c.json({ error: 'Define y aprueba el contrato en Nuevo agente.' }, 409));
@@ -307,6 +308,16 @@ app.get('/api/agents/:id/configuration', async (c) => {
 	catch (err) { return fail(c, err, 404); }
 });
 
+/** The owner or someone it is shared with: they run tasks; configuration stays the owner's. */
+async function usableAgent(c: Context<Env>) {
+	return agents.usable(c.get('me'), Number(c.req.param('id')));
+}
+/** The run's agent is the person's or shared with them. */
+async function usableTask(c: Context<Env>) {
+	const t = await tasks.getTask(Number(c.req.param('id')));
+	return t && (await agents.usable(c.get('me'), t.agent_id)) ? t : null;
+}
+
 async function ownAgent(c: Context<Env>) {
 	const a = await agents.get(Number(c.req.param('id')));
 	return a && a.person_id === c.get('me').id ? a : null;
@@ -340,12 +351,12 @@ app.get('/api/agents/:id/tasks', async (c) => {
 });
 
 app.post('/api/agents/:id/tasks', async (c) => {
-	const a = await ownAgent(c);
-	if (!a) return c.json({ error: 'Sólo el dueño lanza tareas con su agente.' }, 403);
+	const a = await usableAgent(c);
+	if (!a) return c.json({ error: 'Sólo su dueño y quienes lo tienen compartido le dan tareas.' }, 403);
 	const { prompt } = await c.req.json();
 	if (typeof prompt !== 'string' || !prompt.trim()) return c.json({ error: 'Describe la tarea.' }, 400);
 	try {
-		return c.json({ task: tasks.publicTask(await tasks.enqueue(a, prompt, { admin: c.get('me').admin })) });
+		return c.json({ task: tasks.publicTask(await tasks.enqueue(a, prompt, { admin: c.get('me').admin, sender: a.person_id === c.get('me').id ? null : c.get('me').name, personId: c.get('me').id })) });
 	} catch (err) {
 		return fail(c, err);
 	}
@@ -353,8 +364,7 @@ app.post('/api/agents/:id/tasks', async (c) => {
 
 async function seeableTask(c: Context<Env>) {
 	const t = await tasks.getTask(Number(c.req.param('id')));
-	const me = c.get('me');
-	return t && (me.admin || t.person_id === me.id) ? t : null;
+	return t && (await agents.seeable(c.get('me'), t.agent_id)) ? t : null;
 }
 
 app.get('/api/tasks/:id', async (c) => {
@@ -377,8 +387,8 @@ app.get('/api/tasks/:id/snapshot', async (c) => {
 
 // Steer and follow-up: only the owner. The admin can watch and cancel, never steer.
 app.post('/api/tasks/:id/steer', async (c) => {
-	const t = await tasks.getTask(Number(c.req.param('id')));
-	if (!t || t.person_id !== c.get('me').id) return c.json({ error: 'Sólo el dueño de la tarea la dirige.' }, 403);
+	const t = await usableTask(c);
+	if (!t) return c.json({ error: 'Sólo quien puede usar el agente dirige la tarea.' }, 403);
 	const { text, kind } = await c.req.json();
 	try {
 		await tasks.steer(t.id, String(text ?? ''), kind === 'follow_up' ? 'follow_up' : 'steer');
@@ -389,13 +399,22 @@ app.post('/api/tasks/:id/steer', async (c) => {
 });
 
 app.post('/api/tasks/:id/help', async (c) => {
- const t = await tasks.getTask(Number(c.req.param('id')));
- if (!t || t.person_id !== c.get('me').id) return c.json({ error: 'Sólo el dueño de la tarea la dirige.' }, 403);
+ const t = await usableTask(c);
+ if (!t) return c.json({ error: 'Sólo quien puede usar el agente le responde.' }, 403);
  try { return c.json({ ok: true, ...await tasks.answerHelp(t.id, await c.req.json()) }); }
  catch (err) { return fail(c, err); }
 });
 
 // ---------- takeover: only the owner drives the agent's browser; the admin can only watch ----------
+
+// Sharing: the owner picks who may use the agent. Everyone can see the names to pick from.
+app.get('/api/people', async (c) => c.json({ people: await people.directory() }));
+app.put('/api/agents/:id/shares', async (c) => {
+	const a = await ownAgent(c);
+	if (!a) return c.json({ error: 'Sólo el dueño comparte su agente.' }, 403);
+	try { return c.json({ shares: await agents.setShares(a, (await c.req.json()).people) }); }
+	catch (err) { return fail(c, err); }
+});
 
 app.post('/api/agents/:id/browser', async (c) => {
 	const a = await ownAgent(c);
@@ -409,10 +428,11 @@ app.post('/api/agents/:id/browser', async (c) => {
 });
 
 app.post('/api/tasks/:id/control', async (c) => {
+	// Only its owner: someone it is shared with runs tasks, never drives its browser.
 	const t = await tasks.getTask(Number(c.req.param('id')));
 	if (!t || t.person_id !== c.get('me').id) return c.json({ error: 'Sólo el dueño toma el control del navegador.' }, 403);
 	try {
-		await tasks.setControl(t.id, Boolean((await c.req.json()).on));
+		await tasks.setControl(t.id, Boolean((await c.req.json()).on), c.get('me').id);
 		return c.json({ ok: true });
 	} catch (err) {
 		return fail(c, err);
@@ -424,7 +444,7 @@ app.post('/api/tasks/:id/navigate', async (c) => {
 	if (!t || t.person_id !== c.get('me').id) return c.json({ error: 'Sólo el dueño maneja el navegador.' }, 403);
 	try {
 		const { action, url } = await c.req.json();
-		await tasks.navigate(t.id, String(action ?? ''), url);
+		await tasks.navigate(t.id, String(action ?? ''), url, c.get('me').id);
 		return c.json({ ok: true });
 	} catch (err) {
 		return fail(c, err);
@@ -602,8 +622,8 @@ app.get('/api/agents/:id/conversations', async (c) => {
 });
 
 app.post('/api/agents/:id/conversations', async (c) => {
-	const a = await ownAgent(c);
-	if (!a) return c.json({ error: 'Sólo el dueño puede consultar esta operación.' }, 403);
+	const a = await usableAgent(c);
+	if (!a) return c.json({ error: 'Sólo su dueño y quienes lo tienen compartido abren conversaciones.' }, 403);
 	const body=await c.req.json().catch(()=>null);
 	// The old empty POST was a destructive reset. It stays unavailable; new tabs require an explicit identity.
 	if(!body?.requestId)return c.json({error:'No se reinicia la conversación. Abre una nueva explícitamente.'},410);
@@ -611,7 +631,7 @@ app.post('/api/agents/:id/conversations', async (c) => {
 });
 
 app.patch('/api/agents/:id/conversations/:conversation',async c=>{
- const a=await ownAgent(c);if(!a)return c.json({error:'Sólo el dueño administra las conversaciones.'},403);
+ const a=await usableAgent(c);if(!a)return c.json({error:'Sólo su dueño y quienes lo tienen compartido administran las conversaciones.'},403);
  const body=await c.req.json().catch(()=>null);if(typeof body?.archived!=='boolean')return c.json({error:'Indica si quieres cerrar o reabrir el tab.'},400);
  try{return c.json({conversation:await conversations.archive(a.id,Number(c.req.param('conversation')),body.archived)});}catch(err){return fail(c,err);}
 });
@@ -623,7 +643,7 @@ app.get('/api/agents/:id/conversations/:conversation',async c=>{
  c.header('Cache-Control','private, no-store');return c.json(await conversations.transcript(a.id,id,before));
 });
 app.post('/api/agents/:id/conversations/:conversation/messages',async c=>{
- const a=await ownAgent(c);if(!a)return c.json({error:'Sólo el dueño puede escribir en esta conversación.'},403);
+ const a=await usableAgent(c);if(!a)return c.json({error:'Sólo su dueño y quienes lo tienen compartido escriben en esta conversación.'},403);
  const id=Number(c.req.param('conversation'));if(!await conversations.get(a.id,id))return c.json({error:'No existe.'},404);
  const body=await c.req.json().catch(()=>null);
  const attachments=Array.isArray(body?.attachments)?body.attachments:[];
@@ -637,7 +657,8 @@ app.post('/api/agents/:id/conversations/:conversation/messages',async c=>{
    const t=await tasks.getTask(runId);if(!t||t.agent_id!==a.id||t.conversation_id!==id)throw new Error('La solicitud no pertenece a esta conversación.');
    return c.json({ok:true,...await tasks.answerHelpText(runId,round,body.text,key)});
   }
-  const routing=await inbox.receive({agentId:a.id,personId:c.get('me').id,source:'web',conversationId:id,text:body.text,attachments,dedupeKey:`chat:${key}`},{routeNow:false});
+  // Someone it is shared with writes under their name, so the agent knows it is not its owner.
+  const routing=await inbox.receive({agentId:a.id,personId:c.get('me').id,sender:a.person_id===c.get('me').id?null:c.get('me').name,source:'web',conversationId:id,text:body.text,attachments,dedupeKey:`chat:${key}`},{routeNow:false});
   return c.json({ok:true,...routing});
  }catch(err){return fail(c,err);}
 });
@@ -651,10 +672,10 @@ app.get('/api/agents/:id/messages/:message/files/:name',async c=>{
  return new Response(Bun.file(f.path),{headers:artifactHeaders(f.name,c.req.query('download')==='1')});
 });
 
-// The queue of messages sent while the agent works: send one now, or remove it. Owner only.
+// The queue of messages sent while the agent works: send one now, or remove it.
 async function queuedMessage(c: Context<Env>) {
-	const a = await ownAgent(c);
-	if (!a) throw new Error('Sólo el dueño maneja la cola de su agente.');
+	const a = await usableAgent(c);
+	if (!a) throw new Error('Sólo su dueño y quienes lo tienen compartido manejan la cola.');
 	const m = await row<{ run_id: number | null }>("select run_id from messages where id = $1 and agent_id = $2 and conversation_id = $3 and routed_as = 'queued'", [Number(c.req.param('message')), a.id, Number(c.req.param('conversation'))]);
 	if (!m?.run_id) throw new Error('Ese mensaje ya no está en la cola.');
 	return { runId: m.run_id, messageId: Number(c.req.param('message')) };

@@ -196,6 +196,7 @@ export function render(m: Pick<Message, 'id' | 'source' | 'sender' | 'schedule_n
 	const head =
 		m.source === 'hook' ? `Mensaje recibido por webhook${m.sender ? ` de ${m.sender}` : ''}:\n\n`
 		: m.source === 'cron' ? `Tarea programada:\n\n`
+		: m.source === 'web' && m.sender ? `Mensaje de ${m.sender}, con quien tu dueño compartió este agente (no es tu dueño):\n\n`
 		: m.source === 'whatsapp' ? `Mensaje recibido por WhatsApp${m.sender ? ` de ${m.sender}` : ''} (tu respuesta final se le envía por WhatsApp):\n\n`
 		: '';
 	const files = attachments.length ? `\n\nAdjuntos en ~/work/in/${m.id}/: ${attachments.join(', ')}` : '';

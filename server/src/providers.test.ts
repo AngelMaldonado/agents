@@ -245,6 +245,26 @@ run('agent credentials: sealed, names only on the way out, reserved names refuse
  await secrets.set(a.id,'GITHUB_TOKEN','ghp_nuevo');expect(await secrets.forRun(a.id)).toEqual({GITHUB_TOKEN:'ghp_nuevo'});
  expect(await secrets.remove(a.id,'GITHUB_TOKEN')).toEqual([]);
 });
+run('sharing: the people an owner picks see and use the agent, never improve it; unsharing takes it back',async()=>{
+ const agents=await import('./agents'),designs=await import('./designs');
+ const ana=(await row<{id:number}>("insert into people (name, key, avatar_seed) values ('Ana Compartida','ana-compartida','s') returning id"))!.id;
+ const viewer={id:ana,name:'Ana Compartida',avatar_seed:'s',admin:false} as any;
+ const a=await agents.create(person,{name:'Compartido',model:'openai/gpt-6-sol'}),hidden=await agents.create(person,{name:'Privado',model:'openai/gpt-6-sol'});
+ expect(await agents.seeable(viewer,a.id)).toBeNull();expect(await agents.usable(viewer,a.id)).toBeNull();
+ expect(await agents.setShares((await agents.get(a.id))!,[ana,person,ana,999999])).toEqual([ana]);
+ expect((await agents.seeable(viewer,a.id))?.id).toBe(a.id);expect((await agents.usable(viewer,a.id))?.id).toBe(a.id);
+ expect(await agents.seeable(viewer,hidden.id)).toBeNull();
+ const list=await agents.visible(viewer);expect(list.map((x:any)=>x.id)).toEqual([a.id]);expect(list[0].shares).toEqual([ana]);
+ await expect(designs.create(ana,{model:'openai/gpt-6-sol',agentId:a.id})).rejects.toThrow('Sólo el dueño');
+ const shown=agents.forViewer((await agents.get(a.id))!,viewer) as any;
+ expect(shown.role).toBe('');expect(shown.harness).toBeUndefined();expect(shown.shares).toEqual([ana]);
+ await expect(designs.configuration(viewer,a.id)).rejects.toThrow('configuración');
+ const inbox=await import('./inbox');
+ expect(inbox.render({id:1,source:'web',sender:'Ana Compartida',schedule_name:null,text:'Hola'})).toContain('Mensaje de Ana Compartida, con quien tu dueño compartió este agente');
+ expect(inbox.render({id:1,source:'web',sender:null,schedule_name:null,text:'Hola'})).toBe('Hola');
+ await agents.setShares((await agents.get(a.id))!,[]);
+ expect(await agents.seeable(viewer,a.id)).toBeNull();expect(await agents.visible(viewer)).toEqual([]);
+});
 run('conversation history pages executions and keeps chat events after thousands of tool events',async()=>{
  const agents=await import('./agents'),conversations=await import('./conversations');
  const a=await agents.create(person,{name:'Historia paginada',model:'openai/gpt-6-sol'}),conv=(await agents.conversations(a.id))[0];

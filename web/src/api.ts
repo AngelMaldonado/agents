@@ -12,6 +12,7 @@ export type Status = 'queued' | 'starting' | 'running' | 'blocked' | 'done' | 'i
 export type Task = {
 	id: number; agent_id: number; person_id: number; prompt: string; model: string; status: Status; state: CharState; kind?: 'task' | 'initialize' | 'browser';
 	control?: boolean; // the owner is driving the agent's browser (takeover)
+	controller?: number | null;
 	cost: number; tokens: number; end_reason: string | null; answer: string | null; conversation_id: number;
 	created_at: number; started_at: number | null; ended_at: number | null;
  definition?: { revision: number; digest: string; harnessDigest: string; image: string | null } | null;
@@ -19,6 +20,7 @@ export type Task = {
 export type Agent = {
 	id: number; person_id: number; name: string; role: string; model: string; seed: string; created_at: number;
 	owner: string; task: Task | null; config_revision?: number; setup_design_id?: string | null; harness?: Harness;
+	shares?: number[]; // the people it is shared with (they run tasks; configuration is the owner's)
 };
 export type Contract = { name: string; prompt: string };
 export type AgentTool = { id: string; name: string; description: string };

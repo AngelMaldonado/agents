@@ -26,6 +26,8 @@ export function AgentView({ agent, me, settings, onBack, onChanged, improving = 
 }) {
 	useTick(1000);
 	const mine = agent.person_id === me.id;
+	// Shared with me: I run tasks (chat, answers, queue); improving, configuring and driving its browser are the owner's.
+	const canUse = mine || !!agent.shares?.includes(me.id);
 	const root = useRef<HTMLDivElement>(null);
 	const surface = useRef<HTMLDivElement>(null), chatPanel = useRef<HTMLElement>(null), chatToggle = useRef<HTMLButtonElement>(null);
 	const chatId = useId();
@@ -92,7 +94,7 @@ export function AgentView({ agent, me, settings, onBack, onChanged, improving = 
 	const [selectedId, setSelectedId] = useState<number | null>(null);
 	const [conversations,setConversations]=useState<Conversation[]>([]);
 	const [conversationsLoaded,setConversationsLoaded]=useState(false);
-	const conversationState=useWorkConversations({...agent,mine},me.id,conversations,setConversations,conversationsLoaded,!improving);
+	const conversationState=useWorkConversations({...agent,mine:canUse},me.id,conversations,setConversations,conversationsLoaded,!improving);
 	const currentTask=conversationState.currentTask;
 	const historical = selectedId !== null;
 	const taskId = selectedId ?? currentTask?.id ?? null;
@@ -192,7 +194,7 @@ export function AgentView({ agent, me, settings, onBack, onChanged, improving = 
 					</>}
 					{driving && liveAgent!.kind === 'task' && <Button size="sm" aria-label="Devolver control" title="Devolver el navegador al agente; sigue desde la página actual" onClick={() => void action(() => api(`/tasks/${liveAgent!.id}/control`, { body: { on: false } }))}><Bot /><span className="agent-action-label">Devolver control</span></Button>}
 					{mine && liveAgent?.kind === 'browser' && <Button size="sm" aria-label="Cerrar navegador" title="Cerrar y guardar sesiones, contraseñas y tarjetas en el perfil del agente" onClick={() => void action(() => api(`/tasks/${liveAgent.id}/close`, { method: 'POST' }))}><Square /><span className="agent-action-label">Cerrar navegador</span></Button>}
-					{!historical && isLive(currentTask) && currentTask!.kind !== 'browser' && (mine || me.admin) && <Button variant="danger-outline" size="sm" aria-label="Cancelar tarea" title="Cancelar tarea" onClick={() => void action(async () => {
+					{!historical && isLive(currentTask) && currentTask!.kind !== 'browser' && (canUse || me.admin) && <Button variant="danger-outline" size="sm" aria-label="Cancelar tarea" title="Cancelar tarea" onClick={() => void action(async () => {
 						if (confirm('¿Cancelar la tarea? Se guarda lo que lleve.')) await api(`/tasks/${currentTask!.id}/cancel`, { method: 'POST' });
 					})}><Square /><span className="agent-action-label">Cancelar tarea</span></Button>}
 					<Dialog open={historyOpen} onOpenChange={open => { setHistoryOpen(open); if (open) setHistoryVersion(v => v + 1); }}>
@@ -212,7 +214,7 @@ export function AgentView({ agent, me, settings, onBack, onChanged, improving = 
 						</DialogContent>
 					</Dialog>
 					<nav className="agent-view-navigation contents" aria-label="Vista del agente"><TrabajoLink agentId={agent.id} active={!improving} />{mine && <AutomejoraLink agentId={agent.id} active={improving} designId={improving ? designId : lastDraftId} />}</nav>
-					<AgentSettings agent={{ ...agent, task: conversationState.agentTask }} settings={settings} mine={mine} profileReset={profileReset} onProfileReset={setProfileReset} onChanged={onChanged} onDeleted={() => { onChanged(); onBack(); }} />
+					{(mine || me.admin) && <AgentSettings agent={{ ...agent, task: conversationState.agentTask }} settings={settings} mine={mine} profileReset={profileReset} onProfileReset={setProfileReset} onChanged={onChanged} onDeleted={() => { onChanged(); onBack(); }} />}
 			</AgentHeader></div>
 			{actionError && <p role="alert" className="error mb-3">{actionError}</p>}
 			<div className="agent-work" hidden={improving} inert={improving} onKeyDown={e => { if (e.key === 'Escape' && !e.defaultPrevented && chatOpen) { e.preventDefault(); closeChat(); } }}>
@@ -235,9 +237,9 @@ export function AgentView({ agent, me, settings, onBack, onChanged, improving = 
 							{Object.keys(conversationState.pages).map(Number).map(id=>{
 							 const c=conversations.find(c=>c.id===id),page=conversationState.pages[id];if(!c)return null;
 							 const selected=id===conversationState.selected&&!historical&&(!mine||!c.archived_at),records=page.records??[],latest=records[records.length-1];
-							 return <div key={id} className="conversation-chat" hidden={!selected} inert={!selected} aria-hidden={!selected}><WorkChat agent={{...agent,mine}} conversation={c} conversations={conversations} records={records} inputs={page.inputs??[]} waitingForComputer={isLive(conversationState.agentTask)&&conversationState.agentTask?.conversation_id!==id} task={latest?.task??null} events={latest?.events??[]} files={latest?.artifacts??[]} historical={false} active={selected&&!improving&&!!chatOpen&&!artifact} loading={!page.records&&!page.error} loadError={page.error} hasEarlier={page.hasEarlier} onLoadEarlier={()=>conversationState.load(id,true)} onRefresh={()=>conversationState.load(id)} onSelect={selectConversation} onCreate={createConversation} onArchive={archiveConversation}/></div>;
+							 return <div key={id} className="conversation-chat" hidden={!selected} inert={!selected} aria-hidden={!selected}><WorkChat agent={{...agent,mine:canUse}} conversation={c} conversations={conversations} records={records} inputs={page.inputs??[]} waitingForComputer={isLive(conversationState.agentTask)&&conversationState.agentTask?.conversation_id!==id} task={latest?.task??null} events={latest?.events??[]} files={latest?.artifacts??[]} historical={false} active={selected&&!improving&&!!chatOpen&&!artifact} loading={!page.records&&!page.error} loadError={page.error} hasEarlier={page.hasEarlier} onLoadEarlier={()=>conversationState.load(id,true)} onRefresh={()=>conversationState.load(id)} onSelect={selectConversation} onCreate={createConversation} onArchive={archiveConversation}/></div>;
 							})}
-							{!historical&&(!conversationState.selectedConversation||(mine&&!!conversationState.selectedConversation.archived_at))&&<WorkChat agent={{...agent,mine}} conversations={conversations} task={null} events={[]} files={[]} historical={false} active={!improving&&!!chatOpen&&!artifact} loading={!conversationsLoaded} loadError={historyError} onRefresh={async()=>{setHistoryVersion(v=>v+1);}} onSelect={selectConversation} onCreate={createConversation} onArchive={archiveConversation}/>}
+							{!historical&&(!conversationState.selectedConversation||(canUse&&!!conversationState.selectedConversation.archived_at))&&<WorkChat agent={{...agent,mine:canUse}} conversations={conversations} task={null} events={[]} files={[]} historical={false} active={!improving&&!!chatOpen&&!artifact} loading={!conversationsLoaded} loadError={historyError} onRefresh={async()=>{setHistoryVersion(v=>v+1);}} onSelect={selectConversation} onCreate={createConversation} onArchive={archiveConversation}/>}
 							{historical&&<WorkChat key={`historical:${taskId}`} agent={{...agent,mine}} task={shownTask} events={task?.id===taskId?events:[]} files={task?.id===taskId?files:[]} historical active={!improving&&!!chatOpen&&!artifact} loading={!!taskId&&task?.id!==taskId} onRefresh={refreshConversation}/>}
 							</div>
 						</aside>

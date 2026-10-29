@@ -72,6 +72,11 @@ export async function redeem(code: string) {
 	return used ? session(used.person_id) : null;
 }
 
+/** Who can be picked to share an agent with: names only. */
+export function directory() {
+	return rows<{ id: number; name: string; avatar_seed: string }>('select id, name, avatar_seed from people order by lower(name)');
+}
+
 export function everyone() {
 	return rows<{ id: number; name: string; avatar_seed: string; created_at: number; run_quota: number; agents: number; tasks: number }>(
 		`select p.id, p.name, p.avatar_seed, p.created_at, p.run_quota,

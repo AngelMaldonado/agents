@@ -306,7 +306,8 @@ export async function initialize(personId: number, id: string, admin: boolean, o
 
 export async function configuration(viewer: Person, agentId: number) {
  const agent = await agents.seeable(viewer, agentId);
- if (!agent) throw new Error('Ese agente no existe o no puedes verlo.');
+ // Its prompt, harness and accesses are the owner's (and admins'): not for whom it is shared with.
+ if (!agent || (!viewer.admin && agent.person_id !== viewer.id)) throw new Error('Ese agente no existe o no puedes ver su configuración.');
  const names = await grantedNames(agent.id);
  const draft = agent.person_id === viewer.id ? await row<{ id: string }>(`select id from agent_designs where person_id=$1 and agent_id=$2 and status='draft' and base_revision=$3 order by updated_at desc limit 1`, [viewer.id, agentId, agent.config_revision]) : null;
  const setup = await row<{ id: string }>('select id from agent_designs where applied_agent_id=$1 and agent_id is null', [agentId]);

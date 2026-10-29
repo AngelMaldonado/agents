@@ -6,20 +6,21 @@ import { row, rows, exec, tx, type Exec } from './db';
 import { settings } from './settings';
 import { publicTask, RUN_SELECT, INSTANCE, type Task } from './tasks';
 import type { Person } from './people';
+import * as hub from './hub';
 import { defaultHarness, validateHarness, saveRevision, type Harness } from './harnesses';
 
 export type Agent = {
-	id: number; person_id: number; name: string; role: string; model: string; seed: string; created_at: number; config_revision: number; harness: Harness; harness_image: string | null;
+	id: number; person_id: number; name: string; role: string; model: string; seed: string; created_at: number; config_revision: number; harness: Harness; harness_image: string | null; shares: number[];
 };
 
-const COLS = 'a.id, a.person_id, a.name, a.role, a.model, a.seed, a.created_at, a.config_revision, a.harness, a.harness_image';
+const COLS = 'a.id, a.person_id, a.name, a.role, a.model, a.seed, a.created_at, a.config_revision, a.harness, a.harness_image, array(select s.person_id::int from agent_shares s where s.agent_id = a.id order by s.person_id) as shares';
 
 export async function visible(viewer: Person) {
 	const list = await rows<Agent & { owner: string }>(
 		`select ${COLS}, p.name as owner,
 			 (select d.id from agent_designs d where d.applied_agent_id=a.id and d.agent_id is null) as setup_design_id
 		 from agents a join people p on p.id = a.person_id
-		 where a.deleted_at is null ${viewer.admin ? '' : 'and a.person_id = $1'}
+		 where a.deleted_at is null ${viewer.admin ? '' : 'and (a.person_id = $1 or exists (select 1 from agent_shares s where s.agent_id = a.id and s.person_id = $1))'}
 		 order by (a.person_id = $1) desc, a.id`,
 		[viewer.id]
 	);
@@ -42,7 +43,41 @@ export function get(id: number, on?: Exec) {
 /** The agent if the viewer may see it. */
 export async function seeable(viewer: Person, id: number) {
 	const a = await get(id);
-	return a && (viewer.admin || a.person_id === viewer.id) ? a : null;
+	return a && (viewer.admin || a.person_id === viewer.id || a.shares.includes(viewer.id)) ? a : null;
+}
+
+/**
+ * What someone it is shared with gets about the agent: name and work, not how it is built. Its
+ * role (prompt), harness (tools, MCP servers, installs) and who else has it stay with the owner and
+ * admins. Server code keeps using the full agent; this is only for what goes to the browser.
+ */
+export function forViewer<T extends Agent>(agent: T, viewer: Person): T {
+	if (viewer.admin || agent.person_id === viewer.id) return agent;
+	return { ...agent, role: '', harness: undefined, harness_image: null, shares: [viewer.id] } as unknown as T;
+}
+
+/** Its owner or someone it is shared with: chat, tasks, answers. Not its configuration. */
+export async function usable(viewer: Person, id: number) {
+	const a = await get(id);
+	return a && (a.person_id === viewer.id || a.shares.includes(viewer.id)) ? a : null;
+}
+
+/** The owner shares it with exactly these people (anyone but the owner). */
+export async function setShares(agent: Agent, people: unknown) {
+	const ids = [...new Set((Array.isArray(people) ? people : []).map(Number).filter((n) => Number.isSafeInteger(n) && n > 0 && n !== agent.person_id))].slice(0, 50);
+	await tx(async (c) => {
+		await exec('delete from agent_shares where agent_id = $1', [agent.id], c);
+		await exec('insert into agent_shares (agent_id, person_id) select $1, p.id from people p where p.id = any($2::bigint[])', [agent.id, ids], c);
+	});
+	const now = (await rows<{ person_id: number }>('select person_id from agent_shares where agent_id = $1 order by person_id', [agent.id])).map((s) => s.person_id);
+	hub.setShares(agent.id, now);
+	return now;
+}
+
+/** At boot: the hub learns who sees each shared agent. */
+export async function loadShares() {
+	const all = await rows<{ agent_id: number; people: number[] }>('select agent_id, array_agg(person_id::int order by person_id) as people from agent_shares group by agent_id');
+	for (const s of all) hub.setShares(s.agent_id, s.people);
 }
 
 function checkModel(model: string) {

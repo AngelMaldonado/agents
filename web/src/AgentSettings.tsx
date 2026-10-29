@@ -5,6 +5,7 @@ import { AgentConfiguration } from './AgentConfiguration';
 import { Channels } from './Channels';
 import { AgentSchedules } from './AgentSchedules';
 import { AgentTools } from './AgentTools';
+import { ShareAgent } from './ShareAgent';
 import { Button } from '@/components/ui/button';
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle, DialogTrigger } from '@/components/ui/dialog';
 import { Input } from '@/components/ui/input';
@@ -35,7 +36,7 @@ export function AgentSettings({ agent, settings, mine, profileReset, onProfileRe
       {mine && <TabsTrigger value="advanced" aria-label="Avanzado"><SlidersHorizontal /><span>Avanzado</span></TabsTrigger>}
      </TabsList>
     </div>
-    <SettingsPanel value="general" active={tab}><AgentConfiguration agent={agent} settings={settings} mine={mine} onRestore={() => { setOpen(false); setTab('general'); setVisited(new Set(['general'])); }} /></SettingsPanel>
+    <SettingsPanel value="general" active={tab}><AgentConfiguration agent={agent} settings={settings} mine={mine} onRestore={() => { setOpen(false); setTab('general'); setVisited(new Set(['general'])); }} />{mine && <ShareAgent agent={agent} onChanged={onChanged} />}</SettingsPanel>
     {mine && visited.has('channels') && <SettingsPanel value="channels" active={tab}><Channels agentId={agent.id} /></SettingsPanel>}
     {mine && visited.has('schedules') && <SettingsPanel value="schedules" active={tab}><AgentSchedules agentId={agent.id} /></SettingsPanel>}
     {mine && visited.has('tools') && <SettingsPanel value="tools" active={tab}><AgentTools agent={agent} onBrowser={() => { setOpen(false); onChanged(); }} /></SettingsPanel>}

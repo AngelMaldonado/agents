@@ -17,7 +17,8 @@ export function Gallery({ agents, me, settings, onOpen }: {
 }) {
 	useTick(5000);
 	const mine = agents.filter((a) => a.person_id === me.id);
-	const others = agents.filter((a) => a.person_id !== me.id);
+	const shared = agents.filter((a) => a.person_id !== me.id && a.shares?.includes(me.id));
+	const others = agents.filter((a) => a.person_id !== me.id && !a.shares?.includes(me.id));
 	const running = agents.filter((a) => isLive(a.task) && a.task!.status !== 'queued').length;
 	return (
 		<div className="page">
@@ -36,6 +37,12 @@ export function Gallery({ agents, me, settings, onOpen }: {
 				</div>
 			)}
 			<div className="agent-grid">{mine.map((a) => <AgentCard key={a.id} agent={a} onOpen={onOpen} />)}</div>
+			{shared.length > 0 && (
+				<section aria-label="Compartidos contigo">
+					<h2 className="section">Compartidos contigo <Badge variant="secondary">{shared.length}</Badge></h2>
+					<div className="agent-grid">{shared.map((a) => <AgentCard key={a.id} agent={a} onOpen={onOpen} showOwner />)}</div>
+				</section>
+			)}
 			{others.length > 0 && (
 				<section aria-label="Agentes de otras personas">
 					<h2 className="section">De otras personas <Badge variant="outline">Admin</Badge></h2>
