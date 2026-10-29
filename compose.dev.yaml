@@ -29,6 +29,8 @@ services:
       AGENTS_TEST_DATABASE_URL: postgres://agents:agents@postgres:5432/agents_test
       # Links in webhooks and the inbound URL shown to the owner (LAN/tailnet only).
       AGENTS_PUBLIC_URL: https://agents-dev.cubytest.space
+      # The WhatsApp bridge; AGENTS_WHATSAPP_SECRET comes from .env.dev.
+      AGENTS_WHATSAPP_URL: http://whatsapp:8790
       PORT: "8787"
     depends_on:
       postgres:
@@ -79,6 +81,24 @@ services:
       interval: 2s
       timeout: 3s
       retries: 30
+    networks: [agents-dev-internal]
+    restart: unless-stopped
+
+  # WhatsApp (whatsmeow): the number an admin links for this instance. Built by `just whatsapp build`.
+  # Its session lives in the `whatsmeow` schema of the dev Postgres. It reads its secret from .env.dev,
+  # which only root can read on reko-3, hence user 0 here (in prod it comes from the stack's Environment).
+  whatsapp:
+    image: agents-whatsapp:dev
+    user: "0:0"
+    entrypoint: ["sh", "-c", "set -a && . /run/agents.env && set +a && exec /usr/local/bin/whatsapp"]
+    environment:
+      AGENTS_URL: http://server:8787
+      WHATSAPP_DATABASE_URL: postgres://agents:agents@postgres:5432/agents?sslmode=disable&search_path=whatsmeow
+    volumes:
+      - ./.env.dev:/run/agents.env:ro
+    depends_on:
+      postgres:
+        condition: service_healthy
     networks: [agents-dev-internal]
     restart: unless-stopped
 

@@ -7,6 +7,7 @@ import {ArtifactMarkdown,ArtifactCards} from './artifacts';
 import {Questionnaire,type QuestionDraft} from './questionnaire';
 import {ConversationTabs} from './conversation-tabs';
 import {Button} from './ui/button';
+import {AttachButton,AttachmentChips,SentAttachments,useAttachments} from './attachments';
 import {ScrollArea} from './ui/scroll-area';
 type Props={agent:Agent&{mine:boolean};task:Task|null;events:TaskEvent[];files:Artifact[];historical:boolean;active:boolean;onRefresh:()=>Promise<void>;
  conversation?:Conversation;conversations?:Conversation[];records?:WorkRecord[];inputs?:ConversationInput[];loading?:boolean;loadError?:string;
@@ -29,6 +30,7 @@ function WorkMessage(){
  return <MessagePrimitive.Root className={`work-message designer-message designer-message-${role}`}>
   <span className="sr-only">{role==='user'?'Tú':'Agente'}</span>
   <div className="work-message-body designer-message-content"><MessagePrimitive.Parts components={{Text:({text})=><ArtifactMarkdown text={text} agentId={props.agent.id} runId={task?.id??0} files={record?.artifacts??[]}/>}}/></div>
+  {binding?.input?.files?.length?<SentAttachments files={binding.input.files} href={name=>`/api/agents/${props.agent.id}/messages/${binding.input!.id}/files/${encodeURIComponent(name)}`}/>:null}
   {binding?.pending&&<p className="text-xs text-muted-foreground" role="status">Mensaje pendiente; se entregará sólo en esta conversación.</p>}
   {blocked&&task&&<div className="work-questionnaire" data-help-round={blocked.id}>
    {questions.length>0&&!textReply&&(!pending&&!receipt)?<details className="mt-3 text-xs text-muted-foreground"><summary>Solicitud anterior · ya terminó</summary><ul className="mt-2 list-disc pl-4">{questions.map(q=><li key={q.id}>{q.title}</li>)}</ul></details>:questions.length>0&&!textReply?<Questionnaire key={draftKey} id={`${instanceId}:help:${draftKey}`} round={blocked.id} questions={questions} answered={receipt?.data.answers} draft={drafts[draftKey]??{value:{},other:{}}} update={patch=>updateDraft(draftKey,patch)} onAnswer={a=>onAnswer(task.id,a)} blocked={!editable||!pending||busy||unsent||!!expired} working={busy} unsent={unsent} legend="Respuesta al agente" receiptTitle={expired?'Respuesta guardada, no entregada':pending?'Respuestas guardadas; esperando entrega':'Respuestas enviadas'}/>:pending&&!textReply?<p className="text-sm text-muted-foreground">Responde escribiendo en el chat.</p>:null}
@@ -61,26 +63,30 @@ export function WorkChat(props:Props){
  const records=useMemo(()=>props.records??(task?[{task,events:props.events,artifacts:props.files}]:[]),[props.records,task,props.events,props.files]);
  const transcript=useMemo(()=>workTranscript(records,props.inputs??[]),[records,props.inputs]);
  const current=useRef(props);current.current=props;
- const request=useRef<{key:string;text:string;replyTo?:{runId:number;round:number}}|null>(null);
+ const attach=useAttachments({files:10,fileBytes:10*1024*1024,totalBytes:25*1024*1024});
+ const attachRef=useRef(attach);attachRef.current=attach;
+ const request=useRef<{key:string;sig:string;replyTo?:{runId:number;round:number}}|null>(null);
  const composingIntent=useRef<{runId:number;round:number}|null|undefined>(undefined);
  const replyTarget=()=>{
   const p=current.current,control=[...p.events].reverse().find(e=>['blocked','steer','unblocked'].includes(e.kind));
   return p.task&&isLive(p.task)&&control?.kind==='blocked'&&!p.events.some(e=>['help_answer','help_reply'].includes(e.kind)&&e.data.round===control.id)?{runId:p.task.id,round:control.id}:null;
  };
  const newMessage=useCallback(async(message:{content:readonly {type:string;text?:string}[]})=>{
-  const p=current.current,text=message.content.filter(c=>c.type==='text').map(c=>c.text??'').join('\n').trim();
-  if(!text||!p.agent.mine||p.historical||!p.active||!p.conversation||p.conversation.archived_at||p.loading)throw new MessageNotSentError('No puedes enviar en esta vista.');
+  const p=current.current,text=message.content.filter(c=>c.type==='text').map(c=>c.text??'').join('\n').trim(),files=attachRef.current.current.current;
+  if((!text&&!files.length)||!p.agent.mine||p.historical||!p.active||!p.conversation||p.conversation.archived_at||p.loading)throw new MessageNotSentError('No puedes enviar en esta vista.');
   if(sending.current)throw new MessageNotSentError('Espera a que termine la petición actual.');
   if(text.length>4000)throw new MessageNotSentError('El mensaje es demasiado largo. Máximo 4000 caracteres.');
   sending.current=true;setBusy(true);setError('');
-  if(!request.current||request.current.text!==text){
-   const replyTo=composingIntent.current===undefined?replyTarget():composingIntent.current;
-   request.current={key:crypto.randomUUID(),text,...(replyTo?{replyTo}:{})};
+  const sig=`${text}\n${files.map(f=>f.id).join(',')}`;
+  if(!request.current||request.current.sig!==sig){
+   // Files never answer a help question: they go as their own message to the conversation.
+   const replyTo=files.length?null:composingIntent.current===undefined?replyTarget():composingIntent.current;
+   request.current={key:crypto.randomUUID(),sig,...(replyTo?{replyTo}:{})};
   }
   try{
    const r=request.current;
-   await api(`/agents/${p.agent.id}/conversations/${p.conversation.id}/messages`,{method:'POST',body:{text,requestId:r.key,...(r.replyTo?{replyTo:r.replyTo}:{})}});
-   request.current=null;composingIntent.current=undefined;
+   await api(`/agents/${p.agent.id}/conversations/${p.conversation.id}/messages`,{method:'POST',body:{text,requestId:r.key,...(r.replyTo?{replyTo:r.replyTo}:{}),...(files.length?{attachments:files.map(({name,mime,data})=>({name,mime,data}))}:{})}});
+   request.current=null;composingIntent.current=undefined;attachRef.current.clear();
    // A durable acknowledgement wins even if refreshing the transcript fails; never resend an accepted message.
    await p.onRefresh().catch(()=>{});
   }catch(e){setError((e as Error).message);throw new MessageNotSentError((e as Error).message);}finally{sending.current=false;setBusy(false);}
@@ -124,9 +130,13 @@ export function WorkChat(props:Props){
    <div className="work-composer designer-composer-wrap">
     {error&&<p role="alert" className="error mb-2">{error}</p>}
     {historical?<p className="text-sm text-muted-foreground">Ejecución histórica · sólo lectura. Vuelve a la conversación para continuar.</p>:!agent.mine?<p className="text-sm text-muted-foreground">Sólo el dueño puede dirigir este trabajo.</p>:!conversation?<p className="text-sm text-muted-foreground">Abre una nueva conversación o retoma una desde Recientes. Las anteriores se conservan.</p>:conversation.archived_at?<p className="text-sm text-muted-foreground">Tab cerrado. Reábrelo desde Recientes para continuar.</p>:<>
-     <ComposerPrimitive.Root className="designer-composer" onSubmitCapture={e=>{if(busy){e.preventDefault();e.stopPropagation();}}}>
-      <ComposerPrimitive.Input aria-label="Mensaje al agente" placeholder={task?.status==='blocked'?'Responde al agente…':props.waitingForComputer?'Escribe; tu mensaje esperará su turno…':task&&isLive(task)?'Escribe; el mensaje quedará pendiente…':'Escribe al agente…'} className="designer-composer-input" minRows={2} maxRows={6} maxLength={4000} submitMode="enter" autoFocus={false} addAttachmentOnPaste={false} onChange={e=>{if(!e.target.value.trim()){composingIntent.current=undefined;request.current=null;}else if(composingIntent.current===undefined)composingIntent.current=replyTarget();}}/>
-      <div className="designer-composer-actions justify-end!"><ComposerPrimitive.Send asChild><Button size="icon" aria-label="Enviar mensaje" disabled={busy||!!props.loading}><ArrowUp aria-hidden="true"/></Button></ComposerPrimitive.Send></div>
+     {attach.error&&<p role="alert" className="error mb-2">{attach.error}</p>}
+     <ComposerPrimitive.Root className="designer-composer" onSubmitCapture={e=>{if(busy){e.preventDefault();e.stopPropagation();}}} onDrop={attach.onDrop} onDragOver={attach.onDragOver}>
+      <AttachmentChips files={attach.files} onRemove={attach.remove}/>
+      <ComposerPrimitive.Input onPaste={attach.onPaste} aria-label="Mensaje al agente" placeholder={task?.status==='blocked'?'Responde al agente…':props.waitingForComputer?'Escribe; tu mensaje esperará su turno…':task&&isLive(task)?'Escribe; el mensaje quedará pendiente…':'Escribe al agente…'} className="designer-composer-input" minRows={2} maxRows={6} maxLength={4000} submitMode="enter" autoFocus={false} addAttachmentOnPaste={false} onChange={e=>{if(!e.target.value.trim()){composingIntent.current=undefined;request.current=null;}else if(composingIntent.current===undefined)composingIntent.current=replyTarget();}}/>
+      <div className="designer-composer-actions"><AttachButton onFiles={f=>void attach.add(f)} disabled={busy||!!props.loading}/>{attach.files.length&&!unsent
+       ? <Button type="button" size="icon" aria-label="Enviar adjuntos" disabled={busy||!!props.loading} onClick={()=>void newMessage({content:[]}).catch(()=>{})}><ArrowUp aria-hidden="true"/></Button>
+       : <ComposerPrimitive.Send asChild><Button size="icon" aria-label="Enviar mensaje" disabled={busy||!!props.loading}><ArrowUp aria-hidden="true"/></Button></ComposerPrimitive.Send>}</div>
      </ComposerPrimitive.Root>
      <p className="text-xs text-muted-foreground">{props.waitingForComputer?'El agente trabaja en otra conversación. Tu mensaje esperará su turno.':task&&isLive(task)?'El agente está trabajando. Los mensajes se entregan sólo a esta conversación.':'Una conversación puede continuar durante varias ejecuciones.'}</p>
     </>}

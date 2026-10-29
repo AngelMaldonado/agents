@@ -1,8 +1,9 @@
 # The `agents` stack of Komodo (reko-3), "Compose" field. https://agents.cubytest.space (LAN/tailnet only).
 # The stack's "Environment" sets AGENTS_ADMIN_PIN, AGENTS_MASTER_KEY (32 bytes base64: openssl rand -base64 32),
-# AGENTS_PROXY_KEY (openssl rand -hex 24), AGENTS_DB_PASSWORD (openssl rand -hex 24) and IMAGE_TAG to pin a commit.
+# AGENTS_PROXY_KEY (openssl rand -hex 24), AGENTS_DB_PASSWORD (openssl rand -hex 24), AGENTS_WHATSAPP_SECRET
+# (openssl rand -hex 24) and IMAGE_TAG to pin a commit.
 # Losing AGENTS_MASTER_KEY makes every saved key and site login unreadable: keep it in 1Password.
-# The sandbox image is built on reko-3 itself: just deploy sandbox.
+# The sandbox image is built on reko-3 itself: just deploy sandbox. The WhatsApp bridge: just deploy whatsapp.
 services:
   server:
     image: registry.cubytest.space/cuby/agents:${IMAGE_TAG:-latest}
@@ -19,6 +20,8 @@ services:
       AGENTS_SANDBOX_IMAGE: agents-sandbox:${IMAGE_TAG:-latest}
       AGENTS_PUBLIC_URL: https://agents.cubytest.space
       AGENTS_DATABASE_URL: postgres://agents:${AGENTS_DB_PASSWORD:?set AGENTS_DB_PASSWORD in the stack's Environment}@postgres:5432/agents
+      AGENTS_WHATSAPP_URL: http://whatsapp:8790
+      AGENTS_WHATSAPP_SECRET: ${AGENTS_WHATSAPP_SECRET:?set AGENTS_WHATSAPP_SECRET in the stack's Environment}
     depends_on:
       postgres:
         condition: service_healthy
@@ -81,6 +84,20 @@ services:
         done
     volumes:
       - /srv/agents/backups:/backups
+    depends_on:
+      postgres:
+        condition: service_healthy
+    networks: [internal]
+
+  # WhatsApp (whatsmeow): the number an admin links in Administración, shared by every agent.
+  # Its device session lives in the `whatsmeow` schema of the same database (and its backups).
+  whatsapp:
+    image: registry.cubytest.space/cuby/agents-whatsapp:${IMAGE_TAG:-latest}
+    restart: unless-stopped
+    environment:
+      AGENTS_URL: http://server:8787
+      AGENTS_WHATSAPP_SECRET: ${AGENTS_WHATSAPP_SECRET:?set AGENTS_WHATSAPP_SECRET in the stack's Environment}
+      WHATSAPP_DATABASE_URL: postgres://agents:${AGENTS_DB_PASSWORD:?set AGENTS_DB_PASSWORD in the stack's Environment}@postgres:5432/agents?sslmode=disable&search_path=whatsmeow
     depends_on:
       postgres:
         condition: service_healthy

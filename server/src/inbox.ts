@@ -13,7 +13,7 @@ import { row, rows, exec, tx, DATA_DIR } from './db';
 import { defaultConversation } from './conversations';
 import { checkRunnable, startRun, failRun, liveRunOf, toSupervisor, recordEvent, deliverHelp, type Status } from './tasks';
 
-export type Source = 'web' | 'hook' | 'cron';
+export type Source = 'web' | 'hook' | 'cron' | 'whatsapp';
 export type Attachment = { name: string; mime?: string; data: string };
 type Message = {
 	id: number; agent_id: number; source: Source; sender: string | null; schedule_name: string | null;
@@ -192,6 +192,7 @@ export function render(m: Pick<Message, 'id' | 'source' | 'sender' | 'schedule_n
 	const head =
 		m.source === 'hook' ? `Mensaje recibido por webhook${m.sender ? ` de ${m.sender}` : ''}:\n\n`
 		: m.source === 'cron' ? `Tarea programada:\n\n`
+		: m.source === 'whatsapp' ? `Mensaje recibido por WhatsApp${m.sender ? ` de ${m.sender}` : ''} (tu respuesta final se le envía por WhatsApp):\n\n`
 		: '';
 	const files = attachments.length ? `\n\nAdjuntos en ~/work/in/${m.id}/: ${attachments.join(', ')}` : '';
 	return `${head}${m.text}${files}`;
@@ -216,4 +217,14 @@ export async function startPrompt(runId: number) {
 	const files = await filesFor(ms.map((m) => m.id));
 	const byMsg = (id: number) => files.filter((f) => f.path.startsWith(`in/${id}/`)).map((f) => f.name);
 	return { prompt: ms.map((m) => render(m, byMsg(m.id))).join('\n\n---\n\n'), files };
+}
+
+/** One file that came in with this agent's message, for viewing it; null if it is not theirs. */
+export async function inboundFile(agentId: number, messageId: number, name: string) {
+	if (!Number.isSafeInteger(messageId) || messageId < 1) return null;
+	const f = await row<{ name: string; path: string }>(
+		"select f.name, f.path from files f join messages m on m.id = f.message_id where f.direction = 'in' and m.agent_id = $1 and m.id = $2 and f.name = $3",
+		[agentId, messageId, name]
+	);
+	return f && { name: f.name, path: join(DATA_DIR, f.path) };
 }

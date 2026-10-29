@@ -35,10 +35,18 @@ describe('calendar projection, never schedule execution', () => {
   expect(events[0].title).toContain('(Pausa)'); expect('end' in events[0]).toBe(false); expect(existing).toEqual(before);
  });
  test('bounds dense rules and isolates malformed rules', () => {
-  const { events, limited, invalid } = expandSchedules([{ ...schedule, cron: '* * * * *' }, { ...schedule, name: 'bad', cron: 'bad' }], '2026-10-26T00:00:00Z', '2026-11-01T00:00:00Z');
-  expect(events.length).toBe(200); expect(limited).toEqual(['test']); expect(invalid).toEqual(['bad']);
-  const many = expandSchedules(Array.from({ length: 7 }, (_, i) => ({ ...schedule, name: `rule-${i}`, cron: '* * * * *' })), '2026-10-26T00:00:00Z', '2026-11-01T00:00:00Z');
-  expect(many.events.length).toBe(1000); expect(many.limited.length).toBe(7);
+  const { events, limited, invalid } = expandSchedules([{ ...schedule, cron: '* * * * *' }, { ...schedule, name: 'bad', cron: 'bad' }], '2026-10-26T00:00:00-06:00', '2026-11-02T00:00:00-06:00');
+  // Seven days, one block each: a dense rule is drawn per day, never cut after the first days.
+  expect(events.length).toBe(7); expect(events[0].title).toBe('1440× · Revisar fuentes'); expect(limited).toEqual([]); expect(invalid).toEqual(['bad']);
+  const month = expandSchedules([{ ...schedule, cron: '* * * * *' }], '2026-10-01T00:00:00Z', '2026-11-30T00:00:00Z');
+  expect(month.limited).toEqual(['test']);
+ });
+ test('every 15 minutes every day covers every day of the week (the agenda used to stop on Tuesday)', () => {
+  const { events, limited } = expandSchedules([{ ...schedule, cron: '*/15 * * * *' }, { ...schedule, name: 'daily', cron: '45 13 * * *' }], '2026-10-26T00:00:00-06:00', '2026-11-02T00:00:00-06:00', SCHEDULE_TZ);
+  const dense = events.filter(e => e.extendedProps.scheduleName === 'test');
+  expect(dense.length).toBe(7); expect(dense.every(e => e.title.startsWith('96× ') && e.classNames.includes('schedule-dense'))).toBe(true);
+  expect(dense[0].start).toBe('2026-10-26T06:00:00.000Z'); expect(dense[0].end).toBe('2026-10-27T06:00:00.000Z');
+  expect(events.filter(e => e.extendedProps.scheduleName === 'daily').length).toBe(7); expect(limited).toEqual([]);
  });
  test('rejects invalid/excessive range rather than unbounded expansion', () => {
   expect(expandSchedules([schedule], 'bad', 'bad').events).toEqual([]);

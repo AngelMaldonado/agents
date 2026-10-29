@@ -62,8 +62,8 @@ export function AgentDesigner({ settings, designId, agent, effectivePrompt, canA
   timer = setTimeout(poll, 1000);
   return () => { alive = false; clearTimeout(timer); };
  }, [design?.id, design?.status, design?.busy_until, design?.initialization?.task?.status]);
- const sendMessage = async (input: { text?: string; answers?: InterviewAnswers }) => {
-  if (active.current || working || loading || (!input.text?.trim() && !input.answers)) throw new Error('Espera a que termine la petición actual.');
+ const sendMessage = async (input: { text?: string; answers?: InterviewAnswers; attachments?: { name: string; mime: string; data: string }[] }) => {
+  if (active.current || working || loading || (!input.text?.trim() && !input.answers && !input.attachments?.length)) throw new Error('Espera a que termine la petición actual.');
   const token = Symbol(); active.current = token; setBusy(true); setError('');
   try {
    const d = design ?? (await api<{ design: Design }>('/designs', { body: { model, ...(agent ? { agentId: agent.id } : {}) } })).design;
@@ -114,7 +114,7 @@ export function AgentDesigner({ settings, designId, agent, effectivePrompt, canA
   </div>
   <p className="mt-4 text-xs text-muted-foreground">La comprobación usa la cola y cuota normales. Al terminar se apaga esta computadora; las tareas arrancarán otra sobre la misma memoria.</p>
  </div>;
- return <Suspense fallback={<div className="p-5 text-xs text-muted-foreground" role="status">Cargando conversación…</div>}><DesignChat key={session} design={design} agent={agent} effectivePrompt={effectivePrompt} settings={settings} model={model} onModel={setModel} working={working} loading={loading} canApply={canApply} error={error} onReload={() => void reload()} onReset={reset} onSend={text => sendMessage({ text })} onAnswer={answers => sendMessage({ answers })} onApprove={() => void approve()} onValidate={() => void testHarness()} validating={testing} onBack={onBack} notice={notice} active={visible} /></Suspense>;
+ return <Suspense fallback={<div className="p-5 text-xs text-muted-foreground" role="status">Cargando conversación…</div>}><DesignChat key={session} design={design} agent={agent} effectivePrompt={effectivePrompt} settings={settings} model={model} onModel={setModel} working={working} loading={loading} canApply={canApply} error={error} onReload={() => void reload()} onReset={reset} onSend={(text, attachments) => sendMessage({ text, ...(attachments?.length ? { attachments } : {}) })} onAnswer={answers => sendMessage({ answers })} onApprove={() => void approve()} onValidate={() => void testHarness()} validating={testing} onBack={onBack} notice={notice} active={visible} /></Suspense>;
 }
 
 function Initialization({ design, busy, onRetry }: { design: Design; busy: boolean; onRetry: () => void }) {

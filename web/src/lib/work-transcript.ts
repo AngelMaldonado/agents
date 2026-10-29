@@ -1,13 +1,13 @@
 import type {ThreadMessageLike} from '@assistant-ui/react';
 import type {ConversationInput,TaskEvent,WorkRecord} from '@/api';
-export type WorkBinding={record?:WorkRecord;event?:TaskEvent;pending?:boolean};
+export type WorkBinding={record?:WorkRecord;event?:TaskEvent;pending?:boolean;input?:ConversationInput};
 export function workTranscript(records:WorkRecord[],inputs:ConversationInput[]){
  const entries:{message:ThreadMessageLike;binding:WorkBinding;at:number;order:number}[]=[];
  const add=(id:string,role:'user'|'assistant',text:string,at:number,binding:WorkBinding)=>{if(text)entries.push({message:{id,role,content:[{type:'text',text}],createdAt:new Date(at)},binding,at,order:entries.length});};
  const byRun=new Map(records.map(r=>[r.task.id,r]));
  for(const m of inputs){
   if(m.context?.helpRound || (m.run_id && byRun.get(m.run_id)?.task.kind==='initialize'))continue;
-  add(`input:${m.id}`,'user',m.text,m.received_at,{record:m.run_id?byRun.get(m.run_id):undefined,pending:m.routed_at===null});
+  add(`input:${m.id}`,'user',m.text||(m.files?.length?'Archivos adjuntos':''),m.received_at,{record:m.run_id?byRun.get(m.run_id):undefined,pending:m.routed_at===null,input:m});
  }
  for(const record of records){
   const {task,events}=record;if(task.kind==='initialize')continue;

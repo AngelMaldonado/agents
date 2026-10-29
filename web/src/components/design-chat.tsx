@@ -11,18 +11,25 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { ContractMarkdown } from './design-content';
 import { HarnessPanel, HarnessChanges, HarnessTests, SchedulesPanel } from './harness-content';
 import { InterviewCard, InterviewContext, type InterviewDrafts, type InterviewDraft } from './interview-card';
+import { AttachButton, AttachmentChips, SentAttachments, useAttachments } from './attachments';
 
 type Props = {
  design: Design | null; agent?: Agent; effectivePrompt?: string; settings: PublicSettings;
  model: string; onModel: (model: string) => void; working: boolean; loading: boolean;
  canApply: boolean; error: string; onReload: () => void; onReset: () => void;
- onSend: (text: string) => Promise<void>; onAnswer: (answers: InterviewAnswers) => Promise<void>; onApprove: () => void; onValidate: () => void; onBack?: () => void; notice?: string;
+ onSend: (text: string, attachments?: { name: string; mime: string; data: string }[]) => Promise<void>; onAnswer: (answers: InterviewAnswers) => Promise<void>; onApprove: () => void; onValidate: () => void; onBack?: () => void; notice?: string;
  active?: boolean; validating?: boolean;
 };
 const convertMessage = (message: ThreadMessageLike) => message;
 type Artifact = { name: string; prompt: string };
 type ArtifactLink = { artifact: Artifact | null; version: number; lastAssistant: string | undefined; panelId: string; open: boolean; onOpen: (button: HTMLButtonElement) => void };
 const ArtifactContext = createContext<ArtifactLink | null>(null);
+// The images and text files the owner sent with each interview message, by message index.
+const FilesContext = createContext<{ designId: string; files: (Design['messages'][number]['attachments'] | undefined)[] } | null>(null);
+// The designer reads images and text files; other formats are refused before sending.
+const DESIGN_FILES = { files: 4, fileBytes: 5 * 1024 * 1024, totalBytes: 20 * 1024 * 1024, accept: 'image/png,image/jpeg,image/gif,image/webp,text/*,.md,.csv,.tsv,.json,.yaml,.yml,.xml,.log',
+ allow: (f: File) => /^image\/(png|jpeg|gif|webp)$/.test(f.type) || f.type.startsWith('text/') || f.type === 'application/json' || /\.(txt|md|markdown|csv|tsv|json|ya?ml|xml|html?|log)$/i.test(f.name),
+ rejectMessage: 'El diseñador lee imágenes (png, jpg, gif, webp) y archivos de texto (txt, md, csv, json…).' };
 
 function ArtifactCard() {
  const data = useContext(ArtifactContext)!;
@@ -45,11 +52,13 @@ function DesignMessage() {
  const role = useAuiState(s => s.message.role);
  const id = useAuiState(s => s.message.id);
  const hasText = useAuiState(s => s.message.content.some(part => part.type === 'text' && part.text.length > 0));
- const artifact = useContext(ArtifactContext)!;
+ const artifact = useContext(ArtifactContext)!, sent = useContext(FilesContext);
+ const files = role === 'user' && sent ? sent.files[Number(id.split(':').at(-1))] : undefined;
  if (!hasText) return null; // The backend returns whole structured rounds, not a token stream.
  return <MessagePrimitive.Root className={`designer-message designer-message-${role}`}>
   <span className="sr-only">{role === 'user' ? 'Tú' : 'IA'}</span>
   <div className="designer-message-content"><MessagePrimitive.Parts components={{ Text: MessageText }} /></div>
+  {files?.length ? <SentAttachments files={files} href={fileId => `/api/designs/${sent!.designId}/files/${files.find(f => f.name === fileId)?.id ?? ''}`} /> : null}
   {role === 'assistant' && <InterviewCard index={Number(id.split(':').at(-1))} />}
   {id === artifact.lastAssistant && <ArtifactCard />}
  </MessagePrimitive.Root>;
@@ -58,11 +67,12 @@ function DesignMessage() {
 export function DesignChat(props: Props) {
  const { design, onSend } = props;
  const [pending, setPending] = useState<{ text: string; version: number } | null>(null);
+ const attach = useAttachments(DESIGN_FILES), attachRef = useRef(attach); attachRef.current = attach;
  const sending = useRef(false);
  const [interviewDrafts, setInterviewDrafts] = useState<InterviewDrafts>({});
  const updateInterview = (round: number, patch: Partial<InterviewDraft>) => setInterviewDrafts(old => ({ ...old, [round]: { ...(old[round] ?? { value: {}, other: {} }), ...patch } }));
  const messages = useMemo<ThreadMessageLike[]>(() => {
-  const saved: ThreadMessageLike[] = (design?.messages ?? []).map((m, i) => ({ id: `${design!.id}:${i}`, role: m.role, content: [{ type: 'text', text: m.content }] }));
+  const saved: ThreadMessageLike[] = (design?.messages ?? []).map((m, i) => ({ id: `${design!.id}:${i}`, role: m.role, content: [{ type: 'text', text: m.content || (m.attachments?.length ? 'Archivos adjuntos' : '') }] }));
   if (pending && (design?.version ?? 0) <= pending.version) saved.push({ id: 'pending-user', role: 'user', content: [{ type: 'text', text: pending.text }] });
   return saved;
  }, [design?.id, design?.messages, design?.version, pending]);
@@ -75,9 +85,9 @@ export function DesignChat(props: Props) {
   isSendDisabled: props.working || !props.model,
   onNew: async message => {
    if (sending.current) throw new MessageNotSentError();
-   const text = message.content.filter(part => part.type === 'text').map(part => part.text).join('\n');
-   sending.current = true; setPending({ text, version: design?.version ?? 0 });
-   try { await onSend(text); }
+   const text = message.content.filter(part => part.type === 'text').map(part => part.text).join('\n'), files = attachRef.current.current.current;
+   sending.current = true; setPending({ text: text || 'Archivos adjuntos', version: design?.version ?? 0 });
+   try { await onSend(text, files.map(({ name, mime, data }) => ({ name, mime, data }))); attachRef.current.clear(); }
    catch (err) { throw new MessageNotSentError((err as Error).message); }
    finally { sending.current = false; setPending(null); }
   },
@@ -89,10 +99,11 @@ export function DesignChat(props: Props) {
   try { await props.onAnswer(answers); }
   finally { sending.current = false; setPending(null); }
  };
- return <AssistantRuntimeProvider runtime={runtime}><DesignWorkspace {...props} onAnswer={answer} messages={messages} interviewDrafts={interviewDrafts} updateInterview={updateInterview} /></AssistantRuntimeProvider>;
+ const sendFiles = () => runtime.thread.composer.getState().text.trim() ? runtime.thread.composer.send() : void runtime.thread.append({ role: 'user', content: [{ type: 'text', text: '' }] });
+ return <AssistantRuntimeProvider runtime={runtime}><FilesContext.Provider value={design ? { designId: design.id, files: design.messages.map(m => m.attachments) } : null}><DesignWorkspace {...props} onAnswer={answer} messages={messages} interviewDrafts={interviewDrafts} updateInterview={updateInterview} attach={attach} sendFiles={sendFiles} /></FilesContext.Provider></AssistantRuntimeProvider>;
 }
 
-function DesignWorkspace(props: Props & { messages: ThreadMessageLike[]; interviewDrafts: InterviewDrafts; updateInterview: (round: number, patch: Partial<InterviewDraft>) => void }) {
+function DesignWorkspace(props: Props & { messages: ThreadMessageLike[]; interviewDrafts: InterviewDrafts; updateInterview: (round: number, patch: Partial<InterviewDraft>) => void; attach: ReturnType<typeof useAttachments>; sendFiles: () => void }) {
  const { design, agent, messages, settings, model, working, loading } = props;
  const root = useRef<HTMLDivElement>(null);
  const opener = useRef<HTMLButtonElement | null>(null);
@@ -149,9 +160,11 @@ function DesignWorkspace(props: Props & { messages: ThreadMessageLike[]; intervi
   </ThreadPrimitive.Viewport>
   </ScrollArea>
   <div className="designer-composer-wrap">
-   <ComposerPrimitive.Root className="designer-composer">
-    <ComposerPrimitive.Input id="designer-message" aria-label="Mensaje para la IA" placeholder={agent ? 'Quiero mejorar…' : 'Describe el agente que necesitas…'} className="designer-composer-input" minRows={2} maxRows={6} maxLength={8000} autoFocus={false} submitMode="enter" addAttachmentOnPaste={false} />
-    <div className="designer-composer-actions"><div className="flex min-w-0 flex-wrap items-center gap-2" aria-label="Opciones del prompt">{props.active !== false && controls}</div><ComposerPrimitive.Send asChild><Button size="icon" className="shrink-0 rounded-full" aria-label="Enviar"><ArrowUp aria-hidden="true" /></Button></ComposerPrimitive.Send></div>
+   {props.attach.error && <p role="alert" className="error mb-2">{props.attach.error}</p>}
+   <ComposerPrimitive.Root className="designer-composer" onDrop={props.attach.onDrop} onDragOver={props.attach.onDragOver}>
+    <AttachmentChips files={props.attach.files} onRemove={props.attach.remove} />
+    <ComposerPrimitive.Input onPaste={props.attach.onPaste} id="designer-message" aria-label="Mensaje para la IA" placeholder={agent ? 'Quiero mejorar…' : 'Describe el agente que necesitas…'} className="designer-composer-input" minRows={2} maxRows={6} maxLength={8000} autoFocus={false} submitMode="enter" addAttachmentOnPaste={false} />
+    <div className="designer-composer-actions"><div className="flex min-w-0 flex-wrap items-center gap-2" aria-label="Opciones del prompt"><AttachButton onFiles={f => void props.attach.add(f)} accept={DESIGN_FILES.accept} disabled={working || design?.status === 'approved'} />{props.active !== false && controls}</div>{props.attach.files.length ? <Button type="button" size="icon" className="shrink-0 rounded-full" aria-label="Enviar" disabled={working || !model} onClick={props.sendFiles}><ArrowUp aria-hidden="true" /></Button> : <ComposerPrimitive.Send asChild><Button size="icon" className="shrink-0 rounded-full" aria-label="Enviar"><ArrowUp aria-hidden="true" /></Button></ComposerPrimitive.Send>}</div>
    </ComposerPrimitive.Root>
    <p className="mt-2 text-center text-2xs text-muted-foreground">Tu cuenta GPT · Nada se aplica sin tu aprobación.</p>
   </div>

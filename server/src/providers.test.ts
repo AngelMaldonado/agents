@@ -7,6 +7,15 @@ const run = url ? test : test.skip;
 if (!url) console.warn('AGENTS_TEST_DATABASE_URL is not set: skipping (run `just dev test`).');
 // The runner must set AGENTS_DATABASE_URL BEFORE Bun loads ANY test module.
 process.env.AGENTS_DATA = '/tmp';
+// A fake WhatsApp bridge, set before any module reads its address.
+const waSent: { phone: string; text: string; files: unknown[] }[] = [];
+const waBridge = Bun.serve({ hostname: '127.0.0.1', port: 0, async fetch(req) {
+	if (req.headers.get('x-agents-secret') !== 'wa-test') return new Response(null, { status: 403 });
+	if (new URL(req.url).pathname === '/send') { waSent.push(await req.json()); return Response.json({ ok: true }); }
+	return Response.json({ state: 'connected', phone: '5215500000000' });
+} });
+process.env.AGENTS_WHATSAPP_URL = waBridge.url.origin;
+process.env.AGENTS_WHATSAPP_SECRET = 'wa-test';
 process.env.AGENTS_MASTER_KEY = Buffer.alloc(32, 7).toString('base64');
 const { pool, migrate, exec, row, DATABASE_URL } = await import('./db');
 const { assertTestDatabase } = await import('./test-database');
@@ -48,6 +57,7 @@ beforeAll(async () => {
 });
 afterAll(async () => {
 	proxy.stop(true);
+	waBridge.stop(true);
 	await pool.end();
 });
 
@@ -165,6 +175,51 @@ run('explicit tabs are idempotent pi contexts; channels keep their default and m
  await exec("update runs set status='done' where id=$1",[second.id]);
 });
 
+run('chat attachments are stored with their message, listed in the transcript and readable only through their agent',async()=>{
+ const agents=await import('./agents'),conversations=await import('./conversations'),inbox=await import('./inbox');
+ const a=await agents.create(person,{name:'Adjuntos de chat',model:'openai/gpt-6-sol'}),other=await agents.create(person,{name:'Otro agente',model:'openai/gpt-6-sol'}),main=(await agents.conversations(a.id))[0];
+ const png=Buffer.from('89504e470d0a1a0a','hex').toString('base64');
+ const sent=await inbox.receive({agentId:a.id,source:'web',personId:person,conversationId:main.id,text:'',attachments:[{name:'mi captura.png',mime:'image/png',data:png}],dedupeKey:'attach-one'},{routeNow:false});
+ const page=await conversations.transcript(a.id,main.id);
+ expect(page.inputs.find((m:any)=>m.id===sent.message_id).files).toEqual([{name:'mi_captura.png',mime:'image/png',size:8}]);
+ const f=await inbox.inboundFile(a.id,sent.message_id,'mi_captura.png');
+ expect(Buffer.from(await Bun.file(f!.path).arrayBuffer()).toString('base64')).toBe(png);
+ expect(await inbox.inboundFile(other.id,sent.message_id,'mi_captura.png')).toBeNull();
+ expect(inbox.render({id:sent.message_id,source:'web',sender:null,schedule_name:null,text:''},['mi_captura.png'])).toContain(`~/work/in/${sent.message_id}/: mi_captura.png`);
+});
+run('whatsapp: listed numbers pick their agent, unknown numbers hear nothing, answers and notices go back',async()=>{
+ const agents=await import('./agents'),whatsapp=await import('./whatsapp');
+ const ana=await agents.create(person,{name:'Ana',model:'openai/gpt-6-sol'}),beto=await agents.create(person,{name:'Beto',model:'openai/gpt-6-sol'});
+ await expect(whatsapp.setAgent(ana.id,{enabled:true,contacts:[{phone:'55 1234'}]})).rejects.toThrow('no es un número válido');
+ const view=await whatsapp.setAgent(ana.id,{enabled:true,contacts:[{phone:'+52 1 55 1234 5678',label:'Yo',notify:true}]});
+ expect(view).toEqual({available:true,phone:'5215500000000',enabled:true,contacts:[{phone:'5215512345678',label:'Yo',notify:true}]});
+ await whatsapp.setAgent(beto.id,{enabled:true,contacts:[{phone:'5215512345678'}]});
+ const phone='5215512345678';waSent.length=0;
+ expect(await whatsapp.inbound({id:'x1',phone:'5219999999999',text:'Hola'})).toEqual({ignored:true});expect(waSent.length).toBe(0);
+ expect(await whatsapp.inbound({id:'x2',phone,text:'Hola'})).toEqual({needsAgent:true});
+ expect(waSent.at(-1)!.text).toContain('1. Ana');expect(waSent.at(-1)!.text).toContain('2. Beto');
+ await whatsapp.inbound({id:'x3',phone,text:'/agente 2'});expect(waSent.at(-1)!.text).toBe('Ahora hablas con Beto.');
+ const sent:any=await whatsapp.inbound({id:'x4',phone,name:'Angel',text:'Revisa el pedido'});
+ expect(await row('select agent_id,source,sender,context from messages where id=$1',[sent.message_id])).toEqual({agent_id:beto.id,source:'whatsapp',sender:'Angel (+5215512345678)',context:{whatsapp:{phone}}});
+ expect(((await whatsapp.inbound({id:'x4',phone,text:'Revisa el pedido'})) as any).duplicate).toBe(true);
+ await whatsapp.setAgent(beto.id,{enabled:false,contacts:[{phone}]});
+ const back:any=await whatsapp.inbound({id:'x5',phone,text:'Hola de nuevo'});
+ expect((await row<{agent_id:number}>('select agent_id from messages where id=$1',[back.message_id]))!.agent_id).toBe(ana.id);
+ // Answers go to whoever wrote; scheduled work notifies the contacts marked for notices.
+ const conv=(await agents.conversations(ana.id))[0].id;
+ const run=async(source:string,ctx:unknown,answer:string)=>{
+  const r=(await row<{id:number}>(`insert into runs(agent_id,person_id,conversation_id,workflow_id,model,status,answer) values($1,$2,$3,$4,$5,'done',$6) returning id`,[ana.id,person,conv,`wa-${source}-${Date.now()}`,ana.model,answer]))!.id;
+  await exec(`insert into messages(agent_id,conversation_id,source,text,context,run_id,routed_as,routed_at) values($1,$2,$3,'x',$4,$5,'new_run',now())`,[ana.id,conv,source,ctx===null?null:JSON.stringify(ctx),r]);
+  return r;
+ };
+ waSent.length=0;
+ await whatsapp.onRun(await run('whatsapp',{whatsapp:{phone}},'Pedido revisado.'),'done');
+ expect(waSent).toEqual([{phone,text:'Pedido revisado.',files:[]}]);
+ await whatsapp.onRun(await run('cron',null,'Resumen diario.'),'done');
+ expect(waSent.at(-1)).toEqual({phone,text:'Ana: Resumen diario.',files:[]});
+ await whatsapp.onRun(await run('web',null,'Sólo en la web.'),'done');
+ expect(waSent.length).toBe(2);
+});
 run('conversation history pages executions and keeps chat events after thousands of tool events',async()=>{
  const agents=await import('./agents'),conversations=await import('./conversations');
  const a=await agents.create(person,{name:'Historia paginada',model:'openai/gpt-6-sol'}),conv=(await agents.conversations(a.id))[0];
@@ -256,6 +311,22 @@ run('provider failure preserves the previous version and releases the lease', as
  finally { replyStatus = 200; }
  const after = await designs.own(person, d.id); expect(after.messages).toEqual([]); expect(after.version).toBe(0); expect(after.busy_token).toBeNull();
  expect((await designs.message(person, d.id, { text: 'Reintento', version: 0 })).version).toBe(1);
+});
+run('interview attachments: images reach the model as images, text files inline, nothing else is accepted', async () => {
+ const designs = await import('./designs'); const d = await designs.create(person, { model: 'openai/gpt-6-sol' });
+ const png = Buffer.from('89504e470d0a1a0a', 'hex').toString('base64'), csv = Buffer.from('dia,monto\n1,100').toString('base64');
+ await expect(designs.message(person, d.id, { text: 'x', version: 0, attachments: [{ name: 'a.pdf', mime: 'application/pdf', data: png }] })).rejects.toThrow('imágenes');
+ const before = modelRequests.length;
+ const after = await designs.message(person, d.id, { text: '', version: 0, attachments: [{ name: 'captura.png', mime: 'image/png', data: png }, { name: 'gastos.csv', mime: 'text/csv', data: csv }] });
+ expect(modelRequests.length).toBe(before + 1);
+ const user = modelRequests.at(-1).input.at(-1);
+ expect(user.content.map((p: any) => p.type)).toEqual(['input_text', 'input_image', 'input_text']);
+ expect(user.content[1].image_url).toBe(`data:image/png;base64,${png}`);
+ expect(user.content[2].text).toContain('dia,monto');
+ const sent = after.messages.find((m: any) => m.attachments)!.attachments!;
+ expect(sent.map((f: any) => [f.name, f.mime])).toEqual([['captura.png', 'image/png'], ['gastos.csv', 'text/plain']]);
+ expect(Buffer.from(await Bun.file((await designs.file(person, d.id, sent[0].id))!.path).arrayBuffer()).toString('base64')).toBe(png);
+ await expect(designs.file(person + 1, d.id, sent[0].id)).rejects.toThrow();
 });
 run('stale chat revisions are rejected without spending another model request', async () => {
  const designs = await import('./designs'); const d = await proposal(); const before = modelRequests.length;

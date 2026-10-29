@@ -1,4 +1,5 @@
-// An agent's signed webhooks, visible only to its owner. Schedules have their own settings tab.
+// An agent's channels, visible only to its owner: WhatsApp (the instance's shared number) and signed
+// webhooks. Schedules have their own settings tab.
 import { useEffect, useRef, useState } from 'react';
 import { api, ago } from './api';
 import { Button } from '@/components/ui/button';
@@ -13,7 +14,9 @@ import type { Schedule } from '@/lib/schedules';
 type View = {
 	inUrl: string; inSecret: string; outUrl: string | null; outSecret: string;
 	deliveries: Delivery[]; schedules: Schedule[]; timezone: string;
+	whatsapp: { available: boolean; phone: string | null; enabled: boolean; contacts: Contact[] };
 };
+type Contact = { phone: string; label: string; notify: boolean };
 
 export function useAgentChannels(agentId: number) {
 	const [v, setV] = useState<View | null>(null);
@@ -34,10 +37,44 @@ export function Channels({ agentId }: { agentId: number }) {
 	return (
 		<div className="channels grid min-w-0 gap-7 divide-y">
 			{error && <p role="alert" className="error">{error}</p>}
+			<WhatsApp key={JSON.stringify(v.whatsapp)} v={v.whatsapp} save={(enabled, contacts) => call('/channels/whatsapp', 'PUT', { enabled, contacts })} />
 			<Inbound v={v} rotate={() => confirm('¿Rotar la entrada? La URL y el secreto actuales dejan de servir al instante.') && call('/channels/rotate', 'POST', { which: 'in' })} />
 			<Outbound v={v} save={(url) => call('/channels/out', 'PUT', { url })} rotate={() => confirm('¿Rotar el secreto de salida? Tu puente tendrá que usar el nuevo.') && call('/channels/rotate', 'POST', { which: 'out' })} />
 			<Deliveries list={v.deliveries} resend={(id) => call(`/deliveries/${id}/resend`, 'POST')} />
 		</div>
+	);
+}
+
+const phone = (digits: string) => `+${digits}`;
+function WhatsApp({ v, save }: { v: View['whatsapp']; save: (enabled: boolean, contacts: Contact[]) => Promise<string | null> }) {
+	const [enabled, setEnabled] = useState(v.enabled);
+	const [contacts, setContacts] = useState<Contact[]>(v.contacts);
+	const [busy, setBusy] = useState(false), [saved, setSaved] = useState(false);
+	const dirty = enabled !== v.enabled || JSON.stringify(contacts) !== JSON.stringify(v.contacts);
+	const edit = (i: number, patch: Partial<Contact>) => { setSaved(false); setContacts(cs => cs.map((c, j) => (j === i ? { ...c, ...patch } : c))); };
+	return (
+		<section className="channel-section min-w-0" aria-label="WhatsApp">
+			<h2>WhatsApp</h2>
+			{v.available
+				? <p className="muted">Un número para todos los agentes: <strong>{phone(v.phone ?? '')}</strong>. Sólo pueden escribirle a este agente los números de la lista. Quien habla con varios elige con <code>/agentes</code> y <code>/agente &lt;nombre&gt;</code>. Recibe la respuesta, los archivos que entregue y, si se atasca, su pregunta.</p>
+				: <p className="muted">Un administrador todavía no ha vinculado un número de WhatsApp. Puedes dejar lista la configuración; se usa en cuanto haya número.</p>}
+			<label className="row mb-4 gap-2 text-sm"><input type="checkbox" checked={enabled} onChange={e => { setSaved(false); setEnabled(e.target.checked); }} /> Recibir y responder por WhatsApp</label>
+			<div className="grid gap-2" role="group" aria-label="Números que pueden escribirle">
+				{contacts.map((c, i) => <div key={i} className="row wrap gap-2">
+					<Input aria-label="Número con lada de país" className="max-w-48" value={c.phone} onChange={e => edit(i, { phone: e.target.value })} placeholder="5215512345678" inputMode="tel" />
+					<Input aria-label="Nombre" className="max-w-48" value={c.label} onChange={e => edit(i, { label: e.target.value })} placeholder="Nombre (opcional)" />
+					<label className="row gap-2 text-xs" title="También recibe cómo terminó el trabajo programado o por webhook"><input type="checkbox" checked={c.notify} onChange={e => edit(i, { notify: e.target.checked })} /> Avisos</label>
+					<Button variant="ghost" size="sm" onClick={() => { setSaved(false); setContacts(cs => cs.filter((_, j) => j !== i)); }}>Quitar</Button>
+				</div>)}
+				{!contacts.length && <p className="muted small">Sin números: nadie puede escribirle por WhatsApp.</p>}
+			</div>
+			<div className="row wrap mt-3 gap-2">
+				<Button variant="outline" size="sm" disabled={contacts.length >= 20} onClick={() => { setSaved(false); setContacts(cs => [...cs, { phone: '', label: '', notify: false }]); }}>Agregar número</Button>
+				<Button size="sm" disabled={!dirty || busy} onClick={async () => { setBusy(true); const err = await save(enabled, contacts); setBusy(false); setSaved(!err); }}>{busy ? 'Guardando…' : 'Guardar WhatsApp'}</Button>
+				{saved && !dirty && <span role="status" className="muted small">Guardado.</span>}
+			</div>
+			<p className="muted small mt-2">Escribe la lada de país y el número, sin espacios (México: 521 + 10 dígitos). «Avisos» recibe cómo terminó el trabajo de horarios y webhooks.</p>
+		</section>
 	);
 }
 

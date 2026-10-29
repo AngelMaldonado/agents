@@ -5,7 +5,7 @@ export type Question = {
 };
 export type Answer = { selected: string[]; other: string };
 export type Answers = { round: number; values: Record<string, Answer> };
-export type InterviewMessage = { role: 'user' | 'assistant'; content: string; questions?: Question[]; questionRound?: number; answers?: Answers };
+export type InterviewMessage = { role: 'user' | 'assistant'; content: string; questions?: Question[]; questionRound?: number; answers?: Answers; attachments?: { id: string; name: string; mime: string; size: number }[] };
 export type QuestionRound = { round: number; questions: Question[] };
 const slug = /^[a-z][a-z0-9-]{0,39}$/;
 const object = (v: unknown): v is Record<string, any> => !!v && typeof v === 'object' && !Array.isArray(v);

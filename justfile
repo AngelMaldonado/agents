@@ -21,7 +21,7 @@ dev verb="session" arg="":
     case "{{verb}}" in
       init)
         # Secrets are made on reko-3 and never leave it. Dev PIN: 1234.
-        ssh {{ctx}} 'mkdir -p {{remote}} && cd {{remote}} && if [ ! -f .env.dev ]; then umask 077; printf "AGENTS_ADMIN_PIN=1234\nAGENTS_MASTER_KEY=%s\nAGENTS_PROXY_KEY=%s\n" "$(openssl rand -base64 32)" "$(openssl rand -hex 24)" > .env.dev; echo "created .env.dev"; else echo ".env.dev exists"; fi'
+        ssh {{ctx}} 'mkdir -p {{remote}} && cd {{remote}} && if [ ! -f .env.dev ]; then umask 077; printf "AGENTS_ADMIN_PIN=1234\nAGENTS_MASTER_KEY=%s\nAGENTS_PROXY_KEY=%s\n" "$(openssl rand -base64 32)" "$(openssl rand -hex 24)" > .env.dev; echo "created .env.dev"; else echo ".env.dev exists"; fi; grep -q "^AGENTS_WHATSAPP_SECRET=" .env.dev || { printf "AGENTS_WHATSAPP_SECRET=%s\n" "$(openssl rand -hex 24)" >> .env.dev; echo "added AGENTS_WHATSAPP_SECRET"; }'
         ;;
       sync)
         rsync -az --delete --exclude node_modules --exclude .git --exclude 'data/' --exclude '.env*' --exclude dist --exclude .codegraph ./ {{ctx}}:{{remote}}/
@@ -34,6 +34,7 @@ dev verb="session" arg="":
         just dev init
         just dev sync
         docker --context {{ctx}} image inspect agents-sandbox:dev >/dev/null 2>&1 || just sandbox build
+        docker --context {{ctx}} image inspect agents-whatsapp:dev >/dev/null 2>&1 || just whatsapp build
         {{dc}} --project-directory {{remote}} up -d
         echo "https://agents-dev.cubytest.space  (admin PIN: 1234)"
         ;;
@@ -96,6 +97,18 @@ sandbox verb="build":
       *) echo "unknown: just sandbox {{verb}}"; exit 1 ;;
     esac
 
+# ---- the WhatsApp bridge image (whatsapp/, whatsmeow) ----
+
+# whatsapp: build (the dev image; `just dev up` uses it) | logs
+whatsapp verb="build":
+    #!/usr/bin/env bash
+    set -euo pipefail
+    case "{{verb}}" in
+      build) docker --context {{ctx}} build -t agents-whatsapp:dev whatsapp/ ;;
+      logs) docker --context {{ctx}} logs -f --tail 100 agents-dev-whatsapp-1 ;;
+      *) echo "unknown: just whatsapp {{verb}}"; exit 1 ;;
+    esac
+
 # ---- checks ----
 
 # Types here; the database tests skip without Postgres: `just dev test` runs them on reko-3.
@@ -107,7 +120,7 @@ check:
 
 # ---- production (Komodo stack `agents` on reko-3) ----
 
-# deploy: image | sandbox — then redeploy the stack in Komodo with IMAGE_TAG=<commit>
+# deploy: image | sandbox | whatsapp — then redeploy the stack in Komodo with IMAGE_TAG=<commit>
 deploy verb="image":
     #!/usr/bin/env bash
     set -euo pipefail
@@ -121,6 +134,10 @@ deploy verb="image":
       sandbox)
         docker --context {{ctx}} build -t agents-sandbox:$tag -t agents-sandbox:latest sandbox/
         echo "built agents-sandbox:$tag on {{ctx}}"
+        ;;
+      whatsapp)
+        docker --context {{ctx}} buildx build --platform linux/amd64 -t registry.cubytest.space/cuby/agents-whatsapp:$tag -t registry.cubytest.space/cuby/agents-whatsapp:latest --push whatsapp/
+        echo "pushed registry.cubytest.space/cuby/agents-whatsapp:$tag"
         ;;
       *) echo "unknown: just deploy {{verb}}"; exit 1 ;;
     esac

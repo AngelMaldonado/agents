@@ -24,7 +24,7 @@ export type Contract = { name: string; prompt: string };
 export type AgentTool = { id: string; name: string; description: string };
 export type Question = { id: string; title: string; description: string; selectionMode: 'single' | 'multi'; options: { id: string; label: string; description: string }[]; recommended: string | null };
 export type InterviewAnswers = { round: number; values: Record<string, { selected: string[]; other: string }> };
-export type DesignMessage = { role: 'user' | 'assistant'; content: string; questions?: Question[]; questionRound?: number; answers?: InterviewAnswers };
+export type DesignMessage = { role: 'user' | 'assistant'; content: string; questions?: Question[]; questionRound?: number; answers?: InterviewAnswers; attachments?: { id: string; name: string; mime: string; size: number }[] };
 export type Design = {
  id: string; agent_id: number | null; applied_agent_id: number | null; model: string; version: number;
  messages: DesignMessage[]; contract: Contract | null; ready: boolean;
@@ -40,7 +40,7 @@ export type TaskEvent = { id: number; at: number; kind: string; data: any };
 export type Artifact = { id: number; name: string; mime: string; size: number };
 export type Conversation = { id: number; agent_id: number; title: string; is_default: boolean; started_at: number; archived_at: number | null; runs: number };
 export type WorkRecord = {task:Task;events:TaskEvent[];artifacts:Artifact[]};
-export type ConversationInput = {id:number;text:string;source:string;received_at:number;run_id:number|null;routed_as:string|null;routed_at:number|null;context?:{helpRound?:number}|null};
+export type ConversationInput = {id:number;text:string;source:string;received_at:number;run_id:number|null;routed_as:string|null;routed_at:number|null;context?:{helpRound?:number}|null;files?:{name:string;mime:string;size:number}[]};
 export type ConversationPage = {conversation:Conversation;records:WorkRecord[];inputs:ConversationInput[];hasEarlier:boolean;before:number|null};
 export type Credential ={ id: number; name: string; origin: string; login_url: string; updated_at: number; agents: number[] };
 

@@ -22,23 +22,41 @@ export function cronFromDraft(draft: ScheduleDraft) {
  return `${time} ${draft.dayOfMonth} * *`;
 }
 
+/** More firings than this in one day are drawn as one block for the day, not one event each. */
+export const DENSE_PER_DAY = 12;
+const SCAN_PER_SCHEDULE = 20000; // covers every 15 min for 63 days; a per-minute rule over weeks stops here
+type CalendarEvent = { id: string; title: string; start: string; end?: string; classNames: string[]; extendedProps: { scheduleName: string } };
 /** Projection only. DBOS remains authoritative; no schedule is changed by browsing a range. */
 export function expandSchedules(schedules: Schedule[], start: string, end: string, timezone = SCHEDULE_TZ) {
- const events: { id: string; title: string; start: string; classNames: string[]; extendedProps: { scheduleName: string } }[] = [];
+ const events: CalendarEvent[] = [];
  const limited: string[] = [], invalid: string[] = [];
  const from = new Date(start).getTime(), until = new Date(end).getTime();
  if (!Number.isFinite(from) || !Number.isFinite(until) || until <= from || until - from > 63 * 86400000) return { events, limited, invalid: ['Rango de agenda inválido.'] };
  for (const schedule of schedules) {
   if (events.length >= 1000) { limited.push(schedule.name); continue; }
+  const tz = schedule.timezone || timezone, paused = schedule.status === 'PAUSED', prefix = paused ? '(Pausa) ' : '';
+  const day = new Intl.DateTimeFormat('en-CA', { timeZone: tz, year: 'numeric', month: '2-digit', day: '2-digit' });
   try {
-   const interval = CronExpressionParser.parse(schedule.cron, { tz: schedule.timezone || timezone, currentDate: new Date(from - 1), endDate: new Date(until - 1) });
-   let count = 0;
-   while (count < 200 && events.length < 1000 && interval.hasNext()) {
-    const date = interval.next().toISOString();
-    events.push({ id: `${schedule.name}:${date}`, title: `${schedule.status === 'PAUSED' ? '(Pausa) ' : ''}${schedule.message}`, start: date!, classNames: schedule.status === 'PAUSED' ? ['schedule-paused'] : [], extendedProps: { scheduleName: schedule.name } });
-    count++;
+   const interval = CronExpressionParser.parse(schedule.cron, { tz, currentDate: new Date(from - 1), endDate: new Date(until - 1) });
+   const byDay = new Map<string, Date[]>();
+   let scanned = 0;
+   while (scanned < SCAN_PER_SCHEDULE && interval.hasNext()) {
+    const date = interval.next().toDate(), key = day.format(date);
+    byDay.set(key, [...(byDay.get(key) ?? []), date]);
+    scanned++;
    }
    if (interval.hasNext()) limited.push(schedule.name);
+   for (const [key, dates] of byDay) {
+    if (events.length >= 1000) { if (!limited.includes(schedule.name)) limited.push(schedule.name); break; }
+    if (dates.length > DENSE_PER_DAY) {
+     // A dense rule (every 15 min…) covers the day as one block from its first to its last firing.
+     const first = dates[0], last = dates[dates.length - 1];
+     events.push({ id: `${schedule.name}:${key}`, title: `${prefix}${dates.length}× · ${schedule.message}`, start: first.toISOString(), end: new Date(last.getTime() + 15 * 60000).toISOString(), classNames: ['schedule-dense', ...(paused ? ['schedule-paused'] : [])], extendedProps: { scheduleName: schedule.name } });
+    } else for (const date of dates) {
+     if (events.length >= 1000) break;
+     events.push({ id: `${schedule.name}:${date.toISOString()}`, title: `${prefix}${schedule.message}`, start: date.toISOString(), classNames: paused ? ['schedule-paused'] : [], extendedProps: { scheduleName: schedule.name } });
+    }
+   }
   } catch { invalid.push(schedule.name); }
  }
  return { events, limited, invalid };

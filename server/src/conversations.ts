@@ -36,7 +36,9 @@ export async function transcript(agentId:number,id:number,before?:number){
  const tasks=await import('./tasks');
  const runs=await rows<import('./tasks').Task>(`select ${tasks.RUN_SELECT} where r.agent_id=$1 and r.conversation_id=$2 and ($3::bigint is null or r.id<$3) order by r.id desc limit 11`,[agentId,id,before??null]);
  const hasEarlier=runs.length>10;const page=runs.slice(0,10).reverse();
- const inputs=await rows(`select id,text,source,received_at,run_id,routed_as,routed_at,context from messages where conversation_id=$1 and (run_id=any($2::bigint[]) or (run_id is null and $3::bigint is null)) order by id`,[id,page.map(r=>r.id),before??null]);
+ const inputs=await rows(`select id,text,source,received_at,run_id,routed_as,routed_at,context,
+  coalesce((select json_agg(json_build_object('name',f.name,'mime',f.mime,'size',f.size) order by f.id) from files f where f.direction='in' and f.message_id=messages.id),'[]') as files
+  from messages where conversation_id=$1 and (run_id=any($2::bigint[]) or (run_id is null and $3::bigint is null)) order by id`,[id,page.map(r=>r.id),before??null]);
  const records=[];for(const r of page)records.push({task:tasks.publicTask(r),events:await tasks.events(r.id,0,true),artifacts:await tasks.artifacts(r.id)});
  return {conversation,records,inputs,hasEarlier,before:page[0]?.id??null};
 }

@@ -39,6 +39,8 @@ ${purchases ? PURCHASES_ALLOWED : PURCHASES_FORBIDDEN}
 - Esta conversación sigue de una tarea a otra: lo que te pidieron antes y lo que respondiste sigue aquí.
 - \`~/work\` se conserva entre tareas: guarda ahí lo que te sirva después.
 - \`~/work/out/\` empieza vacía en cada tarea: ahí van los archivos que entregas en ésta.
+- Si un mensaje llegó por WhatsApp, tu respuesta final se le manda por WhatsApp: escríbela breve y en texto simple, sin tablas; los archivos de \`~/work/out/\` también se le envían.
+- Los archivos que te mandan llegan a \`~/work/in/<mensaje>/\` y el mensaje te dice cuáles. Para ver una imagen (jpg, png, gif, webp), ábrela con la herramienta \`read\`.
 
 ## Tu navegador: agent-browser
 

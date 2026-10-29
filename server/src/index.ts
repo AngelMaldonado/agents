@@ -23,6 +23,7 @@ import { gateway } from './llm';
 import * as channels from './channels';
 import * as inbox from './inbox';
 import * as monitor from './monitor';
+import * as whatsapp from './whatsapp';
 import { verify, checkLink } from './sign';
 import { artifactHeaders, readPreview } from './artifact-preview';
 
@@ -116,6 +117,17 @@ app.post('/hooks/:token', async (c) => {
 			dedupeKey: c.req.header('idempotency-key')?.slice(0, 200) || null
 		});
 		return c.json(r, r.duplicate ? 200 : 202);
+	} catch (err) {
+		return fail(c, err);
+	}
+});
+
+// ---------- the WhatsApp bridge (internal network, shared secret; no login) ----------
+
+app.post('/internal/whatsapp/inbound', async (c) => {
+	if (!whatsapp.checkSecret(c.req.header('x-agents-secret'))) return c.json({ error: 'forbidden' }, 403);
+	try {
+		return c.json(await whatsapp.inbound(await c.req.json()));
 	} catch (err) {
 		return fail(c, err);
 	}
@@ -266,6 +278,13 @@ app.get('/api/designs/:id', async (c) => {
 app.post('/api/designs/:id/messages', async (c) => {
 	try { return c.json({ design: await designs.message(c.get('me').id, c.req.param('id'), await c.req.json(), c.req.raw.signal) }); }
 	catch (err) { return fail(c, err); }
+});
+app.get('/api/designs/:id/files/:file', async (c) => {
+	try {
+		const f = await designs.file(c.get('me').id, c.req.param('id'), c.req.param('file'));
+		if (!f) return c.json({ error: 'No existe.' }, 404);
+		return new Response(Bun.file(f.path), { headers: artifactHeaders(f.name, c.req.query('download') === '1') });
+	} catch (err) { return fail(c, err, 404); }
 });
 app.post('/api/designs/:id/validate', async (c) => {
 	try { return c.json({ design: await designs.testHarness(c.get('me').id, c.req.param('id'), (await c.req.json()).version) }); }
@@ -455,7 +474,7 @@ app.get('/api/tasks/:id/files/:name', async (c) => {
 // ---------- an agent's channels (owner only: they hold its secrets) ----------
 
 async function channelsView(agentId: number) {
-	return { ...(await channels.view(agentId)), deliveries: await channels.deliveries(agentId), schedules: await channels.schedules(agentId), timezone: channels.TZ };
+	return { ...(await channels.view(agentId)), deliveries: await channels.deliveries(agentId), schedules: await channels.schedules(agentId), timezone: channels.TZ, whatsapp: await whatsapp.agentView(agentId) };
 }
 
 app.get('/api/agents/:id/channels', async (c) => {
@@ -470,6 +489,17 @@ app.post('/api/agents/:id/channels/rotate', async (c) => {
 	const { which } = await c.req.json();
 	await channels.rotate(a.id, which === 'out' ? 'out' : 'in');
 	return c.json(await channelsView(a.id));
+});
+
+app.put('/api/agents/:id/channels/whatsapp', async (c) => {
+	const a = await ownAgent(c);
+	if (!a) return c.json({ error: 'Sólo el dueño configura el WhatsApp de su agente.' }, 403);
+	try {
+		await whatsapp.setAgent(a.id, await c.req.json());
+		return c.json(await channelsView(a.id));
+	} catch (err) {
+		return fail(c, err);
+	}
 });
 
 app.put('/api/agents/:id/channels/out', async (c) => {
@@ -563,18 +593,29 @@ app.post('/api/agents/:id/conversations/:conversation/messages',async c=>{
  const a=await ownAgent(c);if(!a)return c.json({error:'Sólo el dueño puede escribir en esta conversación.'},403);
  const id=Number(c.req.param('conversation'));if(!await conversations.get(a.id,id))return c.json({error:'No existe.'},404);
  const body=await c.req.json().catch(()=>null);
- if(typeof body?.text!=='string'||!body.text.trim()||body.text.length>4000)return c.json({error:'Escribe un mensaje de hasta 4000 caracteres.'},400);
+ const attachments=Array.isArray(body?.attachments)?body.attachments:[];
+ if(typeof body?.text!=='string'||body.text.length>4000||(!body.text.trim()&&!attachments.length))return c.json({error:'Escribe un mensaje de hasta 4000 caracteres o adjunta un archivo.'},400);
  try{
   const key=conversations.requestKey(body.requestId);
   if(body.replyTo!==undefined){
+   if(attachments.length)throw new Error('Responde la pregunta sin adjuntos y manda los archivos en un mensaje aparte.');
    const {runId,round}=body.replyTo??{};
    if(!Number.isSafeInteger(runId)||!Number.isSafeInteger(round))throw new Error('La solicitud de ayuda cambió. Recarga antes de responder.');
    const t=await tasks.getTask(runId);if(!t||t.agent_id!==a.id||t.conversation_id!==id)throw new Error('La solicitud no pertenece a esta conversación.');
    return c.json({ok:true,...await tasks.answerHelpText(runId,round,body.text,key)});
   }
-  const routing=await inbox.receive({agentId:a.id,personId:c.get('me').id,source:'web',conversationId:id,text:body.text,dedupeKey:`chat:${key}`},{routeNow:false});
+  const routing=await inbox.receive({agentId:a.id,personId:c.get('me').id,source:'web',conversationId:id,text:body.text,attachments,dedupeKey:`chat:${key}`},{routeNow:false});
   return c.json({ok:true,...routing});
  }catch(err){return fail(c,err);}
+});
+
+// A file sent to the agent with a message (chat or webhook): whoever sees the agent sees its inbox.
+app.get('/api/agents/:id/messages/:message/files/:name',async c=>{
+ const a=await agents.seeable(c.get('me'),Number(c.req.param('id')));if(!a)return c.json({error:'No existe.'},404);
+ const f=await inbox.inboundFile(a.id,Number(c.req.param('message')),decodeURIComponent(c.req.param('name')));
+ if(!f)return c.json({error:'No existe.'},404);
+ c.header('Cache-Control','private, no-store');
+ return new Response(Bun.file(f.path),{headers:artifactHeaders(f.name,c.req.query('download')==='1')});
 });
 
 app.post('/api/agents/:id/profile/reset', async (c) => {
@@ -619,6 +660,21 @@ app.get('/api/monitor', (c) => c.json(monitor.view(c.get('me'))));
 app.post('/api/admin/orphans/clean', async (c) => adminOnly(c) ?? c.json({ cleaned: await monitor.cleanOrphans() }));
 
 // ---------- admin (behind the PIN) ----------
+
+// WhatsApp: one number for every agent, linked here by an admin.
+app.get('/api/admin/whatsapp', async (c) => adminOnly(c) ?? c.json(await whatsapp.status()));
+app.post('/api/admin/whatsapp/pair', async (c) => {
+	const denied = adminOnly(c);
+	if (denied) return denied;
+	try { await whatsapp.pair(); return c.json(await whatsapp.status()); }
+	catch (err) { return fail(c, err); }
+});
+app.post('/api/admin/whatsapp/logout', async (c) => {
+	const denied = adminOnly(c);
+	if (denied) return denied;
+	try { await whatsapp.logout(); return c.json(await whatsapp.status()); }
+	catch (err) { return fail(c, err); }
+});
 
 app.get('/api/admin', async (c) =>
 	adminOnly(c) ?? c.json({ settings: settings(), people: await people.everyone(), uses: await vault.uses(0, true) })

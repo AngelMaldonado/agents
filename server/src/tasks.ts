@@ -34,6 +34,7 @@ import { quotaOf } from './people';
 import { stateMount } from './state';
 import { createDelivery, startDelivery, notify } from './channels';
 import { requestRoute, startPrompt } from './inbox';
+import * as whatsapp from './whatsapp';
 import { browserSnapshot, readSnapshot, saveSnapshot, type BrowserSnapshot } from './snapshots';
 import { definition, digest, defaultHarness, withHarnessPrompt, type Definition } from './harnesses';
 import { runtimeToolNames } from '../../sandbox/harness';
@@ -268,6 +269,7 @@ export async function failRun(agent: AgentRef, messageId: number, reason: string
 	const t = (await publishTask(id))!;
 	await event(t, 'status', { status: 'error', reason });
 	await notify(id, 'error');
+	await whatsapp.onRun(id, 'error');
 }
 
 /** From the web: the owner launches a task on an idle agent. */
@@ -336,6 +338,8 @@ async function sandboxRunFn(runId: number) {
 	// The agent's webhook hears how it ended (a child workflow: retries for a day).
 	const delivery = status ? await DBOS.runStep(async () => (await getTask(runId))?.kind !== 'task' ? null : createDelivery(runId, status as 'done'), { name: 'delivery' }) : null;
 	if (delivery) await startDelivery(delivery);
+	// After the existing steps, so replaying an older workflow keeps its order.
+	if (status) await DBOS.runStep(() => whatsapp.onRun(runId, status as 'done'), { name: 'whatsapp' });
 }
 const sandboxRun = DBOS.registerWorkflow(sandboxRunFn, { name: 'sandboxRun' });
 
@@ -642,6 +646,7 @@ function onSupervisor(l: Live, raw: string) {
 				await setStatus(ref.id, 'blocked', 'blocked', ['running']);
 				// The bridge hears it: its next message is the answer (Q23).
 				await notify(ref.id, 'blocked', decodeHelp(msg.reason).reason);
+				void whatsapp.onRun(ref.id, 'blocked', msg.reason);
 				break;
 			case 'unblocked':
 				await event(ref, 'unblocked', { message: msg.steered ? 'Recibió instrucciones y sigue.' : 'Nadie respondió: salta el sitio.', steered: !!msg.steered });
@@ -887,7 +892,6 @@ export async function deliverHelp(messageId: number) {
   }
   const l = live.get(t.id);
   if (!l?.sup) return false;
-  release(l); // an answer means the owner is done driving
   l.sup.send(JSON.stringify({ t: 'pi_cmd', cmd: { type: 'steer', message: m.text } }));
   l.sup.send(JSON.stringify({ t: 'unblock' }));
   await exec('update messages set routed_at=now() where id=$1', [messageId], c);
@@ -907,7 +911,6 @@ export async function steer(taskId: number, text: string, kind: 'steer' | 'follo
 	if (t.kind === 'browser') throw new Error('El navegador está abierto para ti: ciérralo y luego dale la tarea al agente.');
 	const message = text.trim().slice(0, 4000);
 	if (!message) throw new Error('Mensaje vacío.');
-	if (kind === 'steer') release(l);
 	l.sup.send(JSON.stringify({ t: 'pi_cmd', cmd: { type: kind, message } }));
 	if (kind === 'steer') l.sup.send(JSON.stringify({ t: 'unblock' }));
 	await event(t, kind, { text: message });
@@ -921,7 +924,11 @@ export async function steer(taskId: number, text: string, kind: 'steer' | 'follo
 
 const BACK_FROM_CONTROL = 'Tomé el control del navegador y ya terminé (por ejemplo, inicié sesión o pagué). Revisa la página actual antes de seguir.';
 
-/** Ends a takeover so pi continues; a browser session has no agent to give it back to. */
+/**
+ * Ends a takeover so pi continues; a browser session has no agent to give it back to. Only the
+ * owner's explicit «Devolver control» calls it: an answer or a message sent while driving waits
+ * in pi's input until then, so it never pulls the browser out from under the owner.
+ */
 function release(l: Live) {
 	if (!l.control || l.kind === 'browser') return false;
 	l.control = false;
@@ -1028,6 +1035,7 @@ export async function cancel(taskId: number) {
 			await publishTask(taskId);
 			await event(t, 'status', { status: 'cancelled', reason: 'Cancelada antes de empezar.' });
 			await notify(taskId, 'cancelled');
+			await whatsapp.onRun(taskId, 'cancelled');
 			requestRoute(t.agent_id);
 			return;
 		}
