@@ -232,6 +232,16 @@ export async function schedules(agentId: number) {
 	}));
 }
 
+/** For reads outside the server (tests, scripts): no DBOS launched means no schedules; any other error stands. */
+export async function schedulesIfRunning(agentId: number) {
+	try {
+		return await schedules(agentId);
+	} catch (err) {
+		if (/DBOS\.launch\(\)/.test((err as Error).message)) return [];
+		throw err;
+	}
+}
+
 export async function addSchedule(agentId: number, cron: string, message: string) {
 	const text = String(message ?? '').trim().slice(0, 4000);
 	if (!text) throw new Error('Falta el mensaje.');
@@ -259,5 +269,18 @@ export async function pauseSchedule(agentId: number, name: string, paused: boole
 export async function deleteSchedule(agentId: number, name: string) {
 	await ownSchedule(agentId, name);
 	await DBOS.deleteSchedule(name);
+	return schedules(agentId);
+}
+
+/**
+ * Leaves the agent with exactly these schedules (an approved design's). One that is already there,
+ * same cron and message, stays as it is, paused or not; the rest go, the missing ones are created.
+ */
+export async function syncSchedules(agentId: number, wanted: { cron: string; message: string }[]) {
+	const key = (s: { cron: string; message: string }) => `${s.cron.trim().split(/\s+/).join(' ')}\n${s.message.trim()}`;
+	const current = await schedules(agentId);
+	const want = new Set(wanted.map(key)), have = new Set(current.map(key));
+	for (const s of current) if (!want.has(key(s))) await DBOS.deleteSchedule(s.name);
+	for (const w of wanted) if (!have.has(key(w))) await addSchedule(agentId, w.cron, w.message);
 	return schedules(agentId);
 }

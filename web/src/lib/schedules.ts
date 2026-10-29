@@ -43,3 +43,11 @@ export function expandSchedules(schedules: Schedule[], start: string, end: strin
  }
  return { events, limited, invalid };
 }
+
+/** The next `count` times a cron fires, for reading a proposal; [] when it does not parse. */
+export function nextRuns(cron: string, count = 3, timezone = SCHEDULE_TZ) {
+ try {
+  const interval = CronExpressionParser.parse(cron, { tz: timezone });
+  return Array.from({ length: count }, () => interval.next().toDate());
+ } catch { return []; }
+}

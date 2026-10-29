@@ -9,7 +9,7 @@ import { ResizableHandle, ResizablePanel, ResizablePanelGroup } from '@/componen
 import { ScrollArea } from '@/components/ui/scroll-area';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { ContractMarkdown } from './design-content';
-import { HarnessPanel, HarnessChanges, HarnessTests } from './harness-content';
+import { HarnessPanel, HarnessChanges, HarnessTests, SchedulesPanel } from './harness-content';
 import { InterviewCard, InterviewContext, type InterviewDrafts, type InterviewDraft } from './interview-card';
 
 type Props = {
@@ -159,17 +159,18 @@ function DesignWorkspace(props: Props & { messages: ThreadMessageLike[]; intervi
  const contract = artifact && <section id={panelId} className="designer-contract" aria-label="Contrato del agente" onKeyDown={e => { if (e.key === 'Escape' && !e.defaultPrevented) { e.preventDefault(); e.stopPropagation(); close(); } }}>
   <div className="designer-artifact-header"><FileText className="size-4 shrink-0 text-muted-foreground" aria-hidden="true" /><h2 className="min-w-0 flex-1 truncate text-xs font-semibold">{artifact.name}</h2><Badge variant="outline">{approved ? 'Aprobado' : design?.ready ? 'Listo para revisar' : design ? 'Borrador' : 'Vigente'}</Badge><Button ref={closeButton} variant="ghost" size="icon" onClick={close} aria-label={wide ? 'Cerrar artefacto' : 'Volver al chat'}>{wide ? <PanelRightClose aria-hidden="true" /> : <ArrowLeft aria-hidden="true" />}</Button></div>
   <Tabs value={preview} onValueChange={setPreview} className="min-h-0 flex-1 gap-0">
-   <div className="shrink-0 overflow-x-auto border-b px-4 py-2"><TabsList aria-label="Vista del contrato"><TabsTrigger value="contract">Contrato</TabsTrigger>{design?.harness && <><TabsTrigger value="harness">Harness</TabsTrigger><TabsTrigger value="changes">Cambios</TabsTrigger><TabsTrigger value="tests">Pruebas</TabsTrigger></>}<TabsTrigger value="effective">Prompt completo</TabsTrigger>{agent && <TabsTrigger value="current">Vigente</TabsTrigger>}</TabsList></div>
+   <div className="shrink-0 overflow-x-auto border-b px-4 py-2"><TabsList aria-label="Vista del contrato"><TabsTrigger value="contract">Contrato</TabsTrigger>{design?.harness && <><TabsTrigger value="harness">Harness</TabsTrigger><TabsTrigger value="schedules">Horarios</TabsTrigger><TabsTrigger value="changes">Cambios</TabsTrigger><TabsTrigger value="tests">Pruebas</TabsTrigger></>}<TabsTrigger value="effective">Prompt completo</TabsTrigger>{agent && <TabsTrigger value="current">Vigente</TabsTrigger>}</TabsList></div>
    <ContractPreview value="contract" text={artifact.prompt} />
    {design?.harness && <>
     <TabsContent value="harness" className="designer-preview"><ScrollArea type="auto" className="designer-preview-scroll" viewportProps={{ tabIndex: 0, 'aria-label': 'Contenido del harness' }}><div className="designer-preview-content"><HarnessPanel value={design.harness} /></div></ScrollArea></TabsContent>
+    <TabsContent value="schedules" className="designer-preview"><ScrollArea type="auto" className="designer-preview-scroll" viewportProps={{ tabIndex: 0, 'aria-label': 'Horarios propuestos' }}><div className="designer-preview-content"><SchedulesPanel design={design} /></div></ScrollArea></TabsContent>
     <TabsContent value="changes" className="designer-preview"><ScrollArea type="auto" className="designer-preview-scroll" viewportProps={{ tabIndex: 0, 'aria-label': 'Cambios propuestos' }}><div className="designer-preview-content"><HarnessChanges design={design} agent={agent} /></div></ScrollArea></TabsContent>
     <TabsContent value="tests" className="designer-preview"><ScrollArea type="auto" className="designer-preview-scroll" viewportProps={{ tabIndex: 0, 'aria-label': 'Resultado de pruebas' }}><div className="designer-preview-content"><HarnessTests report={design.harness_validation} version={design.version} pending={props.validating || (working && design.validation_pending)} /></div></ScrollArea></TabsContent>
    </>}
    <ContractPreview value="effective" text={design?.effectivePrompt ?? props.effectivePrompt ?? 'Las reglas obligatorias aparecerán con la primera propuesta.'} />
    {agent && <ContractPreview value="current" text={design?.currentContract?.prompt ?? agent.role ?? 'Sin rol personalizado.'} />}
   </Tabs>
-  <div className="designer-artifact-footer"><p className="mb-3 text-xs text-muted-foreground">{agent ? 'Aprueba contrato, modelo y harness. Se aplican en corridas nuevas; conservan conversación y memoria. No conceden accesos de plataforma.' : 'Prueba y aprueba contrato, modelo y harness antes de inicializar. Conversar o probar no crea un agente.'}</p>
+  <div className="designer-artifact-footer"><p className="mb-3 text-xs text-muted-foreground">{agent ? 'Aprueba contrato, modelo, harness y horarios. Se aplican en corridas nuevas; conservan conversación y memoria. No conceden accesos de plataforma.' : 'Prueba y aprueba contrato, modelo, harness y horarios antes de inicializar. Conversar o probar no crea un agente.'}</p>
    {design?.harness && !approved && <Button type="button" variant="outline" className="mb-2 w-full whitespace-normal" onClick={() => { setPreview('tests'); props.onValidate(); }} disabled={testBlocked}>{props.validating || (working && design.validation_pending) ? 'Probando harness…' : tested ? 'Volver a probar harness' : 'Probar harness'}</Button>}
    <Button className="w-full whitespace-normal" onClick={props.onApprove} disabled={blocked}><Check className="size-4" aria-hidden="true" />{agent ? 'Aprobar y aplicar mejora' : 'Aprobar e inicializar agente'}</Button>
    {design?.ready && !tested && !approved && <p className="mt-2 text-2xs text-muted-foreground">Falta una prueba correcta de esta misma revisión antes de aprobar.</p>}

@@ -32,6 +32,7 @@ export type Design = {
  status: 'draft' | 'approved'; tokens: number; busy_until: number | null; stale: boolean; init_run_id: number | null; last_error?: string | null;
  effectivePrompt: string | null; currentContract: Contract | null; tools: AgentTool[];
  harness?: Harness; currentHarness?: Harness | null; harness_validation?: HarnessValidation | null; validation_pending?: boolean;
+ schedules?: { cron: string; message: string }[] | null; currentSchedules?: { name: string; cron: string; message: string; status: string; timezone?: string }[]; scheduleTimezone?: string;
  initialization: { task: Task | null; error: string | null; steps: { id: string; label: string; done: boolean }[] } | null;
 };
 export type BrowserSnapshot = { jpeg: string; url: string; captured_at: number };

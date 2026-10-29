@@ -1,6 +1,7 @@
 import type { Agent, Design, Harness, HarnessValidation } from '@/api';
 import { defaultHarness, effectiveTools, PLUGINS } from '../../../sandbox/harness';
 import { ContractMarkdown, ToolsPanel } from './design-content';
+import { nextRuns, SCHEDULE_TZ } from '@/lib/schedules';
 export function HarnessPanel({ value }: { value: Harness }) {
  return <div className="grid min-w-0 gap-5" aria-label="Harness propuesto">
   <p className="text-xs text-muted-foreground">Manifiesto v{value.version}. Políticas, cuotas, red y accesos de plataforma no son autoeditables. Sólo se activa tras probar y aprobar esta revisión, en corridas nuevas.</p>
@@ -11,6 +12,18 @@ export function HarnessPanel({ value }: { value: Harness }) {
   <section className="min-w-0"><h3 className="mb-2 text-sm font-semibold">Plugins fijados</h3>{value.plugins.length ? <ul className="space-y-3 text-xs">{value.plugins.map(p => <li key={p.id}><strong className="break-all">{p.id}@{p.version}</strong><p className="mt-1 text-muted-foreground">{PLUGINS.find(c => c.id === p.id)?.description}</p></li>)}</ul> : <p className="text-xs text-muted-foreground">Sin plugins adicionales.</p>}<p className="mt-3 text-2xs text-muted-foreground">Sólo catálogo revisado. Código de plugins generado, paquetes externos y nuevas concesiones de acceso no están habilitados.</p></section>
  </div>;
 }
+type ProposedSchedule = { cron: string; message: string; status?: string };
+const when = (d: Date, timezone: string) => d.toLocaleString('es-MX', { timeZone: timezone, weekday: 'short', day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' });
+/** What the approval leaves: the proposed list, or the current one when the design keeps it. */
+export function SchedulesPanel({ design }: { design: Design }) {
+ const timezone = design.scheduleTimezone ?? SCHEDULE_TZ, current = design.currentSchedules ?? [];
+ const kept = design.schedules == null, list: ProposedSchedule[] = kept ? current : design.schedules!;
+ return <div className="grid min-w-0 gap-4" aria-label="Horarios">
+  <p className="text-xs text-muted-foreground">{kept ? (current.length ? 'Esta propuesta no cambia los horarios: se conservan los vigentes.' : 'Sin horarios: el agente sólo trabaja cuando le escriben o por webhook.') : 'Al aprobar, el agente queda con exactamente estos horarios. Los vigentes iguales se conservan (también si están en pausa); los demás se quitan.'} Zona {timezone}.</p>
+  {list.length ? <ul className="grid gap-3">{list.map((s, i) => <li key={`${s.cron}-${i}`} className="min-w-0 rounded-md border p-3 text-xs"><p className="font-mono font-medium">{s.cron}{s.status === 'PAUSED' && <span className="ml-2 font-sans text-muted-foreground">(en pausa)</span>}</p><p className="mt-1 text-2xs text-muted-foreground">Próximas: {nextRuns(s.cron, 3, timezone).map(d => when(d, timezone)).join(' · ') || 'no se pudo calcular'}</p><p className="mt-2 whitespace-pre-wrap break-words">{s.message}</p></li>)}</ul> : !kept && <p className="text-xs">La propuesta quita todos los horarios.</p>}
+ </div>;
+}
+const scheduleText = (list: ProposedSchedule[]) => list.map(s => `${s.cron}  ${s.message}`).join('\n');
 export function HarnessChanges({ design, agent }: { design: Design; agent?: Agent }) {
  const before = design.currentHarness ?? agent?.harness ?? defaultHarness(), after = design.harness ?? before;
  const rows = [
@@ -20,9 +33,10 @@ export function HarnessChanges({ design, agent }: { design: Design; agent?: Agen
   ['Herramientas', before.tools.join(', '), after.tools.join(', ')],
   ['Restricciones', JSON.stringify(before.restrictions, null, 2), JSON.stringify(after.restrictions, null, 2)],
   ['Skills', JSON.stringify(before.skills, null, 2), JSON.stringify(after.skills, null, 2)],
-  ['Plugins', JSON.stringify(before.plugins, null, 2), JSON.stringify(after.plugins, null, 2)]
+  ['Plugins', JSON.stringify(before.plugins, null, 2), JSON.stringify(after.plugins, null, 2)],
+  ['Horarios', scheduleText(design.currentSchedules ?? []), scheduleText(design.schedules ?? design.currentSchedules ?? [])]
  ].filter(([, old, next]) => old !== next);
- return <section aria-label="Cambios de la definición" className="grid min-w-0 gap-4"><p className="text-xs text-muted-foreground">{agent ? `Comparado con la revisión vigente ${agent.config_revision ?? ''}.` : 'Definición inicial comparada con las capacidades predeterminadas.'} La aprobación incluye contrato, modelo y harness completos.</p>{rows.length ? rows.map(([name, old, next]) => <details key={name} className="min-w-0 border-t pt-3"><summary className="cursor-pointer text-xs font-semibold">{name}</summary><div className="mt-3 grid min-w-0 gap-3 text-2xs"><div><p className="mb-1 font-medium">Antes</p><pre className="whitespace-pre-wrap break-words text-muted-foreground">{old || 'No existía'}</pre></div><div><p className="mb-1 font-medium">Propuesto</p><pre className="whitespace-pre-wrap break-words">{next || 'Vacío'}</pre></div></div></details>) : <p className="text-xs text-muted-foreground">Sin cambios en la definición.</p>}</section>;
+ return <section aria-label="Cambios de la definición" className="grid min-w-0 gap-4"><p className="text-xs text-muted-foreground">{agent ? `Comparado con la revisión vigente ${agent.config_revision ?? ''}.` : 'Definición inicial comparada con las capacidades predeterminadas.'} La aprobación incluye contrato, modelo, harness y horarios completos.</p>{rows.length ? rows.map(([name, old, next]) => <details key={name} className="min-w-0 border-t pt-3"><summary className="cursor-pointer text-xs font-semibold">{name}</summary><div className="mt-3 grid min-w-0 gap-3 text-2xs"><div><p className="mb-1 font-medium">Antes</p><pre className="whitespace-pre-wrap break-words text-muted-foreground">{old || 'No existía'}</pre></div><div><p className="mb-1 font-medium">Propuesto</p><pre className="whitespace-pre-wrap break-words">{next || 'Vacío'}</pre></div></div></details>) : <p className="text-xs text-muted-foreground">Sin cambios en la definición.</p>}</section>;
 }
 export function HarnessTests({ report, version, pending }: { report?: HarnessValidation | null; version: number; pending?: boolean }) {
  const current = report?.version === version;

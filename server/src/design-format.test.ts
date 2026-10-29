@@ -1,5 +1,5 @@
 import { expect, test } from 'bun:test';
-import { validateContract, parseDesignReply, INIT_STEPS } from './design-format';
+import { validateContract, parseDesignReply, validateSchedules, INIT_STEPS } from './design-format';
 const response = (value: unknown) => ({ status: 'completed', output: [{ type: 'message', role: 'assistant', content: [{ type: 'output_text', text: JSON.stringify(value) }] }] });
 test('contract validates without silently truncating the prompt', () => {
  expect(validateContract({ name: ' Compras ', prompt: '# Objetivo\nComparar fuentes.' })).toEqual({ name: 'Compras', prompt: '# Objetivo\nComparar fuentes.' });
@@ -18,8 +18,22 @@ test('rejects truncation, refusals, invalid JSON and arbitrary model fields inst
  expect(() => parseDesignReply({ status: 'completed', output: [{ type: 'message', role: 'assistant', content: [{ type: 'refusal', refusal: 'No.' }] }] })).toThrow('válido');
  expect(() => parseDesignReply(response({ message: 'x', contract: null, ready: 'true' }))).toThrow();
  const parsed = parseDesignReply(response({ message: 'Revisa', contract: { name: 'A', prompt: 'Rol', admin: true }, ready: true, execute: 'rm -rf /' }));
- expect(parsed).toEqual({ message: 'Revisa', contract: { name: 'A', prompt: 'Rol' }, harness: null, ready: true, questions: [] });
+ expect(parsed).toEqual({ message: 'Revisa', contract: { name: 'A', prompt: 'Rol' }, harness: null, schedules: null, ready: true, questions: [] });
 });
 test('initialization ends with readiness, not with merely opening Chrome', () => {
  expect(INIT_STEPS.map(s => s.id)).toEqual(['contract', 'computer', 'workspace', 'tools', 'browser', 'ready']);
+});
+test('schedules: null keeps the current ones; proposals are checked cron by cron', () => {
+ expect(validateSchedules(null)).toBeNull();
+ expect(validateSchedules([])).toEqual([]);
+ expect(validateSchedules([{ cron: ' 0  9 * * 1-5 ', message: ' Revisa precios ' }, { cron: '*/30 8-18 * * *', message: 'Vigila la cola' }])).toEqual([{ cron: '0 9 * * 1-5', message: 'Revisa precios' }, { cron: '*/30 8-18 * * *', message: 'Vigila la cola' }]);
+ expect(() => validateSchedules([{ cron: '0 9 * *', message: 'x' }])).toThrow('5 campos');
+ expect(() => validateSchedules([{ cron: '0 25 * * *', message: 'x' }])).toThrow('inválido');
+ expect(() => validateSchedules([{ cron: '0 9 * * MON', message: 'x' }])).toThrow('inválido');
+ expect(() => validateSchedules([{ cron: '* * * * *', message: 'x' }])).toThrow('15 minutos');
+ expect(() => validateSchedules([{ cron: '*/5 * * * *', message: 'x' }])).toThrow('15 minutos');
+ expect(() => validateSchedules([{ cron: '0 9 * * *', message: ' ' }])).toThrow('mensaje');
+ expect(() => validateSchedules([{ cron: '0 9 * * *', message: 'a' }, { cron: '0 9 * * *', message: 'a' }])).toThrow('repetido');
+ expect(() => validateSchedules(Array.from({ length: 11 }, (_, i) => ({ cron: `${i} 9 * * *`, message: 'a' })))).toThrow('10');
+ expect(parseDesignReply(response({ message: 'Listo', contract: { name: 'A', prompt: 'Rol' }, harness: null, schedules: [{ cron: '0 8 * * *', message: 'Resumen' }], ready: true, questions: [] })).schedules).toEqual([{ cron: '0 8 * * *', message: 'Resumen' }]);
 });
