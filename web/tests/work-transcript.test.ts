@@ -19,3 +19,13 @@ test('initialization stays technical; final answer is not repeated if already pr
  const t=task(1);expect(workTranscript([{task:{...t,kind:'initialize'},events:[],artifacts:[]}],[]).messages).toEqual([]);
  expect(workTranscript([{task:t,events:[{id:1,at:1900,kind:'text',data:{text:t.answer}}],artifacts:[]}],[]).messages.map(text).filter(t=>t==='Respuesta 1')).toHaveLength(1);
 });
+test('what the agent does between its messages shows as one block of steps; queued messages wait in the composer',()=>{
+ const t={...task(1),status:'running' as const,answer:null};
+ const tool=(id:number,summary:string)=>({id,at:1000+id,kind:'tool',data:{name:'bash',summary}});
+ const record:WorkRecord={task:t,artifacts:[],events:[tool(1,'agent-browser open https://a'),tool(2,'ls ~/work'),{id:3,at:1003,kind:'text',data:{text:'Encontré dos fuentes.'}},tool(4,'cat notas.md')]};
+ const inputs:ConversationInput[]=[{id:30,text:'Y revisa precios',source:'web',received_at:1005,run_id:1,routed_as:'queued',routed_at:1005}];
+ const result=workTranscript([record],inputs);
+ expect(result.messages.map(text)).toEqual(['Pedido 1','Trabajando · 2 pasos','Encontré dos fuentes.','Trabajando · 1 paso']);
+ expect(result.bindings.get('run:1:work:1')?.steps?.map(e=>e.data.summary)).toEqual(['agent-browser open https://a','ls ~/work']);
+ expect(result.messages.map(text)).not.toContain('Y revisa precios');
+});

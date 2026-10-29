@@ -1,0 +1,3 @@
+#!/bin/sh
+# pi's browser for sign-in pages (BROWSER=agents-open): the agent's visible Chrome.
+exec agent-browser open "$1"

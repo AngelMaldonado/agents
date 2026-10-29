@@ -1,9 +1,10 @@
 import { lazy, Suspense, useState, type ReactNode } from 'react';
-import { CalendarDays, Globe, Settings2, SlidersHorizontal, Trash2 } from 'lucide-react';
+import { CalendarDays, Globe, Settings2, SlidersHorizontal, Trash2, Wrench } from 'lucide-react';
 import { api, isLive, type Agent, type PublicSettings } from './api';
 import { AgentConfiguration } from './AgentConfiguration';
 import { Channels } from './Channels';
 import { AgentSchedules } from './AgentSchedules';
+import { AgentTools } from './AgentTools';
 import { Button } from '@/components/ui/button';
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle, DialogTrigger } from '@/components/ui/dialog';
 import { Input } from '@/components/ui/input';
@@ -30,12 +31,14 @@ export function AgentSettings({ agent, settings, mine, profileReset, onProfileRe
       <TabsTrigger value="general" aria-label="General"><Settings2 /><span>General</span></TabsTrigger>
       {mine && <TabsTrigger value="channels" aria-label="Canales"><Globe /><span>Canales</span></TabsTrigger>}
       {mine && <TabsTrigger value="schedules" aria-label="Horarios"><CalendarDays /><span>Horarios</span></TabsTrigger>}
+      {mine && <TabsTrigger value="tools" aria-label="Herramientas"><Wrench /><span>Herramientas</span></TabsTrigger>}
       {mine && <TabsTrigger value="advanced" aria-label="Avanzado"><SlidersHorizontal /><span>Avanzado</span></TabsTrigger>}
      </TabsList>
     </div>
     <SettingsPanel value="general" active={tab}><AgentConfiguration agent={agent} settings={settings} mine={mine} onRestore={() => { setOpen(false); setTab('general'); setVisited(new Set(['general'])); }} /></SettingsPanel>
     {mine && visited.has('channels') && <SettingsPanel value="channels" active={tab}><Channels agentId={agent.id} /></SettingsPanel>}
     {mine && visited.has('schedules') && <SettingsPanel value="schedules" active={tab}><AgentSchedules agentId={agent.id} /></SettingsPanel>}
+    {mine && visited.has('tools') && <SettingsPanel value="tools" active={tab}><AgentTools agent={agent} onBrowser={() => { setOpen(false); onChanged(); }} /></SettingsPanel>}
     {mine && visited.has('advanced') && <SettingsPanel value="advanced" active={tab}>
      <h2 className="mb-2">Edición manual</h2><p className="mb-4 text-xs text-muted-foreground">Modifica directamente el nombre, contrato y modelo. Para revisar una propuesta con IA, abre Automejora junto al botón Historial.</p>
      <EditAgent key={agent.config_revision} agent={agent} settings={settings} onSaved={() => { changeTab('general'); onChanged(); }} />

@@ -12,6 +12,8 @@ import { ContractMarkdown } from './design-content';
 import { HarnessPanel, HarnessChanges, HarnessTests, SchedulesPanel } from './harness-content';
 import { InterviewCard, InterviewContext, type InterviewDrafts, type InterviewDraft } from './interview-card';
 import { AttachButton, AttachmentChips, SentAttachments, useAttachments } from './attachments';
+import { CopyMessage } from './message-actions';
+import { ReferencePopover, useReferenceMentions } from './references';
 
 type Props = {
  design: Design | null; agent?: Agent; effectivePrompt?: string; settings: PublicSettings;
@@ -61,6 +63,7 @@ function DesignMessage() {
   {files?.length ? <SentAttachments files={files} href={fileId => `/api/designs/${sent!.designId}/files/${files.find(f => f.name === fileId)?.id ?? ''}`} /> : null}
   {role === 'assistant' && <InterviewCard index={Number(id.split(':').at(-1))} />}
   {id === artifact.lastAssistant && <ArtifactCard />}
+  <CopyMessage />
  </MessagePrimitive.Root>;
 }
 
@@ -105,6 +108,7 @@ export function DesignChat(props: Props) {
 
 function DesignWorkspace(props: Props & { messages: ThreadMessageLike[]; interviewDrafts: InterviewDrafts; updateInterview: (round: number, patch: Partial<InterviewDraft>) => void; attach: ReturnType<typeof useAttachments>; sendFiles: () => void }) {
  const { design, agent, messages, settings, model, working, loading } = props;
+ const mention = useReferenceMentions(agent?.id);
  const root = useRef<HTMLDivElement>(null);
  const opener = useRef<HTMLButtonElement | null>(null);
  const closeButton = useRef<HTMLButtonElement>(null);
@@ -161,12 +165,15 @@ function DesignWorkspace(props: Props & { messages: ThreadMessageLike[]; intervi
   </ScrollArea>
   <div className="designer-composer-wrap">
    {props.attach.error && <p role="alert" className="error mb-2">{props.attach.error}</p>}
+   <ComposerPrimitive.TriggerPopoverRoot>
    <ComposerPrimitive.Root className="designer-composer" onDrop={props.attach.onDrop} onDragOver={props.attach.onDragOver}>
+    {agent && <ReferencePopover mention={mention} />}
     <AttachmentChips files={props.attach.files} onRemove={props.attach.remove} />
     <ComposerPrimitive.Input onPaste={props.attach.onPaste} id="designer-message" aria-label="Mensaje para la IA" placeholder={agent ? 'Quiero mejorar…' : 'Describe el agente que necesitas…'} className="designer-composer-input" minRows={2} maxRows={6} maxLength={8000} autoFocus={false} submitMode="enter" addAttachmentOnPaste={false} />
     <div className="designer-composer-actions"><div className="flex min-w-0 flex-wrap items-center gap-2" aria-label="Opciones del prompt"><AttachButton onFiles={f => void props.attach.add(f)} accept={DESIGN_FILES.accept} disabled={working || design?.status === 'approved'} />{props.active !== false && controls}</div>{props.attach.files.length ? <Button type="button" size="icon" className="shrink-0 rounded-full" aria-label="Enviar" disabled={working || !model} onClick={props.sendFiles}><ArrowUp aria-hidden="true" /></Button> : <ComposerPrimitive.Send asChild><Button size="icon" className="shrink-0 rounded-full" aria-label="Enviar"><ArrowUp aria-hidden="true" /></Button></ComposerPrimitive.Send>}</div>
    </ComposerPrimitive.Root>
-   <p className="mt-2 text-center text-2xs text-muted-foreground">Tu cuenta GPT · Nada se aplica sin tu aprobación.</p>
+   </ComposerPrimitive.TriggerPopoverRoot>
+   <p className="mt-2 text-center text-2xs text-muted-foreground">{agent ? 'Escribe @ para citar un trabajo o una conversación anterior. ' : ''}Tu cuenta GPT · Nada se aplica sin tu aprobación.</p>
   </div>
  </ThreadPrimitive.Root>;
  const contract = artifact && <section id={panelId} className="designer-contract" aria-label="Contrato del agente" onKeyDown={e => { if (e.key === 'Escape' && !e.defaultPrevented) { e.preventDefault(); e.stopPropagation(); close(); } }}>

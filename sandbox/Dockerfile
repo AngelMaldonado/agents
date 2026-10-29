@@ -41,6 +41,19 @@ RUN set -eu; \
     tar -xzf /tmp/fd.tar.gz -C /tmp; \
     install -m 0755 "/tmp/fd-v10.3.0-${arch}-unknown-linux-musl/fd" /usr/local/bin/fd; \
     rm -rf /tmp/fd.tar.gz "/tmp/fd-v10.3.0-${arch}-unknown-linux-musl"
+# uv installs the Python CLI tools an owner approves for an agent (harness installs), into the agent's
+# volume at start. Pinned and verified like fd.
+RUN set -eu; \
+    case "$(dpkg --print-architecture)" in \
+      amd64) arch=x86_64; sha=5d61f26b6c7213779eda90edc6971ea6b0b796bfb8d49a574c8ad69b59838548 ;; \
+      arm64) arch=aarch64; sha=819692e404d23e5aae6bc44c0e260f1f5492fd1910ab4693b2c650f926dbe800 ;; \
+      *) echo 'Unsupported uv architecture' >&2; exit 1 ;; \
+    esac; \
+    curl -fsSL --retry 3 --connect-timeout 10 --max-time 90 "https://github.com/astral-sh/uv/releases/download/0.13.6/uv-${arch}-unknown-linux-musl.tar.gz" -o /tmp/uv.tar.gz; \
+    echo "$sha  /tmp/uv.tar.gz" | sha256sum -c -; \
+    tar -xzf /tmp/uv.tar.gz -C /tmp; \
+    install -m 0755 "/tmp/uv-${arch}-unknown-linux-musl/uv" /usr/local/bin/uv; \
+    rm -rf /tmp/uv.tar.gz "/tmp/uv-${arch}-unknown-linux-musl"
 COPY bin/ /usr/local/bin/
 COPY supervisor.mjs harness*.mjs harness*.ts /opt/agents/
 # Resolve pi's pinned TypeBox/API dependencies for the platform-owned extension (no npm at runtime).

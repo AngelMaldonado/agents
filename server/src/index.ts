@@ -4,7 +4,7 @@ import { Hono, type Context } from 'hono';
 import { getCookie, setCookie, deleteCookie } from 'hono/cookie';
 import { upgradeWebSocket, websocket, serveStatic } from 'hono/bun';
 import { existsSync } from 'node:fs';
-import { migrate } from './db';
+import { migrate, row } from './db';
 import { startDbos } from './dbos';
 import * as people from './people';
 import * as agents from './agents';
@@ -24,6 +24,7 @@ import * as channels from './channels';
 import * as inbox from './inbox';
 import * as monitor from './monitor';
 import * as whatsapp from './whatsapp';
+import * as secrets from './secrets';
 import { verify, checkLink } from './sign';
 import { artifactHeaders, readPreview } from './artifact-preview';
 
@@ -491,6 +492,38 @@ app.post('/api/agents/:id/channels/rotate', async (c) => {
 	return c.json(await channelsView(a.id));
 });
 
+// ---------- an agent's credentials and MCP sign-ins (owner only; values are never returned) ----------
+
+app.get('/api/agents/:id/secrets', async (c) => {
+	const a = await ownAgent(c);
+	if (!a) return c.json({ error: 'Sólo el dueño ve las credenciales de su agente.' }, 403);
+	return c.json({ secrets: await secrets.list(a.id) });
+});
+app.put('/api/agents/:id/secrets/:name', async (c) => {
+	const a = await ownAgent(c);
+	if (!a) return c.json({ error: 'Sólo el dueño cambia las credenciales de su agente.' }, 403);
+	try { return c.json({ secrets: await secrets.set(a.id, c.req.param('name'), (await c.req.json()).value) }); }
+	catch (err) { return fail(c, err); }
+});
+app.delete('/api/agents/:id/secrets/:name', async (c) => {
+	const a = await ownAgent(c);
+	if (!a) return c.json({ error: 'Sólo el dueño cambia las credenciales de su agente.' }, 403);
+	return c.json({ secrets: await secrets.remove(a.id, c.req.param('name')) });
+});
+// Opens the agent's browser with pi's sign-in for that server; the owner completes it there.
+app.post('/api/agents/:id/mcp/:server/login', async (c) => {
+	const a = await ownAgent(c);
+	if (!a) return c.json({ error: 'Sólo el dueño inicia sesión por su agente.' }, 403);
+	const server = (a.harness?.mcp ?? []).find((s) => s.name === c.req.param('server') && s.oauth);
+	if (!server) return c.json({ error: 'Ese servidor MCP no está aprobado para este agente o no usa inicio de sesión.' }, 404);
+	try {
+		const prompt = `Iniciar sesión en el servidor MCP «${server.name}».`;
+		return c.json({ task: tasks.publicTask(await tasks.enqueue(a, prompt, { admin: c.get('me').admin, kind: 'browser', context: { mcpLogin: server.name } })) });
+	} catch (err) {
+		return fail(c, err);
+	}
+});
+
 app.put('/api/agents/:id/channels/whatsapp', async (c) => {
 	const a = await ownAgent(c);
 	if (!a) return c.json({ error: 'Sólo el dueño configura el WhatsApp de su agente.' }, 403);
@@ -616,6 +649,23 @@ app.get('/api/agents/:id/messages/:message/files/:name',async c=>{
  if(!f)return c.json({error:'No existe.'},404);
  c.header('Cache-Control','private, no-store');
  return new Response(Bun.file(f.path),{headers:artifactHeaders(f.name,c.req.query('download')==='1')});
+});
+
+// The queue of messages sent while the agent works: send one now, or remove it. Owner only.
+async function queuedMessage(c: Context<Env>) {
+	const a = await ownAgent(c);
+	if (!a) throw new Error('Sólo el dueño maneja la cola de su agente.');
+	const m = await row<{ run_id: number | null }>("select run_id from messages where id = $1 and agent_id = $2 and conversation_id = $3 and routed_as = 'queued'", [Number(c.req.param('message')), a.id, Number(c.req.param('conversation'))]);
+	if (!m?.run_id) throw new Error('Ese mensaje ya no está en la cola.');
+	return { runId: m.run_id, messageId: Number(c.req.param('message')) };
+}
+app.post('/api/agents/:id/conversations/:conversation/messages/:message/send', async (c) => {
+	try { const q = await queuedMessage(c); await tasks.sendQueuedNow(q.runId, q.messageId); return c.json({ ok: true }); }
+	catch (err) { return fail(c, err); }
+});
+app.delete('/api/agents/:id/conversations/:conversation/messages/:message', async (c) => {
+	try { const q = await queuedMessage(c); await tasks.removeQueued(q.runId, q.messageId); return c.json({ ok: true }); }
+	catch (err) { return fail(c, err); }
 });
 
 app.post('/api/agents/:id/profile/reset', async (c) => {

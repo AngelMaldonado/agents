@@ -14,6 +14,7 @@ import { spawn } from 'node:child_process';
 import { createServer } from 'node:http';
 import { mkdtempSync, mkdirSync, writeFileSync, readdirSync, readFileSync, statSync, rmSync, symlinkSync, lstatSync } from 'node:fs';
 import { join, extname } from 'node:path';
+import { createHash } from 'node:crypto';
 import { execFile } from 'node:child_process';
 import { defaultHarness, runtimeToolNames } from './harness.ts';
 import { prepareHarness } from './harness-runtime.mjs';
@@ -27,7 +28,11 @@ const PI_SESSIONS = join(STATE, 'pi');
 const PROFILE = process.env.AGENT_BROWSER_PROFILE ?? join(STATE, 'browser');
 const WORK = join(HOME, 'work');
 const OUT = join(WORK, 'out');
-const PI_DIR = join(HOME, '.pi', 'agent');
+// In the volume: MCP OAuth sign-ins (mcp-auth.json) must outlive the container. models.json and
+// mcp.json are rewritten at every start from what the backend sends.
+const PI_DIR = join(STATE, 'pi-agent');
+// CLI tools the owner approved (harness installs), installed once per list into the volume.
+const TOOLS = join(STATE, 'tools');
 const STREAM = `ws://127.0.0.1:${process.env.AGENT_BROWSER_STREAM_PORT ?? 9223}`;
 
 // ~/work lives in the volume; out/ starts empty (the backend kept the last run's files).
@@ -306,6 +311,11 @@ async function start(msg) {
 	expectedHarness = prepared;
 	// GPT only: pi's one provider is OpenAI, through the backend's gateway.
 	writeFileSync(join(PI_DIR, 'models.json'), JSON.stringify({ providers: { openai: { baseUrl: `${SERVER}/llm/openai/v1` } } }));
+	if (prepared.mcpConfig) writeFileSync(join(PI_DIR, 'mcp.json'), JSON.stringify(prepared.mcpConfig, null, 1), { mode: 0o600 });
+	else rmSync(join(PI_DIR, 'mcp.json'), { force: true });
+	// The agent's own credentials (owner-set, per agent): environment of pi, its shell and MCP servers.
+	const secrets = msg.secrets && typeof msg.secrets === 'object' ? Object.fromEntries(Object.entries(msg.secrets).filter(([k, v]) => /^[A-Z][A-Z0-9_]{1,63}$/.test(k) && typeof v === 'string')) : {};
+	const toolPath = `${join(TOOLS, 'bin')}:${join(TOOLS, 'npm', 'node_modules', '.bin')}:${process.env.PATH}`;
 	const systemFile = join(STATE, 'contract.md');
 	writeFileSync(systemFile, msg.system);
 	writeInbox(msg.files ?? []);
@@ -341,12 +351,17 @@ async function start(msg) {
 		send({ t: 'initialized' });
 		return; // No LLM turn or work is executed until the owner gives this agent a task.
 	}
-	// The owner's own browser session: Chrome only, driven by the owner; pi never starts.
-	if (msg.kind === 'browser') return;
+	// The owner's own browser session: Chrome only, driven by the owner; pi never starts. It may be
+	// for signing an MCP server in: pi's login opens its page here and the owner completes it.
+	if (msg.kind === 'browser') {
+		if (typeof msg.mcpLogin === 'string') mcpLogin(msg.mcpLogin);
+		return;
+	}
+	await installTools(prepared.harness.installs, { ...process.env, PATH: toolPath });
 
 	// pi gets only the LLM token, as its provider key. The bootstrap token stays out of its env.
 	// Its session is the conversation's: same id, same history, in the agent's volume.
-	const env = { ...process.env, ...prepared.env, OPENAI_API_KEY: LLM_TOKEN, PI_CODING_AGENT_DIR: PI_DIR };
+	const env = { ...process.env, ...secrets, ...prepared.env, PATH: toolPath, OPENAI_API_KEY: LLM_TOKEN, PI_CODING_AGENT_DIR: PI_DIR };
 	delete env.AGENTS_TASK_TOKEN;
 	delete env.AGENTS_LLM_TOKEN;
 	const session = msg.piSession ? ['--session-dir', PI_SESSIONS, '--session-id', msg.piSession] : ['--no-session'];
@@ -376,6 +391,54 @@ async function start(msg) {
 	pi.stdin.write(JSON.stringify({ id: 'task', type: 'prompt', message: msg.prompt }) + '\n');
 	piReady = true;
 	for (const cmd of piQueue.splice(0)) pi.stdin.write(JSON.stringify(cmd) + '\n');
+}
+
+// ---------- CLI tools and MCP sign-in ----------
+
+function run(bin, args, env, timeout = 10 * 60_000) {
+	return new Promise((resolve, reject) => execFile(bin, args, { cwd: WORK, env, timeout, maxBuffer: 8 * 1024 * 1024 }, (err, _out, errOut) =>
+		err ? reject(new Error(`${bin} ${args.slice(0, 3).join(' ')}: ${String(errOut || err.message).trim().split('\n').slice(-3).join(' ').slice(0, 400)}`)) : resolve()));
+}
+
+/** Installs the approved list once; the same list on the next start finds it done. */
+async function installTools(installs, env) {
+	if (!installs?.length) return;
+	const want = createHash('sha256').update(JSON.stringify(installs)).digest('hex'), marker = join(TOOLS, '.installed');
+	try { if (readFileSync(marker, 'utf8') === want) return; } catch {}
+	send({ t: 'note', message: `Instalando herramientas: ${installs.map((i) => i.name ?? i.spec).join(', ')}…` });
+	rmSync(TOOLS, { recursive: true, force: true });
+	mkdirSync(join(TOOLS, 'bin'), { recursive: true });
+	const npm = installs.filter((i) => i.kind === 'npm').map((i) => i.spec);
+	if (npm.length) await run('npm', ['install', '--prefix', join(TOOLS, 'npm'), '--no-audit', '--no-fund', '--loglevel=error', ...npm], env);
+	for (const i of installs.filter((x) => x.kind === 'uv')) {
+		await run('uv', ['tool', 'install', i.spec], { ...env, UV_TOOL_DIR: join(TOOLS, 'uv'), UV_TOOL_BIN_DIR: join(TOOLS, 'bin'), UV_CACHE_DIR: '/tmp/uv-cache', UV_PYTHON_PREFERENCE: 'only-system' });
+	}
+	for (const i of installs.filter((x) => x.kind === 'binary')) {
+		const res = await fetch(i.spec, { signal: AbortSignal.timeout(120_000) });
+		if (!res.ok) throw new Error(`${i.name}: la descarga respondió ${res.status}.`);
+		const data = Buffer.from(await res.arrayBuffer());
+		if (createHash('sha256').update(data).digest('hex') !== i.sha256) throw new Error(`${i.name}: el sha256 no coincide; no se instaló.`);
+		writeFileSync(join(TOOLS, 'bin', i.name), data, { mode: 0o755 });
+	}
+	writeFileSync(marker, want);
+	send({ t: 'note', message: 'Herramientas instaladas.' });
+}
+
+/** pi signs the MCP server in: its authorization page opens in this browser for the owner. */
+function mcpLogin(server) {
+	send({ t: 'note', message: `Iniciar sesión en el servidor MCP «${server}»: completa la autorización en el navegador.` });
+	const child = spawn('pi', ['mcp', 'login', server, '--timeout', '600'], { cwd: WORK, env: { ...process.env, PI_CODING_AGENT_DIR: PI_DIR, BROWSER: 'agents-open' }, stdio: ['ignore', 'pipe', 'pipe'] });
+	let opened = false, tail = '';
+	const watch = (chunk) => {
+		const text = chunk.toString();
+		tail = (tail + text).slice(-2000);
+		const url = text.match(/https?:\/\/[^\s"'<>]+/)?.[0];
+		// The authorization page, not pi's own callback on this machine.
+		if (url && !opened && !/^https?:\/\/(127\.0\.0\.1|localhost|\[::1\])/.test(url)) { opened = true; void ab('open', url); }
+	};
+	child.stdout.on('data', watch);
+	child.stderr.on('data', watch);
+	child.on('exit', (code) => send({ t: 'mcp_login', server, ok: code === 0, detail: code === 0 ? '' : tail.trim().slice(-400) }));
 }
 
 /** Strict JSONL: split on LF only (U+2028/9 are valid inside JSON strings). */

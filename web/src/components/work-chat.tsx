@@ -1,6 +1,6 @@
 import {createContext,useCallback,useContext,useEffect,useId,useLayoutEffect,useMemo,useRef,useState} from 'react';
-import {AssistantRuntimeProvider,ComposerPrimitive,MessagePrimitive,ThreadPrimitive,useAuiState,useExternalStoreRuntime,MessageNotSentError} from '@assistant-ui/react';
-import {ArrowUp,MessageSquare} from 'lucide-react';
+import {AssistantRuntimeProvider,ComposerPrimitive,MessagePrimitive,QueueItemPrimitive,ThreadPrimitive,useAuiState,useExternalStoreRuntime,MessageNotSentError,type ExternalThreadQueueAdapter} from '@assistant-ui/react';
+import {ArrowUp,Globe,MessageSquare,Pencil,Terminal,X} from 'lucide-react';
 import {api,isLive,type Agent,type Artifact,type Task,type TaskEvent,type WorkRecord,type ConversationInput,type Conversation,type InterviewAnswers,type Question} from '@/api';
 import {workTranscript,type WorkBinding} from '@/lib/work-transcript';
 import {ArtifactMarkdown,ArtifactCards} from './artifacts';
@@ -8,6 +8,7 @@ import {Questionnaire,type QuestionDraft} from './questionnaire';
 import {ConversationTabs} from './conversation-tabs';
 import {Button} from './ui/button';
 import {AttachButton,AttachmentChips,SentAttachments,useAttachments} from './attachments';
+import {CopyMessage} from './message-actions';
 import {ScrollArea} from './ui/scroll-area';
 type Props={agent:Agent&{mine:boolean};task:Task|null;events:TaskEvent[];files:Artifact[];historical:boolean;active:boolean;onRefresh:()=>Promise<void>;
  conversation?:Conversation;conversations?:Conversation[];records?:WorkRecord[];inputs?:ConversationInput[];loading?:boolean;loadError?:string;
@@ -29,7 +30,8 @@ function WorkMessage(){
  const draftKey=task&&blocked?`${task.id}:${blocked.id}`:'';
  return <MessagePrimitive.Root className={`work-message designer-message designer-message-${role}`}>
   <span className="sr-only">{role==='user'?'Tú':'Agente'}</span>
-  <div className="work-message-body designer-message-content"><MessagePrimitive.Parts components={{Text:({text})=><ArtifactMarkdown text={text} agentId={props.agent.id} runId={task?.id??0} files={record?.artifacts??[]}/>}}/></div>
+  {binding?.steps?<WorkSteps steps={binding.steps} live={!!task&&isLive(task)&&id===lastByRun.get(task.id)}/>
+   :<div className="work-message-body designer-message-content"><MessagePrimitive.Parts components={{Text:({text})=><ArtifactMarkdown text={text} agentId={props.agent.id} runId={task?.id??0} files={record?.artifacts??[]}/>}}/></div>}
   {binding?.input?.files?.length?<SentAttachments files={binding.input.files} href={name=>`/api/agents/${props.agent.id}/messages/${binding.input!.id}/files/${encodeURIComponent(name)}`}/>:null}
   {binding?.pending&&<p className="text-xs text-muted-foreground" role="status">Mensaje pendiente; se entregará sólo en esta conversación.</p>}
   {blocked&&task&&<div className="work-questionnaire" data-help-round={blocked.id}>
@@ -37,7 +39,17 @@ function WorkMessage(){
    {textReply&&pending&&<p className="text-xs text-muted-foreground" role="status">Respuesta guardada; esperando entrega.</p>}
   </div>}
   {task&&id===lastByRun.get(task.id)&&<ArtifactCards files={record?.artifacts??[]} agentId={props.agent.id} runId={task.id}/>}
+  {!binding?.steps&&<CopyMessage/>}
  </MessagePrimitive.Root>;
+}
+/** The agent's steps between two of its messages; open while it is still working on them. */
+function WorkSteps({steps,live}:{steps:TaskEvent[];live:boolean}){
+ const icon=(e:TaskEvent)=>e.data.name==='bash'&&/agent-browser/.test(e.data.summary)||e.data.name==='browser'?Globe:e.data.name==='bash'?Terminal:Pencil;
+ return <details className="work-steps" open={live}>
+  <summary>{live?<span className="work-steps-live" aria-hidden="true"/>:null}{live?'Trabajando':'Trabajó'} · {steps.length} {steps.length===1?'paso':'pasos'}</summary>
+  <ol>{steps.slice(-40).map(e=>{const Icon=icon(e);return <li key={e.id}><Icon aria-hidden="true"/><span className="min-w-0 truncate" title={e.data.summary}>{e.data.summary||e.data.name}</span></li>;})}</ol>
+  {steps.length>40&&<p className="text-2xs text-muted-foreground">Últimos 40 de {steps.length}. El detalle completo está en Actividad y Terminal.</p>}
+ </details>;
 }
 export function WorkChat(props:Props){
  const {agent,task,historical,active,onRefresh,conversation}=props;
@@ -92,10 +104,23 @@ export function WorkChat(props:Props){
   }catch(e){setError((e as Error).message);throw new MessageNotSentError((e as Error).message);}finally{sending.current=false;setBusy(false);}
  },[]);
  const list=useMemo(()=>props.conversations?.map(c=>({id:String(c.id),title:c.title||'Conversación',archived:!!c.archived_at})),[props.conversations]);
- const runtime=useExternalStoreRuntime({messages:transcript.messages,convertMessage:m=>m,isRunning:busy,isDisabled:!agent.mine||historical||!active||!conversation||!!props.loading||!!props.loadError||!!conversation?.archived_at,
-  onNew:newMessage,adapters:list?{threadList:{threadId:conversation?String(conversation.id):'no-open-conversation',threads:list.filter(c=>!c.archived||!agent.mine).map(c=>({id:c.id,title:c.title,status:'regular' as const})),archivedThreads:agent.mine?list.filter(c=>c.archived).map(c=>({id:c.id,title:c.title,status:'archived' as const})):[],
+ // While the agent works, what you send waits in the run's queue (server side): send one now or remove it.
+ const working=!!task&&isLive(task)&&task.status!=='blocked'&&task.kind!=='browser'&&agent.mine&&!historical;
+ const queued=useMemo(()=>(props.inputs??[]).filter(m=>m.routed_as==='queued'&&m.run_id===task?.id),[props.inputs,task?.id]);
+ const queueAction=async(id:string,path:string,method:string)=>{
+  const p=current.current;if(!p.conversation)return;setError('');
+  try{await api(`/agents/${p.agent.id}/conversations/${p.conversation.id}/messages/${id}${path}`,{method});await p.onRefresh().catch(()=>{});}catch(e){setError((e as Error).message);}
+ };
+ const queue=useMemo<ExternalThreadQueueAdapter|undefined>(()=>working?{
+  items:queued.map(m=>({id:String(m.id),prompt:m.text,parts:[{type:'text' as const,text:m.text||'Archivos adjuntos'}]})),steerItems:[],
+  enqueue:m=>void newMessage(m).catch(()=>{}),steer:m=>void newMessage(m).catch(()=>{}),
+  move:(id,placement)=>{if(placement.lane==='steer')void queueAction(id,'/send','POST');},
+  edit:()=>{},remove:id=>void queueAction(id,'','DELETE')
+ }:undefined,[working,queued,newMessage]);
+ const runtime=useExternalStoreRuntime({messages:transcript.messages,convertMessage:m=>m,isRunning:busy||working,isDisabled:!agent.mine||historical||!active||!conversation||!!props.loading||!!props.loadError||!!conversation?.archived_at,
+  onNew:newMessage,adapters:{...(queue?{queue}:{}),...(list?{threadList:{threadId:conversation?String(conversation.id):'no-open-conversation',threads:list.filter(c=>!c.archived||!agent.mine).map(c=>({id:c.id,title:c.title,status:'regular' as const})),archivedThreads:agent.mine?list.filter(c=>c.archived).map(c=>({id:c.id,title:c.title,status:'archived' as const})):[],
    onSwitchToThread:async id=>{try{await current.current.onSelect?.(Number(id));}catch(e){setError((e as Error).message);}},onSwitchToNewThread:agent.mine?async()=>{setError('');try{await current.current.onCreate?.();}catch(e){setError((e as Error).message);}}:undefined,
-   onArchive:agent.mine?async id=>{setError('');try{await current.current.onArchive?.(Number(id),true);}catch(e){setError((e as Error).message);}}:undefined,onUnarchive:agent.mine?async id=>{setError('');try{await current.current.onArchive?.(Number(id),false);}catch(e){setError((e as Error).message);}}:undefined}}:undefined});
+   onArchive:agent.mine?async id=>{setError('');try{await current.current.onArchive?.(Number(id),true);}catch(e){setError((e as Error).message);}}:undefined,onUnarchive:agent.mine?async id=>{setError('');try{await current.current.onArchive?.(Number(id),false);}catch(e){setError((e as Error).message);}}:undefined}}:{})}});
  const hasText=useRef(false),[unsent,setUnsent]=useState(false);
  useEffect(()=>{
   const composer=runtime.thread.composer;
@@ -132,13 +157,16 @@ export function WorkChat(props:Props){
     {historical?<p className="text-sm text-muted-foreground">Ejecución histórica · sólo lectura. Vuelve a la conversación para continuar.</p>:!agent.mine?<p className="text-sm text-muted-foreground">Sólo el dueño puede dirigir este trabajo.</p>:!conversation?<p className="text-sm text-muted-foreground">Abre una nueva conversación o retoma una desde Recientes. Las anteriores se conservan.</p>:conversation.archived_at?<p className="text-sm text-muted-foreground">Tab cerrado. Reábrelo desde Recientes para continuar.</p>:<>
      {attach.error&&<p role="alert" className="error mb-2">{attach.error}</p>}
      <ComposerPrimitive.Root className="designer-composer" onSubmitCapture={e=>{if(busy){e.preventDefault();e.stopPropagation();}}} onDrop={attach.onDrop} onDragOver={attach.onDragOver}>
+      <ComposerPrimitive.Queue>{()=><div className="queue-item"><span className="queue-tag">En cola</span><QueueItemPrimitive.Text className="queue-text"/>
+       <QueueItemPrimitive.Steer asChild><Button type="button" size="sm" variant="ghost" title="Entregarlo ya, a mitad de su paso actual">Enviar ahora</Button></QueueItemPrimitive.Steer>
+       <QueueItemPrimitive.Remove asChild><Button type="button" size="icon" variant="ghost" className="size-7" aria-label="Quitar de la cola"><X aria-hidden="true"/></Button></QueueItemPrimitive.Remove></div>}</ComposerPrimitive.Queue>
       <AttachmentChips files={attach.files} onRemove={attach.remove}/>
       <ComposerPrimitive.Input onPaste={attach.onPaste} aria-label="Mensaje al agente" placeholder={task?.status==='blocked'?'Responde al agente…':props.waitingForComputer?'Escribe; tu mensaje esperará su turno…':task&&isLive(task)?'Escribe; el mensaje quedará pendiente…':'Escribe al agente…'} className="designer-composer-input" minRows={2} maxRows={6} maxLength={4000} submitMode="enter" autoFocus={false} addAttachmentOnPaste={false} onChange={e=>{if(!e.target.value.trim()){composingIntent.current=undefined;request.current=null;}else if(composingIntent.current===undefined)composingIntent.current=replyTarget();}}/>
       <div className="designer-composer-actions"><AttachButton onFiles={f=>void attach.add(f)} disabled={busy||!!props.loading}/>{attach.files.length&&!unsent
        ? <Button type="button" size="icon" aria-label="Enviar adjuntos" disabled={busy||!!props.loading} onClick={()=>void newMessage({content:[]}).catch(()=>{})}><ArrowUp aria-hidden="true"/></Button>
        : <ComposerPrimitive.Send asChild><Button size="icon" aria-label="Enviar mensaje" disabled={busy||!!props.loading}><ArrowUp aria-hidden="true"/></Button></ComposerPrimitive.Send>}</div>
      </ComposerPrimitive.Root>
-     <p className="text-xs text-muted-foreground">{props.waitingForComputer?'El agente trabaja en otra conversación. Tu mensaje esperará su turno.':task&&isLive(task)?'El agente está trabajando. Los mensajes se entregan sólo a esta conversación.':'Una conversación puede continuar durante varias ejecuciones.'}</p>
+     <p className="text-xs text-muted-foreground">{props.waitingForComputer?'El agente trabaja en otra conversación. Tu mensaje esperará su turno.':task&&isLive(task)?'El agente está trabajando: lo que envíes queda en cola y lo recibe al terminar su paso actual.':'Una conversación puede continuar durante varias ejecuciones.'}</p>
     </>}
    </div>
   </ThreadPrimitive.Root>

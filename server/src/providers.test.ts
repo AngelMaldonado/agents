@@ -220,6 +220,31 @@ run('whatsapp: listed numbers pick their agent, unknown numbers hear nothing, an
  await whatsapp.onRun(await run('web',null,'Sólo en la web.'),'done');
  expect(waSent.length).toBe(2);
 });
+run('a message sent while the agent works waits in its queue and can be removed before it is taken',async()=>{
+ const agents=await import('./agents'),inbox=await import('./inbox'),tasks=await import('./tasks');
+ const a=await agents.create(person,{name:'Cola de trabajo',model:'openai/gpt-6-sol'}),conv=(await agents.conversations(a.id))[0].id;
+ const runId=(await row<{id:number}>(`insert into runs(agent_id,person_id,conversation_id,workflow_id,model,status) values($1,$2,$3,$4,$5,'running') returning id`,[a.id,person,conv,`queue-${a.id}`,a.model]))!.id;
+ const one=await inbox.receive({agentId:a.id,source:'web',personId:person,conversationId:conv,text:'Y revisa precios',dedupeKey:'q-1'});
+ const two=await inbox.receive({agentId:a.id,source:'whatsapp',sender:'+52155',text:'También el envío',dedupeKey:'q-2'});
+ expect(await row('select run_id,routed_as from messages where id=$1',[one.message_id])).toEqual({run_id:runId,routed_as:'queued'});
+ expect(await row('select run_id,routed_as from messages where id=$1',[two.message_id])).toEqual({run_id:runId,routed_as:'queued'});
+ await tasks.removeQueued(runId,one.message_id);
+ expect(await row('select 1 from messages where id=$1',[one.message_id])).toBeNull();
+ await expect(tasks.removeQueued(runId,one.message_id)).rejects.toThrow('ya no está');
+ await expect(tasks.sendQueuedNow(runId,two.message_id)).rejects.toThrow('ya no está trabajando');
+ await exec("update runs set status='done' where id=$1",[runId]);
+});
+run('agent credentials: sealed, names only on the way out, reserved names refused, decrypted only for its sandbox',async()=>{
+ const agents=await import('./agents'),secrets=await import('./secrets');
+ const a=await agents.create(person,{name:'Con credenciales',model:'openai/gpt-6-sol'}),b=await agents.create(person,{name:'Sin credenciales',model:'openai/gpt-6-sol'});
+ const listed=await secrets.set(a.id,'github_token','ghp_secreto');
+ expect(listed.map(s=>s.name)).toEqual(['GITHUB_TOKEN']);expect(JSON.stringify(listed)).not.toContain('ghp_secreto');
+ expect((await row<{value_enc:string}>('select value_enc from agent_secrets where agent_id=$1',[a.id]))!.value_enc).not.toContain('ghp_secreto');
+ for(const bad of ['PATH','AGENTS_MASTER_KEY','PI_CODING_AGENT_DIR','OPENAI_API_KEY','1TOKEN','token-x'])await expect(secrets.set(a.id,bad,'x')).rejects.toThrow();
+ expect(await secrets.forRun(a.id)).toEqual({GITHUB_TOKEN:'ghp_secreto'});expect(await secrets.forRun(b.id)).toEqual({});
+ await secrets.set(a.id,'GITHUB_TOKEN','ghp_nuevo');expect(await secrets.forRun(a.id)).toEqual({GITHUB_TOKEN:'ghp_nuevo'});
+ expect(await secrets.remove(a.id,'GITHUB_TOKEN')).toEqual([]);
+});
 run('conversation history pages executions and keeps chat events after thousands of tool events',async()=>{
  const agents=await import('./agents'),conversations=await import('./conversations');
  const a=await agents.create(person,{name:'Historia paginada',model:'openai/gpt-6-sol'}),conv=(await agents.conversations(a.id))[0];
@@ -327,6 +352,22 @@ run('interview attachments: images reach the model as images, text files inline,
  expect(sent.map((f: any) => [f.name, f.mime])).toEqual([['captura.png', 'image/png'], ['gastos.csv', 'text/plain']]);
  expect(Buffer.from(await Bun.file((await designs.file(person, d.id, sent[0].id))!.path).arrayBuffer()).toString('base64')).toBe(png);
  await expect(designs.file(person + 1, d.id, sent[0].id)).rejects.toThrow();
+});
+run('automejora: cited jobs reach the designer with their timeline, and only the agent own jobs', async () => {
+ const agents = await import('./agents'), designs = await import('./designs');
+ const a = await agents.create(person, { name: 'Citado', model: 'openai/gpt-6-sol' }), other = await agents.create(person, { name: 'Ajeno', model: 'openai/gpt-6-sol' });
+ const conv = (await agents.conversations(a.id))[0].id, otherConv = (await agents.conversations(other.id))[0].id;
+ const mk = async (agentId: number, c: number, answer: string) => (await row<{ id: number }>(`insert into runs(agent_id,person_id,conversation_id,workflow_id,model,status,answer,end_reason) values($1,$2,$3,$4,'openai/gpt-6-sol','incomplete',$5,'Se acabó el tiempo (30 min).') returning id`, [agentId, person, c, `ref-${agentId}-${Date.now()}`, answer]))!.id;
+ const mine = await mk(a.id, conv, 'Me atoré en el captcha.'), foreign = await mk(other.id, otherConv, 'Secreto ajeno.');
+ await exec(`insert into run_events(run_id,seq,kind,data) values($1,1,'tool',$2),($1,2,'blocked',$3)`, [mine, JSON.stringify({ name: 'bash', summary: 'agent-browser open https://tienda' }), JSON.stringify({ reason: 'Captcha en la tienda' })]);
+ const cited = await designs.referenced(a.id, [`Revisa @[#${mine} pedido](run:${mine}) y @[#${foreign} otro](run:${foreign})`]);
+ expect(cited.map(c => c.trabajo)).toEqual([mine]);
+ expect(cited[0].linea_de_tiempo).toEqual(['paso: agent-browser open https://tienda', 'blocked: Captcha en la tienda']);
+ expect(cited[0].respuesta).toBe('Me atoré en el captcha.'); expect(cited[0].motivo).toContain('Se acabó el tiempo');
+ const d = await designs.create(person, { model: 'openai/gpt-6-sol', agentId: a.id });
+ await designs.message(person, d.id, { text: `¿Qué salió mal en @[#${mine} pedido](run:${mine})?`, version: d.version });
+ const system = modelRequests.at(-1).input[0].content as string;
+ expect(system).toContain('Trabajos citados por el dueño'); expect(system).toContain('Captcha en la tienda'); expect(system).not.toContain('Secreto ajeno');
 });
 run('stale chat revisions are rejected without spending another model request', async () => {
  const designs = await import('./designs'); const d = await proposal(); const before = modelRequests.length;

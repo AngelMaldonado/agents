@@ -33,8 +33,9 @@ import { grantedNames, resolveCredential } from './vault';
 import { quotaOf } from './people';
 import { stateMount } from './state';
 import { createDelivery, startDelivery, notify } from './channels';
-import { requestRoute, startPrompt } from './inbox';
+import { requestRoute, startPrompt, filesFor, render } from './inbox';
 import * as whatsapp from './whatsapp';
+import * as secrets from './secrets';
 import { browserSnapshot, readSnapshot, saveSnapshot, type BrowserSnapshot } from './snapshots';
 import { definition, digest, defaultHarness, withHarnessPrompt, type Definition } from './harnesses';
 import { runtimeToolNames } from '../../sandbox/harness';
@@ -273,7 +274,7 @@ export async function failRun(agent: AgentRef, messageId: number, reason: string
 }
 
 /** From the web: the owner launches a task on an idle agent. */
-export async function enqueue(agent: AgentRef, prompt: string, opts: { admin: boolean; kind?: Kind }) {
+export async function enqueue(agent: AgentRef, prompt: string, opts: { admin: boolean; kind?: Kind; context?: unknown }) {
 	// A browser session calls no model: it only needs a free slot.
 	if (opts.kind === 'browser') {
 		if ((await quotaOf(agent.person_id)) < 1) throw new Error('Tu cuota de tareas simultáneas es 0: pídele a un admin que la suba.');
@@ -282,7 +283,7 @@ export async function enqueue(agent: AgentRef, prompt: string, opts: { admin: bo
 	const m = await tx(async c=>{
 		await row('select id from agents where id=$1 for update',[agent.id],c);
 		const conv=await defaultConversation(agent.id,c);
-		return (await row<{id:number}>("insert into messages (agent_id,conversation_id,source,person_id,text) values ($1,$2,'web',$3,$4) returning id",[agent.id,conv.id,agent.person_id,prompt.trim()],c))!;
+		return (await row<{id:number}>("insert into messages (agent_id,conversation_id,source,person_id,text,context) values ($1,$2,'web',$3,$4,$5) returning id",[agent.id,conv.id,agent.person_id,prompt.trim(),opts.context===undefined?null:JSON.stringify(opts.context)],c))!;
 	});
 	try {
 		return await startRun(agent, m.id, opts.admin ? 0 : 10, opts.kind);
@@ -471,6 +472,8 @@ async function finish(runId: number, end: End): Promise<Status | null> {
 	await event(t, 'status', { status, reason });
 	hub.forgetAgent(t.agent_id);
 	live.delete(runId);
+	// What was still queued for this run waits for the next one, in the same conversation.
+	await exec("update messages set run_id = null, routed_as = null, routed_at = null where run_id = $1 and routed_as = 'queued'", [runId]);
 	// Messages that waited for this run to end (a new conversation, a lost follow-up) go now.
 	requestRoute(t.agent_id);
 	return status;
@@ -542,6 +545,9 @@ export async function attach(cred: { token?: string; session?: string }, sup: Su
 			system: withHarnessPrompt(systemPrompt(agent, await grantedNames(t.agent_id)), harness),
 			blockedWaitMs: s.blockedWaitMinutes * 60_000,
 			piSession: conv.pi_session_id,
+			// The agent's credentials go only to its own work; a browser session may sign an MCP server in.
+			secrets: run.kind === 'browser' ? {} : await secrets.forRun(t.agent_id),
+			mcpLogin: run.kind === 'browser' ? (await row<{ server: string | null }>("select context->>'mcpLogin' as server from messages where run_id = $1 and routed_as = 'new_run' order by id limit 1", [t.id]))?.server ?? undefined : undefined,
 			purges: await pendingPurges(t.agent_id)
 		}));
 		await publishTask(t.id);
@@ -663,6 +669,14 @@ function onSupervisor(l: Live, raw: string) {
 				l.sup?.send(JSON.stringify({ t: 'cred_res', id: msg.id, ...reply }));
 				break;
 			}
+			case 'note':
+				// What the computer is doing before the agent starts (installing tools, signing in).
+				await event(ref, 'system', { message: String(msg.message ?? '').slice(0, 500) });
+				break;
+			case 'mcp_login':
+				await event(ref, 'system', { message: msg.ok ? `Sesión iniciada en el servidor MCP «${msg.server}». Queda guardada para las siguientes tareas.` : `No se completó el inicio de sesión en «${msg.server}»: ${String(msg.detail ?? '').slice(0, 300)}` });
+				if (msg.ok) await signalEnd(ref.id, { status: 'done', reason: null });
+				break;
 			case 'stderr':
 				// pi's diagnostics; kept for debugging, not shown as the agent's work.
 				if (msg.text) await event(ref, 'system', { message: String(msg.text).slice(0, 1000), stderr: true });
@@ -789,6 +803,8 @@ async function onPi(l: Live, ev: any) {
 			await event(ref, 'system', { message: `Reintento ${ev.attempt}/${ev.maxAttempts}: ${ev.errorMessage ?? ''}` });
 			break;
 		case 'agent_settled': {
+			// A message queued while it worked starts the next turn of the same run.
+			if (!l.lastError && !ev.aborted && await deliverQueued(l, 'prompt')) break;
 			if (l.lastError) await signalEnd(ref.id, { status: 'error', reason: `El proveedor respondió con error: ${providerError(l.lastError)}` });
 			else await signalEnd(ref.id, ev.aborted ? { status: 'incomplete', reason: 'Se interrumpió.' } : { status: 'done', reason: null });
 			break;
@@ -918,6 +934,47 @@ export async function steer(taskId: number, text: string, kind: 'steer' | 'follo
 		l.steeredUntil = Date.now() + 2500;
 		await setState(taskId, 'steered');
 	}
+}
+
+// ---------- the queue of messages sent while the agent works ----------
+
+type Queued = { id: number; source: 'web' | 'hook' | 'cron' | 'whatsapp'; sender: string | null; schedule_name: string | null; text: string };
+
+/**
+ * Hands one queued message to pi: as the next prompt when its turn ended, or as a steer now.
+ * The oldest, unless one is named. False when there is none or the computer is reconnecting.
+ */
+async function deliverQueued(l: Live, as: 'prompt' | 'steer', messageId?: number) {
+	if (!l.sup) return false;
+	const m = await row<Queued>(
+		`select id, source, sender, schedule_name, text from messages where run_id = $1 and routed_as = 'queued' ${messageId ? 'and id = $2' : ''} order by id limit 1`,
+		messageId ? [l.ref.id, messageId] : [l.ref.id]
+	);
+	if (!m) return false;
+	const files = await filesFor([m.id]);
+	const text = render(m, files.map((f) => f.name));
+	const taken = await exec("update messages set routed_as = $2 where id = $1 and routed_as = 'queued'", [m.id, as === 'prompt' ? 'follow_up' : 'steer']);
+	if (!taken) return false; // removed or sent a moment ago
+	l.sup.send(JSON.stringify({ t: 'files', files }));
+	l.sup.send(JSON.stringify({ t: 'pi_cmd', cmd: { type: as, message: text } }));
+	await event(l.ref, as === 'prompt' ? 'follow_up' : 'steer', { text, source: m.source, message_id: m.id });
+	if (as === 'prompt') await setState(l.ref.id, 'thinking');
+	return true;
+}
+
+/** «Enviar ahora»: the owner's queued message goes in mid-turn, as a steer. */
+export async function sendQueuedNow(runId: number, messageId: number) {
+	const l = live.get(runId);
+	const t = await getTask(runId);
+	if (!t || !l?.sup || t.status !== 'running') throw new Error('El agente ya no está trabajando: tu mensaje se entregará al empezar su siguiente turno.');
+	if (!(await deliverQueued(l, 'steer', messageId))) throw new Error('Ese mensaje ya no está en la cola.');
+}
+
+/** «Quitar»: a queued message never reaches the agent. */
+export async function removeQueued(runId: number, messageId: number) {
+	const n = await exec("delete from messages where id = $1 and run_id = $2 and routed_as = 'queued'", [messageId, runId]);
+	if (!n) throw new Error('Ese mensaje ya se entregó o ya no está en la cola.');
+	await recordEvent(runId, 'system', { message: 'Se quitó un mensaje de la cola.' });
 }
 
 // ---------- takeover: the owner drives the agent's browser ----------

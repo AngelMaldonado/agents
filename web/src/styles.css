@@ -259,6 +259,23 @@
   .designer-composer-wrap { @apply mx-auto w-full max-w-[48rem] shrink-0 px-4 pb-4; }
   .designer-composer-actions { @apply flex min-w-0 items-end justify-between gap-2 px-3 pb-3; }
   .designer-composer { @apply overflow-hidden rounded-2xl border bg-muted/30 shadow-xs focus-within:border-ring focus-within:ring-1 focus-within:ring-ring/30; }
+  .work-steps { @apply rounded-lg border bg-muted/30 px-3 py-2 text-xs; }
+  .work-steps summary { @apply flex cursor-pointer items-center gap-2 font-medium text-muted-foreground; }
+  .work-steps-live { @apply size-2 animate-pulse rounded-full bg-emerald-500; }
+  .work-steps ol { @apply mt-2 grid gap-1; }
+  .work-steps li { @apply flex min-w-0 items-center gap-2 font-mono text-2xs text-muted-foreground; }
+  .work-steps li svg { @apply size-3 shrink-0; }
+  .reference-popover { @apply absolute bottom-full left-3 z-50 mb-2 grid max-h-72 w-96 max-w-[calc(100%-1.5rem)] overflow-y-auto rounded-lg border bg-popover p-1 text-xs text-popover-foreground shadow-md; }
+  .reference-item { @apply flex min-w-0 cursor-pointer items-center justify-between gap-3 rounded-md px-2 py-1.5 text-left hover:bg-muted data-[highlighted]:bg-muted aria-selected:bg-muted; }
+  .reference-description { @apply shrink-0 text-2xs text-muted-foreground; }
+  .reference-back { @apply rounded-md px-2 py-1 text-left text-2xs text-muted-foreground hover:bg-muted; }
+  .designer-composer { position: relative; overflow: visible; }
+  .queue-item { @apply mx-3 mt-3 flex min-w-0 items-center gap-2 rounded-lg border bg-background px-2 py-1 text-xs; }
+  .queue-tag { @apply shrink-0 rounded-sm bg-muted px-1.5 py-0.5 text-2xs font-medium text-muted-foreground; }
+  .queue-text { @apply min-w-0 flex-1 truncate; }
+  .message-actions { @apply mt-1 flex gap-1 opacity-0 transition-opacity focus-within:opacity-100; }
+  .designer-message:hover .message-actions, .work-message:hover .message-actions { @apply opacity-100; }
+  .message-actions svg { @apply size-3.5; }
   .attachment-chips { @apply flex flex-wrap gap-2 px-3 pt-3; }
   .attachment-chips.sent { @apply px-0 pt-2; }
   .attachment-chip { @apply flex max-w-56 min-w-0 items-center gap-2 rounded-md border bg-background px-2 py-1 text-xs; }

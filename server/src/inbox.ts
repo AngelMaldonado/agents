@@ -164,13 +164,17 @@ async function routeOnce(agentId: number) {
 		const files = await filesFor([m.id]);
 		const text = render(m, files.map((f) => f.name));
 		const unblocks=status==='blocked' && m.source!=='web'; // Web answers use the exact run/round outbox above.
-		const ok = unblocks
-			? toSupervisor(live.id, [{ t: 'files', files }, { t: 'pi_cmd', cmd: { type: 'steer', message: text } }, { t: 'unblock' }])
-			: toSupervisor(live.id, [{ t: 'files', files }, { t: 'pi_cmd', cmd: { type: 'follow_up', message: text } }]);
+		if (!unblocks) {
+			// While it works, a message waits in the run's queue: the agent gets it when it finishes
+			// its turn (tasks.deliverQueued), unless the owner sends it now or removes it first.
+			await exec("update messages set run_id = $2, routed_as = 'queued', routed_at = now() where id = $1", [m.id, live.id]);
+			await recordEvent(live.id, 'queued', { text, source: m.source, message_id: m.id });
+			continue;
+		}
+		const ok = toSupervisor(live.id, [{ t: 'files', files }, { t: 'pi_cmd', cmd: { type: 'steer', message: text } }, { t: 'unblock' }]);
 		if (!ok) return; // its supervisor is reconnecting: route again when it is back
-		const as = unblocks ? 'unblock' : 'follow_up';
-		await exec('update messages set run_id = $2, routed_as = $3, routed_at = now() where id = $1', [m.id, live.id, as]);
-		await recordEvent(live.id, unblocks ? 'steer' : 'follow_up', { text, source: m.source, message_id: m.id });
+		await exec("update messages set run_id = $2, routed_as = 'unblock', routed_at = now() where id = $1", [m.id, live.id]);
+		await recordEvent(live.id, 'steer', { text, source: m.source, message_id: m.id });
 	}
 }
 

@@ -2,7 +2,7 @@ import { expect, test } from 'bun:test';
 import { mkdtempSync, mkdirSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
-import { defaultHarness, validateHarness, runtimeToolNames, harnessInstructions } from '../../sandbox/harness';
+import { defaultHarness, validateHarness, runtimeToolNames, harnessInstructions, mcpAllowed } from '../../sandbox/harness';
 import { fileDenial, textStats, jsonInfo } from '../../sandbox/harness-policy';
 import { definition, proposalDigest, harnessHash } from './harnesses';
 import { parseDesignReply } from './design-format';
@@ -62,4 +62,26 @@ test('designer returns harness as validated data and cannot smuggle code or priv
  const reply=(h:unknown)=>({status:'completed',output:[{type:'message',role:'assistant',content:[{type:'output_text',text:JSON.stringify({message:'Revisa',contract:{name:'A',prompt:'Rol'},harness:h,ready:true})}]}]});
  expect(parseDesignReply(reply(defaultHarness())).harness).toEqual(defaultHarness());
  expect(()=>parseDesignReply(reply({...defaultHarness(),plugins:[{id:'evil',version:'1.0.0'}]}))).toThrow();
+});
+test('MCP servers and CLI installs are optional: without them the manifest and its digest do not change', () => {
+ const base = validateHarness(defaultHarness());
+ expect(validateHarness({ ...base, mcp: [], installs: [] })).toEqual(base);
+ expect(harnessHash({ ...base, mcp: [], installs: [] })).toBe(harnessHash(base));
+});
+test('MCP servers: http with URL and headers, stdio with a bare command; only their prefixes pass', () => {
+ const http = { name: 'linear', description: 'Tickets', transport: 'http', url: 'https://mcp.linear.app/mcp', command: null, args: [], headers: [], env: [], oauth: true };
+ const stdio = { name: 'git-hub', description: 'Repos', transport: 'stdio', url: null, command: 'npx', args: ['-y', '@modelcontextprotocol/server-github'], headers: [], env: [{ name: 'GITHUB_TOKEN', value: '${GITHUB_TOKEN}' }], oauth: false };
+ const h = validateHarness({ ...defaultHarness(), mcp: [stdio, http] });
+ expect(h.mcp!.map(s => s.name)).toEqual(['git-hub', 'linear']);
+ expect(mcpAllowed(h, 'mcp__git_hub__create_issue')).toBe(true); expect(mcpAllowed(h, 'mcp__other__x')).toBe(false); expect(mcpAllowed(h, 'bash')).toBe(false);
+ expect(() => validateHarness({ ...defaultHarness(), mcp: [{ ...stdio, command: '/bin/sh' }] })).toThrow('sin ruta');
+ expect(() => validateHarness({ ...defaultHarness(), mcp: [{ ...http, headers: [{ name: 'Authorization', value: 'Bearer ${T}' }] }] })).toThrow('OAuth o un token');
+ expect(() => validateHarness({ ...defaultHarness(), tools: ['request_help', 'read'], mcp: [stdio] })).toThrow('requiere bash');
+ expect(() => validateHarness({ ...defaultHarness(), mcp: [http, { ...http, name: 'linear' }] })).toThrow('repetidos');
+});
+test('CLI installs are pinned: npm name@version, uv name==version, binaries by https with sha256', () => {
+ const ok = validateHarness({ ...defaultHarness(), installs: [{ kind: 'npm', spec: '@vercel/cli@39.1.0', name: null, sha256: null }, { kind: 'uv', spec: 'httpie==3.2.4', name: null, sha256: null }, { kind: 'binary', spec: 'https://example.com/gh', name: 'gh', sha256: 'a'.repeat(64) }] });
+ expect(ok.installs!.length).toBe(3);
+ for (const bad of [{ kind: 'npm', spec: 'vercel', name: null, sha256: null }, { kind: 'npm', spec: 'vercel@latest', name: null, sha256: null }, { kind: 'uv', spec: 'httpie', name: null, sha256: null }, { kind: 'binary', spec: 'http://x/gh', name: 'gh', sha256: 'a'.repeat(64) }, { kind: 'binary', spec: 'https://x/gh', name: 'gh', sha256: null }])
+  expect(() => validateHarness({ ...defaultHarness(), installs: [bad] })).toThrow('instalación inválida');
 });
