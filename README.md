@@ -75,6 +75,14 @@ Cada agente tiene un volumen Docker (`agents-<instancia>-agent-<id>`, montado en
 
 La respuesta de una tarea es el último mensaje del agente, en markdown.
 
+## Agentes compartidos y estado «Ocupado»
+
+El dueño comparte el agente con otras personas desde Configuración → General. Quien lo recibe ejecuta tareas y consulta el trabajo, pero no configura, usa Automejora, ve el prompt ni toma el control del navegador. Las conversaciones, el workspace y las sesiones siguen siendo compartidos; esto no crea contextos privados por usuario. Las corridas consumen la cuenta GPT y la cuota del dueño.
+
+Cada ejecución atiende a una persona: sus seguimientos se incorporan a su tarea; los mensajes de otras personas quedan pendientes hasta que termine, en orden de llegada. La vista muestra **Ocupado con la tarea de…** y permite dejar el siguiente encargo sin interrumpir. Una solicitud de ayuda ajena no captura ese encargo como respuesta. Sólo el solicitante o el dueño responden/dirigen/cancelan la tarea; un admin conserva la cancelación. Quien lo tiene compartido sólo puede quitar o enviar ahora sus propios mensajes de la cola; el dueño puede manejarla entera. El solicitante se deriva del mensaje inicial persistido (`requested_by`), sin cambiar `runs.person_id` ni requerir migración.
+
+`just dev sharing` verifica por HTTP con tres usuarios ficticios, GPT simulado y pi/Chrome/DBOS reales: exclusión entre personas, permisos, cola, orden de ejecución y recuperación después de reiniciar la API. Usa su propia base, contenedores y volúmenes temporales y los elimina al terminar; no usa cuentas GPT reales ni cambia el routing compartido de dev.
+
 ## Canales
 
 Un agente despierta por la web, por su **webhook de entrada** (`POST /hooks/<token>`, firmado con HMAC: `X-Agents-Signature: t=…,v1=…`) o por sus **horarios** (cron de DBOS, hora de `America/Mexico_City`). Todo entra a su buzón (`server/src/inbox.ts`): si duerme, empieza una tarea; si está trabajando, es un seguimiento; si está atascado, es la respuesta. Cuando una tarea termina o se atasca, su **webhook de salida** recibe la respuesta, enlaces firmados de 7 días a los archivos y el `context` del puente, con reintentos durante ~24 h (`server/src/channels.ts`). Los webhooks se configuran en **Configuración → Canales** y la agenda en su propia pestaña **Configuración → Horarios**, dentro del mismo modal. Canales y Horarios son secciones directas, sin cards envolventes; el contenido de las pestañas usa ScrollArea de shadcn. La agenda usa **FullCalendar Standard 6.1.20 (MIT)**, con vistas Mes/Semana/Agenda, creación visual diaria/laborable/semanal/mensual y cron avanzado. Luxon y cron-parser proyectan los disparos en la zona del horario; DBOS sigue ejecutándolos. Los bloques no indican duración, no se arrastran y las acciones afectan toda la recurrencia. Elegir una fecha sólo propone el día semanal: la regla empieza a aplicar al guardar, no permite diferir su inicio ni excepciones por fecha. Los cron existentes se conservan; para cambiar una regla se crea su reemplazo y se elimina la anterior. La vista previa se limita a 200 disparos por horario y 1,000 totales, sin limitar la ejecución. El contrato completo para quien construya un puente está en Bubble: proyecto `agents`, `docs/canales.md`.
@@ -173,6 +181,7 @@ just sandbox build    # reconstruir la imagen del sandbox
 just sandbox egress   # verificar el firewall de salida desde la red de sandboxes
 just dev test         # pruebas del server contra la base agents_test del Postgres de dev
 just dev design       # flujo HTTP aislado, GPT simulado y comprobación con sandbox/Chrome reales
+just dev sharing      # tres personas compartidas: permisos, espera y turnos tras reiniciar la API
 just dev psql         # consola del Postgres de dev (desechable)
 just dev stop         # cerrar tmux y bajar el entorno
 ```

@@ -14,6 +14,7 @@ export type Task = {
 	control?: boolean; // the owner is driving the agent's browser (takeover)
 	controller?: number | null;
 	cost: number; tokens: number; end_reason: string | null; answer: string | null; conversation_id: number;
+	requested_by?: number | null; requested_by_name?: string | null; // someone it is shared with; null: its owner
 	created_at: number; started_at: number | null; ended_at: number | null;
  definition?: { revision: number; digest: string; harnessDigest: string; image: string | null } | null;
 };

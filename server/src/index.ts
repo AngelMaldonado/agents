@@ -385,10 +385,10 @@ app.get('/api/tasks/:id/snapshot', async (c) => {
 	return c.json({ snapshot: tasks.snapshot(t.id) });
 });
 
-// Steer and follow-up: only the owner. The admin can watch and cancel, never steer.
+// Steer and follow-up: requester or owner. An unrelated admin can watch/cancel, never steer.
 app.post('/api/tasks/:id/steer', async (c) => {
 	const t = await usableTask(c);
-	if (!t) return c.json({ error: 'Sólo quien puede usar el agente dirige la tarea.' }, 403);
+	if (!t || !tasks.directs(t, c.get('me').id)) return c.json({ error: 'Sólo quien pidió esta tarea la dirige.' }, 403);
 	const { text, kind } = await c.req.json();
 	try {
 		await tasks.steer(t.id, String(text ?? ''), kind === 'follow_up' ? 'follow_up' : 'steer');
@@ -400,7 +400,7 @@ app.post('/api/tasks/:id/steer', async (c) => {
 
 app.post('/api/tasks/:id/help', async (c) => {
  const t = await usableTask(c);
- if (!t) return c.json({ error: 'Sólo quien puede usar el agente le responde.' }, 403);
+ if (!t || !tasks.directs(t, c.get('me').id)) return c.json({ error: 'Sólo quien pidió esta tarea le responde al agente.' }, 403);
  try { return c.json({ ok: true, ...await tasks.answerHelp(t.id, await c.req.json()) }); }
  catch (err) { return fail(c, err); }
 });
@@ -465,6 +465,7 @@ app.post('/api/tasks/:id/close', async (c) => {
 app.post('/api/tasks/:id/cancel', async (c) => {
 	const t = await seeableTask(c);
 	if (!t) return c.json({ error: 'No existe.' }, 404);
+	if (!c.get('me').admin && !tasks.directs(t, c.get('me').id)) return c.json({ error: 'Sólo quien pidió esta tarea la cancela.' }, 403);
 	try {
 		await tasks.cancel(t.id);
 		return c.json({ ok: true });
@@ -655,6 +656,7 @@ app.post('/api/agents/:id/conversations/:conversation/messages',async c=>{
    const {runId,round}=body.replyTo??{};
    if(!Number.isSafeInteger(runId)||!Number.isSafeInteger(round))throw new Error('La solicitud de ayuda cambió. Recarga antes de responder.');
    const t=await tasks.getTask(runId);if(!t||t.agent_id!==a.id||t.conversation_id!==id)throw new Error('La solicitud no pertenece a esta conversación.');
+   if(!tasks.directs(t,c.get('me').id))throw new Error('Sólo quien pidió esta tarea le responde al agente.');
    return c.json({ok:true,...await tasks.answerHelpText(runId,round,body.text,key)});
   }
   // Someone it is shared with writes under their name, so the agent knows it is not its owner.
@@ -676,8 +678,10 @@ app.get('/api/agents/:id/messages/:message/files/:name',async c=>{
 async function queuedMessage(c: Context<Env>) {
 	const a = await usableAgent(c);
 	if (!a) throw new Error('Sólo su dueño y quienes lo tienen compartido manejan la cola.');
-	const m = await row<{ run_id: number | null }>("select run_id from messages where id = $1 and agent_id = $2 and conversation_id = $3 and routed_as = 'queued'", [Number(c.req.param('message')), a.id, Number(c.req.param('conversation'))]);
+	const m = await row<{ run_id: number | null; person_id: number | null }>("select run_id, person_id::int from messages where id = $1 and agent_id = $2 and conversation_id = $3 and routed_as = 'queued'", [Number(c.req.param('message')), a.id, Number(c.req.param('conversation'))]);
 	if (!m?.run_id) throw new Error('Ese mensaje ya no está en la cola.');
+	// Its owner manages the whole queue; someone it is shared with, only their own messages.
+	if (a.person_id !== c.get('me').id && m.person_id !== c.get('me').id) throw new Error('Ese mensaje es de otra persona.');
 	return { runId: m.run_id, messageId: Number(c.req.param('message')) };
 }
 app.post('/api/agents/:id/conversations/:conversation/messages/:message/send', async (c) => {

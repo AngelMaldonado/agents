@@ -53,6 +53,7 @@ export type Task = {
 	container_id: string | null; workflow_id: string; priority: number; cost: number; tokens: number;
 	end_reason: string | null; answer: string | null; conversation_id: number;
 	created_at: number; started_at: number | null; ended_at: number | null;
+	requested_by: number | null; requested_by_name: string | null; // someone it is shared with; null: its owner
 };
 
 /** browser: Chrome only, no pi, for the owner to sign in and save payment methods in the profile. */
@@ -97,8 +98,16 @@ const personQueue = (personId: number) => `person:${personId}`;
 /** `select ${RUN_SELECT} where ...`: a run as the API shows it, with the message that started it. */
 export const RUN_SELECT = `r.id, r.agent_id, r.person_id, r.model, r.status, r.state, r.kind, r.container_id, r.workflow_id,
 	r.priority, r.cost, r.tokens, r.end_reason, r.answer, r.conversation_id, r.created_at, r.started_at, r.ended_at, r.definition,
-	coalesce((select m.text from messages m where m.run_id = r.id and m.routed_as = 'new_run' order by m.id limit 1), '') as prompt
+	coalesce((select m.text from messages m where m.run_id = r.id and m.routed_as = 'new_run' order by m.id limit 1), '') as prompt,
+	(select case when m.source = 'web' and m.person_id is distinct from r.person_id then m.person_id end from messages m where m.run_id = r.id and m.routed_as = 'new_run' order by m.id limit 1)::int as requested_by,
+	(select p.name from people p where p.id = (select case when m.source = 'web' and m.person_id is distinct from r.person_id then m.person_id end from messages m where m.run_id = r.id and m.routed_as = 'new_run' order by m.id limit 1)) as requested_by_name
 	from runs r`;
+
+/**
+ * A run is one person's task: whoever asked for it (or the agent's owner) answers, steers or cancels
+ * it, and only their messages join it. Everyone else's wait for it to end (inbox.routeOnce).
+ */
+export const directs = (t: Pick<Task, 'person_id' | 'requested_by'>, personId: number) => personId === t.person_id || personId === t.requested_by;
 
 export const getTask = (id: number) => row<Task>(`select ${RUN_SELECT} where r.id = $1`, [id]);
 
@@ -220,8 +229,8 @@ export async function checkRunnable(agent: AgentRef, opts: { initialization?: bo
 
 /** The agent's live run, if any. */
 export const liveRunOf = (agentId: number) =>
-	row<RunRef & { status: Status; conversation_id:number; kind: Kind }>(
-		"select id, person_id, agent_id, status, conversation_id, kind from runs where agent_id = $1 and status in ('queued','starting','running','blocked')",
+	row<RunRef & { status: Status; conversation_id:number; kind: Kind; requested_by: number | null }>(
+		`select r.id, r.person_id, r.agent_id, r.status, r.conversation_id, r.kind, (select case when m.source = 'web' and m.person_id is distinct from r.person_id then m.person_id end from messages m where m.run_id = r.id and m.routed_as = 'new_run' order by m.id limit 1)::int as requested_by from runs r where r.agent_id = $1 and r.status in ('queued','starting','running','blocked')`,
 		[agentId]
 	);
 

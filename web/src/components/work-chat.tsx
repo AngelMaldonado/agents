@@ -3,6 +3,7 @@ import {AssistantRuntimeProvider,ComposerPrimitive,MessagePrimitive,QueueItemPri
 import {ArrowUp,Globe,MessageSquare,Pencil,Terminal,X} from 'lucide-react';
 import {api,isLive,type Agent,type Artifact,type Task,type TaskEvent,type WorkRecord,type ConversationInput,type Conversation,type InterviewAnswers,type Question} from '@/api';
 import {workTranscript,type WorkBinding} from '@/lib/work-transcript';
+import {helpReplyTarget} from '@/lib/work-access';
 import {ArtifactMarkdown,ArtifactCards} from './artifacts';
 import {Questionnaire,type QuestionDraft} from './questionnaire';
 import {ConversationTabs} from './conversation-tabs';
@@ -12,7 +13,9 @@ import {CopyMessage} from './message-actions';
 import {ScrollArea} from './ui/scroll-area';
 type Props={agent:Agent&{mine:boolean};task:Task|null;events:TaskEvent[];files:Artifact[];historical:boolean;active:boolean;onRefresh:()=>Promise<void>;
  conversation?:Conversation;conversations?:Conversation[];records?:WorkRecord[];inputs?:ConversationInput[];loading?:boolean;loadError?:string;
- onSelect?:(id:number)=>Promise<void>;onCreate?:()=>Promise<void>;onArchive?:(id:number,archived:boolean)=>Promise<void>;onLoadEarlier?:()=>Promise<void>;hasEarlier?:boolean;waitingForComputer?:boolean};
+ onSelect?:(id:number)=>Promise<void>;onCreate?:()=>Promise<void>;onArchive?:(id:number,archived:boolean)=>Promise<void>;onLoadEarlier?:()=>Promise<void>;hasEarlier?:boolean;waitingForComputer?:boolean;
+ // Shared agents: busyWith names who the agent works for now (not me); directs says whose tasks I may answer.
+ busyWith?:string|null;directs?:(t:Task)=>boolean};
 type ChatContext={unsent:boolean;instanceId:string;props:Props;bindings:Map<string,WorkBinding>;lastByRun:Map<number,string>;busy:boolean;error:string;onAnswer:(taskId:number,a:InterviewAnswers)=>Promise<void>;drafts:Record<string,QuestionDraft>;updateDraft:(key:string,patch:Partial<QuestionDraft>)=>void};
 const Context=createContext<ChatContext|null>(null);
 function WorkMessage(){
@@ -26,7 +29,7 @@ function WorkMessage(){
  const expired=!!blocked&&record?.events.some(e=>e.kind==='help_expired'&&e.data.round===blocked.id);
  const pending=!!blocked&&task?.status==='blocked'&&control?.kind==='blocked'&&control.id===blocked.id;
  const questions:Question[]=Array.isArray(blocked?.data.questions)?blocked.data.questions:[];
- const editable=props.agent.mine&&!props.historical&&props.active&&!props.conversation?.archived_at;
+ const editable=props.agent.mine&&!props.historical&&props.active&&!props.conversation?.archived_at&&(!task||!props.directs||props.directs(task));
  const draftKey=task&&blocked?`${task.id}:${blocked.id}`:'';
  return <MessagePrimitive.Root className={`work-message designer-message designer-message-${role}`}>
   <span className="sr-only">{role==='user'?'Tú':'Agente'}</span>
@@ -80,8 +83,8 @@ export function WorkChat(props:Props){
  const request=useRef<{key:string;sig:string;replyTo?:{runId:number;round:number}}|null>(null);
  const composingIntent=useRef<{runId:number;round:number}|null|undefined>(undefined);
  const replyTarget=()=>{
-  const p=current.current,control=[...p.events].reverse().find(e=>['blocked','steer','unblocked'].includes(e.kind));
-  return p.task&&isLive(p.task)&&control?.kind==='blocked'&&!p.events.some(e=>['help_answer','help_reply'].includes(e.kind)&&e.data.round===control.id)?{runId:p.task.id,round:control.id}:null;
+  const p=current.current;
+  return helpReplyTarget(p.task,p.events,!!p.task&&(!p.directs||p.directs(p.task)));
  };
  const newMessage=useCallback(async(message:{content:readonly {type:string;text?:string}[]})=>{
   const p=current.current,text=message.content.filter(c=>c.type==='text').map(c=>c.text??'').join('\n').trim(),files=attachRef.current.current.current;
@@ -105,7 +108,7 @@ export function WorkChat(props:Props){
  },[]);
  const list=useMemo(()=>props.conversations?.map(c=>({id:String(c.id),title:c.title||'Conversación',archived:!!c.archived_at})),[props.conversations]);
  // While the agent works, what you send waits in the run's queue (server side): send one now or remove it.
- const working=!!task&&isLive(task)&&task.status!=='blocked'&&task.kind!=='browser'&&agent.mine&&!historical;
+ const working=!!task&&isLive(task)&&task.status!=='blocked'&&task.kind!=='browser'&&agent.mine&&!historical&&!props.busyWith;
  const queued=useMemo(()=>(props.inputs??[]).filter(m=>m.routed_as==='queued'&&m.run_id===task?.id),[props.inputs,task?.id]);
  const queueAction=async(id:string,path:string,method:string)=>{
   const p=current.current;if(!p.conversation)return;setError('');
@@ -161,12 +164,12 @@ export function WorkChat(props:Props){
        <QueueItemPrimitive.Steer asChild><Button type="button" size="sm" variant="ghost" title="Entregarlo ya, a mitad de su paso actual">Enviar ahora</Button></QueueItemPrimitive.Steer>
        <QueueItemPrimitive.Remove asChild><Button type="button" size="icon" variant="ghost" className="size-7" aria-label="Quitar de la cola"><X aria-hidden="true"/></Button></QueueItemPrimitive.Remove></div>}</ComposerPrimitive.Queue>
       <AttachmentChips files={attach.files} onRemove={attach.remove}/>
-      <ComposerPrimitive.Input onPaste={attach.onPaste} aria-label="Mensaje al agente" placeholder={task?.status==='blocked'?'Responde al agente…':props.waitingForComputer?'Escribe; tu mensaje esperará su turno…':task&&isLive(task)?'Escribe; el mensaje quedará pendiente…':'Escribe al agente…'} className="designer-composer-input" minRows={2} maxRows={6} maxLength={4000} submitMode="enter" autoFocus={false} addAttachmentOnPaste={false} onChange={e=>{if(!e.target.value.trim()){composingIntent.current=undefined;request.current=null;}else if(composingIntent.current===undefined)composingIntent.current=replyTarget();}}/>
+      <ComposerPrimitive.Input onPaste={attach.onPaste} aria-label="Mensaje al agente" placeholder={props.busyWith?'Escribe; tu mensaje esperará a que termine…':task?.status==='blocked'&&(!props.directs||props.directs(task))?'Responde al agente…':props.waitingForComputer?'Escribe; tu mensaje esperará su turno…':task&&isLive(task)?'Escribe; el mensaje quedará pendiente…':'Escribe al agente…'} className="designer-composer-input" minRows={2} maxRows={6} maxLength={4000} submitMode="enter" autoFocus={false} addAttachmentOnPaste={false} onChange={e=>{if(!e.target.value.trim()){composingIntent.current=undefined;request.current=null;}else if(composingIntent.current===undefined)composingIntent.current=replyTarget();}}/>
       <div className="designer-composer-actions"><AttachButton onFiles={f=>void attach.add(f)} disabled={busy||!!props.loading}/>{attach.files.length&&!unsent
        ? <Button type="button" size="icon" aria-label="Enviar adjuntos" disabled={busy||!!props.loading} onClick={()=>void newMessage({content:[]}).catch(()=>{})}><ArrowUp aria-hidden="true"/></Button>
        : <ComposerPrimitive.Send asChild><Button size="icon" aria-label="Enviar mensaje" disabled={busy||!!props.loading}><ArrowUp aria-hidden="true"/></Button></ComposerPrimitive.Send>}</div>
      </ComposerPrimitive.Root>
-     <p className="text-xs text-muted-foreground">{props.waitingForComputer?'El agente trabaja en otra conversación. Tu mensaje esperará su turno.':task&&isLive(task)?'El agente está trabajando: lo que envíes queda en cola y lo recibe al terminar su paso actual.':'Una conversación puede continuar durante varias ejecuciones.'}</p>
+     <p className="text-xs text-muted-foreground" role={props.busyWith?'status':undefined}>{props.busyWith?<><strong>Ocupado</strong> con la tarea de {props.busyWith}. Tu mensaje esperará a que termine y luego el agente lo atiende como una tarea nueva.</>:props.waitingForComputer?'El agente trabaja en otra conversación. Tu mensaje esperará su turno.':task&&isLive(task)?'El agente está trabajando: lo que envíes queda en cola y lo recibe al terminar su paso actual.':'Una conversación puede continuar durante varias ejecuciones.'}</p>
     </>}
    </div>
   </ThreadPrimitive.Root>

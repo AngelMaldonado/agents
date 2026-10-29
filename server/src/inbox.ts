@@ -4,6 +4,9 @@
 //   queued / starting     → joins that run: it goes into the run's first prompt
 //   running               → follow-up: pi takes it as its next turn, same container
 //   blocked               → it is the answer: unblocks and goes in as a steer
+// A run is one person's task (tasks.directs): while it lives, the messages of someone else it is
+// shared with wait, and start their own run when it ends, in arrival order. The agent finishes one
+// person's task before taking the next one's.
 // Conversation resets are not supported, including legacy pending messages carrying that flag.
 // Routing is one agent at a time, in arrival order. It never runs inside a DBOS workflow (it starts
 // workflows): code that is in one asks for it with requestRoute and a plain loop does it.
@@ -17,8 +20,11 @@ export type Source = 'web' | 'hook' | 'cron' | 'whatsapp';
 export type Attachment = { name: string; mime?: string; data: string };
 type Message = {
 	id: number; agent_id: number; source: Source; sender: string | null; schedule_name: string | null;
-	text: string; run_id: number | null; routed_as: string | null; conversation_id:number;
+	text: string; run_id: number | null; routed_as: string | null; conversation_id:number; person_id?: number | null;
 };
+
+/** Whose task a message is: someone the agent is shared with, or null for the owner's lane. */
+const requester = (m: Pick<Message, 'source' | 'person_id'>, ownerId: number) => (m.source === 'web' && m.person_id != null && m.person_id !== ownerId ? m.person_id : null);
 
 const MAX_FILES = 10;
 const MAX_FILE_BYTES = 10 * 1024 * 1024;
@@ -127,7 +133,7 @@ export async function startRouter() {
 
 const pending = (agentId: number) =>
 	rows<Message>(
-		`select id, agent_id, source, sender, schedule_name, text, run_id, routed_as, conversation_id
+		`select id, agent_id, source, sender, schedule_name, text, run_id, routed_as, conversation_id, person_id::int
 		 from messages where agent_id = $1 and routed_at is null order by id`,
 		[agentId]
 	);
@@ -160,6 +166,7 @@ async function routeOnce(agentId: number) {
 		}
 		if (live.conversation_id !== m.conversation_id) continue; // Another tab waits; never inject into its pi context.
 		if (live.kind === 'browser') continue; // The owner's browser session has no agent to hear it: it waits for the session to end.
+		if (requester(m, live.person_id) !== live.requested_by) continue; // Busy with someone else's task: it waits for it to end.
 		if (await joinQueued(m.id, live.id)) continue;
 		const status = (await row<{ status: Status }>('select status from runs where id = $1', [live.id]))!.status;
 		if (status === 'queued' || status === 'starting') continue; // joinQueued lost a race: next pass

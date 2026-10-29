@@ -14,7 +14,7 @@ default:
 # ---- dev environment on reko-3 ----
 
 # dev defaults to session: start the stack, continuous sync and logs in tmux.
-# dev: init | sync | watch | up | down | restart | logs [svc] | ps | open | session | stop | fake on|off | test | design | psql
+# dev: init | sync | watch | up | down | restart | logs [svc] | ps | open | session | stop | fake on|off | test | design | sharing | psql
 dev verb="session" arg="":
     #!/usr/bin/env bash
     set -euo pipefail
@@ -76,6 +76,11 @@ dev verb="session" arg="":
         # Isolated DB/API and fake GPT; actual dev sandbox initialization. Cleans up its own labels.
         just dev sync
         {{dc}} --project-directory {{remote}} exec -T server bun run scripts/design-smoke.ts
+        ;;
+      sharing)
+        # Isolated DB/API, fake GPT and real sandboxes: shared users wait for one another.
+        just dev sync
+        {{dc}} --project-directory {{remote}} exec -T server bun run scripts/sharing-smoke.ts
         ;;
       psql)
         # The dev database (throwaway; read-write).

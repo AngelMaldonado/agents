@@ -270,6 +270,36 @@ run('sharing: the people an owner picks see and use the agent, never improve it;
  await agents.setShares((await agents.get(a.id))!,[]);
  expect(await agents.seeable(viewer,a.id)).toBeNull();expect(await agents.visible(viewer)).toEqual([]);
 });
+for(const status of ['queued','starting','running','blocked'] as const)run(`busy (${status}): only the requester's messages join a shared task`,async()=>{
+ const agents=await import('./agents'),inbox=await import('./inbox'),conversations=await import('./conversations'),tasks=await import('./tasks');
+ const ana=(await row<{id:number}>("insert into people (name, key, avatar_seed) values ('Ana Ocupada',$1,'s') returning id",[`ana-ocupada-${status}`]))!.id;
+ const beto=(await row<{id:number}>("insert into people (name, key, avatar_seed) values ('Beto Ocupado',$1,'s') returning id",[`beto-ocupado-${status}`]))!.id;
+ const a=await agents.create(person,{name:'Ocupado',model:'openai/gpt-6-sol'});await agents.setShares((await agents.get(a.id))!,[ana,beto]);
+ const conv=(await conversations.list(a.id))[0];
+ const send=(personId:number,text:string)=>inbox.receive({agentId:a.id,source:'web',personId,text,conversationId:conv.id},{routeNow:false});
+ const first=await send(ana,'Tarea de Ana');
+ const run=(await row<{id:number}>(`insert into runs(agent_id,person_id,conversation_id,workflow_id,model,status) values($1,$2,$3,$4,$5,$6) returning id`,[a.id,person,conv.id,`busy-${a.id}`,a.model,status]))!.id;
+ await exec("update messages set run_id=$2,routed_as='new_run',routed_at=now() where id=$1",[first.message_id,run]);
+ const t=(await tasks.getTask(run))!;expect(t.requested_by).toBe(ana);expect(t.requested_by_name).toBe('Ana Ocupada');
+ expect((await tasks.liveRunOf(a.id))!.requested_by).toBe(ana);
+ expect(tasks.directs(t,ana)).toBe(true);expect(tasks.directs(t,person)).toBe(true);expect(tasks.directs(t,beto)).toBe(false);
+ const other=await send(beto,'Tarea de Beto'),mine=await send(person,'Del dueño'),more=await send(ana,'Más de Ana'),otherMore=await send(beto,'Más de Beto');
+ const hook=await inbox.receive({agentId:a.id,source:'hook',text:'Canal del dueño'},{routeNow:false});
+ await inbox.route(a.id);
+ const state=async(id:number)=>(await row<{run_id:number|null;routed_as:string|null}>('select run_id::int,routed_as from messages where id=$1',[id]))!;
+ for(const m of [other,mine,otherMore,hook])expect(await state(m.message_id)).toEqual({run_id:null,routed_as:null});
+ expect(await state(more.message_id)).toEqual({run_id:run,routed_as:status==='queued'||status==='starting'?'queued_with':'queued'});
+ expect((await tasks.getTask(run))!.status).toBe(status); // Nobody else's message unblocks Ana's question.
+ // Simulate the next admitted run; only Beto's follow-up may join Beto, never the owner's waiting task.
+ await exec("update runs set status='done' where id=$1",[run]);
+ const next=(await row<{id:number}>(`insert into runs(agent_id,person_id,conversation_id,workflow_id,model,status) values($1,$2,$3,$4,$5,'queued') returning id`,[a.id,person,conv.id,`busy-next-${a.id}`,a.model]))!.id;
+ await exec("update messages set run_id=$2,routed_as='new_run',routed_at=now() where id=$1",[other.message_id,next]);
+ await inbox.route(a.id);
+ expect((await tasks.getTask(next))!.requested_by).toBe(beto);
+ expect(await state(otherMore.message_id)).toEqual({run_id:next,routed_as:'queued_with'});
+ expect(await state(mine.message_id)).toEqual({run_id:null,routed_as:null});
+ await exec("update runs set status='done' where id=$1",[next]);
+});
 run('conversation history pages executions and keeps chat events after thousands of tool events',async()=>{
  const agents=await import('./agents'),conversations=await import('./conversations');
  const a=await agents.create(person,{name:'Historia paginada',model:'openai/gpt-6-sol'}),conv=(await agents.conversations(a.id))[0];
