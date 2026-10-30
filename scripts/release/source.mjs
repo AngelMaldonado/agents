@@ -7,6 +7,15 @@ import { tmpdir } from 'node:os';
 import { join, resolve, sep } from 'node:path';
 const root = mkdtempSync(join(tmpdir(), 'agents-git-'));
 execFileSync('git', ['clone', '--bare', '--no-hardlinks', '.', join(root, 'agents.git')], { stdio: 'ignore' });
+const localConfig = execFileSync('git', ['--git-dir', join(root, 'agents.git'), 'config', '--local', '--list'], {
+	encoding: 'utf8',
+});
+if (/credential|extraheader|includeif/i.test(localConfig))
+	throw new Error('El snapshot no debe contener configuración de autenticación.');
+const sourceUrl = execFileSync('git', ['--git-dir', join(root, 'agents.git'), 'config', '--get', 'remote.origin.url'], {
+	encoding: 'utf8',
+}).trim();
+if (sourceUrl !== process.cwd()) throw new Error('Origen del snapshot inesperado.');
 const sha = execFileSync('git', ['rev-parse', 'HEAD'], { encoding: 'utf8' }).trim();
 execFileSync('git', ['--git-dir', join(root, 'agents.git'), 'update-ref', 'refs/heads/approved', sha]);
 execFileSync('git', ['--git-dir', join(root, 'agents.git'), 'update-server-info'], { stdio: 'ignore' });

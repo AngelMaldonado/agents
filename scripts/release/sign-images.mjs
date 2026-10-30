@@ -5,6 +5,7 @@ import { createHash } from 'node:crypto';
 import { config, assertPublicationAllowed } from './config.mjs';
 import { assertSha, assertVersion, requireDigest } from './version.mjs';
 import { schemaInfo } from './schema.mjs';
+import { signingFlags, verificationFlags } from './cosign.mjs';
 assertPublicationAllowed();
 const mode = process.argv[2];
 if (!['sign', 'verify'].includes(mode)) throw new Error('Uso: sign-images.mjs sign|verify');
@@ -84,7 +85,7 @@ for (const [name, env] of [
 			'--yes',
 			'--key',
 			keyRef,
-			`--tlog-upload=${config.transparencyLog}`,
+			...signingFlags(config.transparencyLog),
 			'-a',
 			`git_sha=${sha}`,
 			'-a',
@@ -98,7 +99,7 @@ for (const [name, env] of [
 			'verify',
 			'--key',
 			keyFile,
-			...(!config.transparencyLog ? ['--insecure-ignore-tlog=true'] : []),
+			...verificationFlags(config.transparencyLog),
 			'-a',
 			`git_sha=${sha}`,
 			'-a',

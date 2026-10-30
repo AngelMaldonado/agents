@@ -2,6 +2,7 @@
 import { execFileSync } from 'node:child_process';
 import { mkdirSync, writeFileSync } from 'node:fs';
 import { createHash } from 'node:crypto';
+import { signingFlags, verificationFlags } from './cosign.mjs';
 const mode = process.argv[2];
 if (!['sign', 'verify', 'probe'].includes(mode)) throw new Error('Modo de executor inválido.');
 process.env.DOCKER_CONFIG = '/tmp/agents-docker';
@@ -39,7 +40,7 @@ if (mode === 'probe') {
 			'--yes',
 			'--key',
 			'env://COSIGN_PRIVATE_KEY',
-			'--tlog-upload=false',
+			...signingFlags(false),
 			'-a',
 			'purpose=agents-release-probe',
 			ref,
@@ -49,7 +50,7 @@ if (mode === 'probe') {
 				'verify',
 				'--key',
 				'/tmp/cosign.pub',
-				'--insecure-ignore-tlog=true',
+				...verificationFlags(false),
 				'-a',
 				'purpose=agents-release-probe',
 				ref,

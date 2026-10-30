@@ -39,7 +39,8 @@ jobs:
         with:
           ref: main
           fetch-depth: 0
-          persist-credentials: false
+          # Needed by the bootstrap tag/notes push; checkout v6 keeps these outside Git's object store.
+          persist-credentials: true
       - name: Verify exact SHA approved by the person
         env:
           APPROVED_SHA: ${{ inputs.sha }}

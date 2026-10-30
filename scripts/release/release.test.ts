@@ -6,6 +6,7 @@ import { manifestFrom, prepareArtifacts } from './artifacts.mjs';
 import { schemaInfo } from './schema.mjs';
 import { assertSource } from './runner.mjs';
 import { executorEnvironment } from './inputs.mjs';
+import { signingFlags, verificationFlags } from './cosign.mjs';
 const sha = 'a'.repeat(40),
 	digest = `sha256:${'b'.repeat(64)}`;
 const disabled = { ...config, publicationEnabled: false, deploymentEnabled: false };
@@ -108,6 +109,14 @@ test('Git snapshots only use the private ephemeral runner; verify receives no pr
 	expect(verify).not.toContain('COSIGN_PRIVATE');
 	expect(verify).not.toContain('COSIGN_PASSWORD');
 	expect(executorEnvironment('0.0.1-beta', sha, 'sign')).toContain('COSIGN_PRIVATE_KEY_B64=[[COSIGN_PRIVATE_KEY_B64]]');
+});
+test('Cosign 3 private signing disables new default config explicitly, without dropping signature validation', () => {
+	expect(signingFlags(false)).toContain('--use-signing-config=false');
+	expect(signingFlags(false)).toContain('--tlog-upload=false');
+	expect(signingFlags(true)).toContain('--tlog-upload=true');
+	expect(verificationFlags(false)).toContain('--insecure-ignore-tlog=true');
+	expect(verificationFlags(true)).not.toContain('--insecure-ignore-tlog=true');
+	expect(() => signingFlags(null)).toThrow('Rekor');
 });
 test('Komodo short hash is not sufficient without one clean full-source proof', async () => {
 	for (const logs of [
