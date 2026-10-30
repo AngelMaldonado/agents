@@ -6,6 +6,8 @@ export function assertPublicationAllowed(value = config) {
 			'Publicación bloqueada: el setup conserva intactos los entornos con usuarios. Autoriza el baseline y habilita release/config.json antes de publicar.',
 		);
 	if (value.platform !== 'linux/amd64') throw new Error('Esta beta sólo permite linux/amd64 (reko-3).');
+	if (!/^[a-f0-9]{64}$/.test(value.cosignPublicKeySha256 ?? '') || typeof value.transparencyLog !== 'boolean')
+		throw new Error('Faltan la huella de firma o la política explícita de Rekor.');
 }
 export function assertDeploymentAllowed(value = config) {
 	assertPublicationAllowed(value);

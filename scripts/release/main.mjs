@@ -196,6 +196,22 @@ try {
 			],
 			true,
 		);
+		// The first merge introduces this workflow; GitHub may take a moment to index it.
+		let workflowReady = false;
+		for (let attempt = 0; attempt < 15; attempt++) {
+			try {
+				const workflow = JSON.parse(
+					await command('gh', ['api', `repos/${config.repository}/actions/workflows/release.yml`], true),
+				);
+				if (workflow.state !== 'active') throw new Error('Workflow no activo.');
+				workflowReady = true;
+				break;
+			} catch {
+				await new Promise((r) => setTimeout(r, 2000));
+			}
+		}
+		if (!workflowReady)
+			throw new Error('Merge realizado, pero GitHub aún no tiene el workflow de release activo. No se publica.');
 		runner = startRunner(config);
 		emit(`[5/5] Runner efímero ${runner.name}; release manual del SHA ${sha}\n`);
 		dispatched = true; // A transport failure after this point may still have dispatched the job.
@@ -229,14 +245,15 @@ try {
 						'--commit',
 						sha,
 						'--json',
-						'databaseId,url',
+						'databaseId,url,displayTitle',
 					],
 					true,
 				),
 			);
-			if (runs.length > 1) throw new Error('Múltiples workflows para el mismo SHA; revisión manual necesaria.');
-			if (runs.length === 1) {
-				run = runs[0];
+			const matches = runs.filter((candidate) => candidate.displayTitle.endsWith(runner.name));
+			if (matches.length > 1) throw new Error('Múltiples workflows para este intento; revisión manual necesaria.');
+			if (matches.length === 1) {
+				run = matches[0];
 				break;
 			}
 			await new Promise((r) => setTimeout(r, 2000));

@@ -72,6 +72,11 @@ export function startRunner(config) {
 		);
 	} catch {
 		try {
+			docker('rm', '-f', name);
+		} catch {
+			/* a failed remote start may still have created it; report its name below */
+		}
+		try {
 			run('gh', ['api', '--method', 'DELETE', `repos/${config.repository}/actions/runners/${jit.runner.id}`]);
 		} catch {
 			/* credential expires; report below */
@@ -87,8 +92,9 @@ export function startRunner(config) {
 			let failure = false;
 			try {
 				docker('rm', '-f', name);
-			} catch {
-				/* ephemeral runner may already have removed itself */
+			} catch (error) {
+				// Do not call a network/daemon failure successful cleanup.
+				if (!/No such (container|object)/i.test(String(error.stderr ?? ''))) failure = true;
 			}
 			try {
 				run('gh', ['api', '--method', 'DELETE', `repos/${config.repository}/actions/runners/${jit.runner.id}`]);
@@ -96,7 +102,7 @@ export function startRunner(config) {
 				// JIT runners unregister after their one job; distinguish that from an actual API failure.
 				try {
 					const runners = JSON.parse(run('gh', ['api', `repos/${config.repository}/actions/runners`]));
-					failure = runners.runners.some((runner) => runner.id === jit.runner.id);
+					failure ||= runners.runners.some((runner) => runner.id === jit.runner.id);
 				} catch {
 					failure = true;
 				}

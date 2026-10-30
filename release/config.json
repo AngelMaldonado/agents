@@ -13,8 +13,8 @@
 	"runnerImage": "sha256:223eb0ce4a9a65a7af045e38ad903bb5e34d65b3eff224b0aa9db4a7b46a71bc",
 	"toolsImage": "sha256:d81e919a8c6ab1e43057f54226d60473d7d91cb0268bca6d06e19bd32800dc60",
 	"cosignVersion": "3.1.4",
-	"cosignPublicKeySha256": null,
-	"transparencyLog": null,
+	"cosignPublicKeySha256": "306102f7485320db8a37e90babb847b7f99e5910775d292d6a44801736475859",
+	"transparencyLog": false,
 	"komodo": {
 		"url": "https://komodo.cubytest.space",
 		"appBuild": "agents-release-app",

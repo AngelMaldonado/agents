@@ -29,13 +29,8 @@ if (mode === 'probe') {
 		writeFileSync('/tmp/cosign.pub', publicKey);
 		const docker = (...args) => run('docker', ['--context', 'default', ...args]);
 		if (docker('info', '--format', '{{.Name}}') !== 'reko-3') throw new Error('Executor equivocado.');
-		const tag = `registry.cubytest.space/cuby/agents-release-probe:setup-${process.env.AGENTS_RELEASE_SHA.slice(0, 12)}`;
-		run(
-			'docker',
-			['--context', 'default', 'build', '--platform', 'linux/amd64', '-t', tag, '-'],
-			'FROM scratch\nLABEL purpose="agents-release-signature-probe"\n',
-		);
-		docker('push', tag);
+		// Sign exactly the test image already built and pushed by Komodo, never rebuild it here.
+		const tag = `registry.cubytest.space/cuby/agents-release-probe:${process.env.AGENTS_RELEASE_SHA}`;
 		const manifest = JSON.parse(docker('buildx', 'imagetools', 'inspect', tag, '--format', '{{json .Manifest}}'));
 		if (!/^sha256:[a-f0-9]{64}$/.test(manifest.digest)) throw new Error('Digest inválido.');
 		const ref = `registry.cubytest.space/cuby/agents-release-probe@${manifest.digest}`;
@@ -65,7 +60,16 @@ if (mode === 'probe') {
 		console.log(`AGENTS_RELEASE_PROBE ${JSON.stringify({ ref, verified: true, transparencyLog: false })}`);
 	} catch (error) {
 		// Do not stringify subprocess errors: they contain the entire environment / private buffers.
-		throw new Error(`Ensayo de firma falló: ${error.message?.split('\n')[0]}. Sin publicar baseline ni desplegar.`);
+		const secrets = [
+			auth,
+			...Object.entries(process.env)
+				.filter(([key, value]) => /PRIVATE|SECRET|PASSWORD|TOKEN/.test(key) && value)
+				.map(([, value]) => value),
+		];
+		const detail = secrets.reduce((text, secret) => text.split(secret).join('[REDACTED]'), String(error.stderr ?? ''));
+		throw new Error(
+			`Ensayo de firma falló: ${error.message?.split('\n')[0]}. ${detail.slice(0, 4000)} Sin publicar baseline ni desplegar.`,
+		);
 	}
 } else {
 	await import('./sign-images.mjs');
