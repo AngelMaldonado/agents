@@ -17,7 +17,7 @@ process.stdin.on('end', async () => {
 	try {
 		const res = await fetch('http://127.0.0.1:7777/credential', {
 			method: 'POST',
-			body: JSON.stringify({ name, url: req.request?.url ?? '' })
+			body: JSON.stringify({ name, url: req.request?.url ?? '' }),
 		});
 		const r = await res.json();
 		if (!r.ok) return reply({ success: false, error: r.error ?? 'denied' });

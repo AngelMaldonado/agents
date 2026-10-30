@@ -14,7 +14,8 @@ services:
     image: oven/bun:1.4
     working_dir: /app
     # .env.dev holds the secrets; it exists only on reko-3, so it is read here, not by compose.
-    command: ["sh", "-c", "set -a && . /app/.env.dev && set +a && bun install && cd server && exec bun --watch src/index.ts"]
+    command:
+      ['sh', '-c', 'set -a && . /app/.env.dev && set +a && bun install && cd server && exec bun --watch src/index.ts']
     environment:
       AGENTS_INSTANCE: dev
       AGENTS_DATA: /data
@@ -31,7 +32,7 @@ services:
       AGENTS_PUBLIC_URL: https://agents-dev.cubytest.space
       # The WhatsApp bridge; AGENTS_WHATSAPP_SECRET comes from .env.dev.
       AGENTS_WHATSAPP_URL: http://whatsapp:8790
-      PORT: "8787"
+      PORT: '8787'
     depends_on:
       postgres:
         condition: service_healthy
@@ -51,19 +52,20 @@ services:
   web:
     image: oven/bun:1.4
     working_dir: /app/web
-    command: ["sh", "-c", "until [ -d /app/node_modules ]; do sleep 1; done; exec bun --bun vite --host 0.0.0.0 --port 5173"]
+    command:
+      ['sh', '-c', 'until [ -d /app/node_modules ]; do sleep 1; done; exec bun --bun vite --host 0.0.0.0 --port 5173']
     environment:
       AGENTS_API: http://server:8787
     volumes:
       - ./:/app
     networks: [proxy, agents-dev-internal]
     labels:
-      traefik.enable: "true"
+      traefik.enable: 'true'
       traefik.docker.network: proxy
       traefik.http.routers.agents-dev.entrypoints: websecure
       traefik.http.routers.agents-dev.rule: Host(`agents-dev.cubytest.space`)
       traefik.http.routers.agents-dev.service: agents-dev
-      traefik.http.services.agents-dev.loadbalancer.server.port: "5173"
+      traefik.http.services.agents-dev.loadbalancer.server.port: '5173'
     restart: unless-stopped
 
   postgres:
@@ -77,7 +79,7 @@ services:
       - pgdata:/var/lib/postgresql
       - ./scripts/dev-postgres-init.sql:/docker-entrypoint-initdb.d/dev-postgres-init.sql:ro
     healthcheck:
-      test: ["CMD", "pg_isready", "-U", "agents", "-d", "agents"]
+      test: ['CMD', 'pg_isready', '-U', 'agents', '-d', 'agents']
       interval: 2s
       timeout: 3s
       retries: 30
@@ -89,8 +91,8 @@ services:
   # which only root can read on reko-3, hence user 0 here (in prod it comes from the stack's Environment).
   whatsapp:
     image: agents-whatsapp:dev
-    user: "0:0"
-    entrypoint: ["sh", "-c", "set -a && . /run/agents.env && set +a && exec /usr/local/bin/whatsapp"]
+    user: '0:0'
+    entrypoint: ['sh', '-c', 'set -a && . /run/agents.env && set +a && exec /usr/local/bin/whatsapp']
     environment:
       AGENTS_URL: http://server:8787
       WHATSAPP_DATABASE_URL: postgres://agents:agents@postgres:5432/agents?sslmode=disable&search_path=whatsmeow
@@ -104,7 +106,8 @@ services:
 
   cliproxy:
     image: eceasy/cli-proxy-api:v8.0.40
-    entrypoint: ["sh", "-c", "until [ -f /cfg/config.yaml ]; do sleep 1; done; exec ./CLIProxyAPI -config /cfg/config.yaml"]
+    entrypoint:
+      ['sh', '-c', 'until [ -f /cfg/config.yaml ]; do sleep 1; done; exec ./CLIProxyAPI -config /cfg/config.yaml']
     volumes:
       - cliproxy:/cfg
     networks: [agents-dev-internal]
@@ -113,7 +116,7 @@ services:
   fake-llm:
     profiles: [fake]
     image: oven/bun:1.4
-    command: ["bun", "/app/scripts/fake-llm.ts"]
+    command: ['bun', '/app/scripts/fake-llm.ts']
     volumes:
       - ./scripts:/app/scripts:ro
     networks: [agents-dev-internal]

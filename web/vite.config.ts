@@ -15,7 +15,7 @@ export default defineConfig({
 		proxy: {
 			'/api': { target: api, changeOrigin: false },
 			'/hooks': { target: api, changeOrigin: false },
-			'/ws': { target: api.replace(/^http/, 'ws'), ws: true }
-		}
-	}
+			'/ws': { target: api.replace(/^http/, 'ws'), ws: true },
+		},
+	},
 });

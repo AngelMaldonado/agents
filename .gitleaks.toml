@@ -1,0 +1,3 @@
+title = "Agents: default secret rules, no blanket test exclusions"
+[extend]
+useDefault = true

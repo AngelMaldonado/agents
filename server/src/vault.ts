@@ -6,8 +6,13 @@ import { row, rows, exec, tx, type Exec } from './db';
 import { seal, open } from './crypto';
 
 export type CredentialRow = {
-	id: number; person_id: number; name: string; origin: string; login_url: string;
-	created_at: number; updated_at: number;
+	id: number;
+	person_id: number;
+	name: string;
+	origin: string;
+	login_url: string;
+	created_at: number;
+	updated_at: number;
 };
 
 type RunRef = { id: number; person_id: number; agent_id: number };
@@ -24,12 +29,21 @@ export function list(personId: number) {
 		        coalesce(array_agg(g.agent_id) filter (where g.agent_id is not null), '{}') as agents
 		 from credentials c left join credential_grants g on g.credential_id = c.id
 		 where c.person_id = $1 group by c.id order by c.name`,
-		[personId]
+		[personId],
 	);
 }
 
-export async function save(personId: number, input: { name: string; loginUrl: string; username: string; password: string }) {
-	const name = String(input.name ?? '').trim().toLowerCase().replace(/[^a-z0-9-]/g, '-').replace(/-+/g, '-').replace(/^-|-$/g, '').slice(0, 40);
+export async function save(
+	personId: number,
+	input: { name: string; loginUrl: string; username: string; password: string },
+) {
+	const name = String(input.name ?? '')
+		.trim()
+		.toLowerCase()
+		.replace(/[^a-z0-9-]/g, '-')
+		.replace(/-+/g, '-')
+		.replace(/^-|-$/g, '')
+		.slice(0, 40);
 	if (!name) throw new Error('Nombre inválido');
 	const origin = originOf(input.loginUrl);
 	if (!input.username || !input.password) throw new Error('Faltan usuario o contraseña');
@@ -38,7 +52,7 @@ export async function save(personId: number, input: { name: string; loginUrl: st
 		 values ($1, $2, $3, $4, $5, $6)
 		 on conflict (person_id, name) do update set origin = excluded.origin, login_url = excluded.login_url,
 		   username_enc = excluded.username_enc, password_enc = excluded.password_enc, updated_at = now()`,
-		[personId, name, origin, input.loginUrl, seal(input.username), seal(input.password)]
+		[personId, name, origin, input.loginUrl, seal(input.username), seal(input.password)],
 	);
 	return name;
 }
@@ -53,7 +67,7 @@ async function purgeLost(c: Exec, personId: number, credId: number, lostAgents: 
 		`insert into profile_purges (agent_id, origin, credential_name, person_id)
 		 select a, c.origin, c.name, $3 from credentials c, unnest($2::bigint[]) a where c.id = $1`,
 		[credId, lostAgents, personId],
-		c
+		c,
 	);
 	return lostAgents;
 }
@@ -64,9 +78,14 @@ export async function remove(personId: number, id: number) {
 			`select g.agent_id from credential_grants g join credentials cr on cr.id = g.credential_id
 			 where cr.id = $1 and cr.person_id = $2`,
 			[id, personId],
-			c
+			c,
 		);
-		const affected = await purgeLost(c, personId, id, had.map((g) => g.agent_id));
+		const affected = await purgeLost(
+			c,
+			personId,
+			id,
+			had.map((g) => g.agent_id),
+		);
 		await exec('delete from credentials where id = $1 and person_id = $2', [id, personId], c);
 		return affected;
 	});
@@ -75,25 +94,39 @@ export async function remove(personId: number, id: number) {
 /** Replaces the agents a credential is granted to; only the owner's own agents count. */
 export async function grant(personId: number, id: number, agentIds: number[]) {
 	return tx(async (c) => {
-		if (!(await row('select 1 from credentials where id = $1 and person_id = $2 for update', [id, personId], c))) throw new Error('No existe');
-		const before = (await rows<{ agent_id: number }>('select agent_id from credential_grants where credential_id = $1', [id], c)).map((g) => g.agent_id);
+		if (!(await row('select 1 from credentials where id = $1 and person_id = $2 for update', [id, personId], c)))
+			throw new Error('No existe');
+		const before = (
+			await rows<{ agent_id: number }>('select agent_id from credential_grants where credential_id = $1', [id], c)
+		).map((g) => g.agent_id);
 		await exec('delete from credential_grants where credential_id = $1', [id], c);
 		await exec(
 			`insert into credential_grants (credential_id, agent_id)
 			 select $1, a.id from agents a where a.person_id = $2 and a.deleted_at is null and a.id = any($3::bigint[])`,
 			[id, personId, agentIds],
-			c
+			c,
 		);
-		const after = new Set((await rows<{ agent_id: number }>('select agent_id from credential_grants where credential_id = $1', [id], c)).map((g) => g.agent_id));
-		return purgeLost(c, personId, id, before.filter((a) => !after.has(a)));
+		const after = new Set(
+			(
+				await rows<{ agent_id: number }>('select agent_id from credential_grants where credential_id = $1', [id], c)
+			).map((g) => g.agent_id),
+		);
+		return purgeLost(
+			c,
+			personId,
+			id,
+			before.filter((a) => !after.has(a)),
+		);
 	});
 }
 
 export async function grantedNames(agentId: number) {
-	return (await rows<{ name: string }>(
-		'select c.name from credentials c join credential_grants g on g.credential_id = c.id where g.agent_id = $1 order by c.name',
-		[agentId]
-	)).map((r) => r.name);
+	return (
+		await rows<{ name: string }>(
+			'select c.name from credentials c join credential_grants g on g.credential_id = c.id where g.agent_id = $1 order by c.name',
+			[agentId],
+		)
+	).map((r) => r.name);
 }
 
 export function uses(personId: number, all = false) {
@@ -102,7 +135,7 @@ export function uses(personId: number, all = false) {
 		        p.name as person
 		 from credential_uses u join people p on p.id = u.person_id
 		 ${all ? '' : 'where u.person_id = $1'} order by u.id desc limit 200`,
-		all ? [] : [personId]
+		all ? [] : [personId],
 	);
 }
 
@@ -110,7 +143,7 @@ async function log(run: RunRef, credId: number | null, name: string, ok: boolean
 	await exec(
 		`insert into credential_uses (credential_id, credential_name, action, person_id, run_id, agent_id, ok, detail)
 		 values ($1, $2, 'login', $3, $4, $5, $6, $7)`,
-		[credId, name, run.person_id, run.id, run.agent_id, ok, detail]
+		[credId, name, run.person_id, run.id, run.agent_id, ok, detail],
 	);
 }
 
@@ -118,7 +151,7 @@ export async function resolveCredential(run: RunRef, name: string, url: string) 
 	const r = await row<CredentialRow & { username_enc: string; password_enc: string }>(
 		`select c.* from credentials c join credential_grants g on g.credential_id = c.id
 		 where g.agent_id = $1 and c.name = $2 and c.person_id = $3`,
-		[run.agent_id, name, run.person_id]
+		[run.agent_id, name, run.person_id],
 	);
 	if (!r) {
 		await log(run, null, name, false, 'no concedida a este agente');
@@ -137,6 +170,6 @@ export async function resolveCredential(run: RunRef, name: string, url: string) 
 	await log(run, r.id, name, true, url || r.login_url);
 	return {
 		ok: true as const,
-		credential: { username: open(r.username_enc), password: open(r.password_enc), url: r.login_url }
+		credential: { username: open(r.username_enc), password: open(r.password_enc), url: r.login_url },
 	};
 }

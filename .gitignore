@@ -6,3 +6,5 @@ data/
 !.env.production.example
 .codegraph/
 *.log
+.tools/
+.release/

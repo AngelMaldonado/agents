@@ -14,9 +14,20 @@ const EVERY_MS = 5000;
 const SANDBOX_BYTES = 1536 * 1024 * 1024; // what each run reserves (tasks.ts)
 
 export type MonitorRow = {
-	run_id: number; agent_id: number; agent: string; person_id: number; person: string; status: string; state: string;
-	created_at: number; started_at: number | null; cost: number; tokens: number; priority: number;
-	queue_position: number | null; person_queue_position: number | null;
+	run_id: number;
+	agent_id: number;
+	agent: string;
+	person_id: number;
+	person: string;
+	status: string;
+	state: string;
+	created_at: number;
+	started_at: number | null;
+	cost: number;
+	tokens: number;
+	priority: number;
+	queue_position: number | null;
+	person_queue_position: number | null;
 	container: ({ id: string } & SandboxStats) | null;
 };
 export type Orphan = { id: string; name: string; run: string | null; state: string; created: number };
@@ -30,7 +41,7 @@ async function collect() {
 		`select r.id as run_id, r.agent_id, a.name as agent, r.person_id, p.name as person, r.status, r.state,
 		        r.created_at, r.started_at, r.cost, r.tokens, r.priority
 		 from runs r join agents a on a.id = r.agent_id join people p on p.id = r.person_id
-		 where r.status in ('queued','starting','running','blocked') order by r.priority, r.created_at, r.id`
+		 where r.status in ('queued','starting','running','blocked') order by r.priority, r.created_at, r.id`,
 	);
 	const containers = await provider.list(`agents.instance=${INSTANCE}`);
 	const live = new Set(runs.map((r) => String(r.run_id)));
@@ -44,7 +55,7 @@ async function collect() {
 			if (!c || c.state !== 'running') return null;
 			const s = await provider.stats(c.id);
 			return s && { id: c.id, ...s };
-		})
+		}),
 	);
 	// The queue in the order DBOS dequeues it: priority, then arrival.
 	let global = 0;
@@ -83,7 +94,9 @@ export function startMonitor() {
 /** Admin: removes the sandboxes no live run owns (checked again right now). */
 export async function cleanOrphans() {
 	const live = new Set(
-		(await rows<{ id: number }>("select id from runs where status in ('queued','starting','running','blocked')")).map((r) => String(r.id))
+		(await rows<{ id: number }>("select id from runs where status in ('queued','starting','running','blocked')")).map(
+			(r) => String(r.id),
+		),
 	);
 	let n = 0;
 	for (const c of await provider.list(`agents.instance=${INSTANCE}`)) {
@@ -98,7 +111,10 @@ export async function cleanOrphans() {
 // ---------- /metrics (Prometheus text format) ----------
 
 const esc = (v: unknown) => String(v).replace(/\\/g, '\\\\').replace(/"/g, '\\"').replace(/\n/g, ' ');
-const labels = (l: Record<string, unknown>) => `{${Object.entries({ instance_name: INSTANCE, ...l }).map(([k, v]) => `${k}="${esc(v)}"`).join(',')}}`;
+const labels = (l: Record<string, unknown>) =>
+	`{${Object.entries({ instance_name: INSTANCE, ...l })
+		.map(([k, v]) => `${k}="${esc(v)}"`)
+		.join(',')}}`;
 
 export async function metricsText() {
 	const s = snap;
@@ -108,14 +124,35 @@ export async function metricsText() {
 		for (const [l, v] of samples) lines.push(`${name}${labels(l)} ${Number.isFinite(v) ? v : 0}`);
 	};
 	const statuses = ['queued', 'starting', 'running', 'blocked'];
-	metric('agents_runs_live', 'gauge', 'Live runs by status.', statuses.map((st) => [{ status: st }, s.rows.filter((r) => r.status === st).length]));
+	metric(
+		'agents_runs_live',
+		'gauge',
+		'Live runs by status.',
+		statuses.map((st) => [{ status: st }, s.rows.filter((r) => r.status === st).length]),
+	);
 	const queue = new Map<number, { person: string; n: number }>();
-	for (const r of s.rows) if (r.status === 'queued') queue.set(r.person_id, { person: r.person, n: (queue.get(r.person_id)?.n ?? 0) + 1 });
-	metric('agents_queue_length', 'gauge', 'Runs waiting in the queue, per person.', [...queue].map(([id, q]) => [{ person_id: id, person: q.person }, q.n]));
+	for (const r of s.rows)
+		if (r.status === 'queued') queue.set(r.person_id, { person: r.person, n: (queue.get(r.person_id)?.n ?? 0) + 1 });
+	metric(
+		'agents_queue_length',
+		'gauge',
+		'Runs waiting in the queue, per person.',
+		[...queue].map(([id, q]) => [{ person_id: id, person: q.person }, q.n]),
+	);
 	const withC = s.rows.filter((r) => r.container);
 	const who = (r: MonitorRow) => ({ run: r.run_id, agent: r.agent, person: r.person });
-	metric('agents_sandbox_cpu_percent', 'gauge', 'CPU a sandbox uses (100 = one core).', withC.map((r) => [who(r), r.container!.cpuPercent]));
-	metric('agents_sandbox_memory_bytes', 'gauge', 'Memory a sandbox uses.', withC.map((r) => [who(r), r.container!.memoryBytes]));
+	metric(
+		'agents_sandbox_cpu_percent',
+		'gauge',
+		'CPU a sandbox uses (100 = one core).',
+		withC.map((r) => [who(r), r.container!.cpuPercent]),
+	);
+	metric(
+		'agents_sandbox_memory_bytes',
+		'gauge',
+		'Memory a sandbox uses.',
+		withC.map((r) => [who(r), r.container!.memoryBytes]),
+	);
 	metric('agents_orphan_sandboxes', 'gauge', 'Sandboxes no live run owns.', [[{}, s.orphans.length]]);
 	if (s.host) {
 		metric('agents_host_memory_available_bytes', 'gauge', 'Host memory available.', [[{}, s.host.memoryAvailable]]);
@@ -124,16 +161,33 @@ export async function metricsText() {
 		metric('agents_host_load1', 'gauge', 'Host load, 1 minute.', [[{}, s.host.load1]]);
 	}
 	const cost = await rows<{ person_id: number; person: string; cost: number }>(
-		'select p.id as person_id, p.name as person, coalesce(sum(r.cost), 0) as cost from people p left join runs r on r.person_id = p.id group by p.id'
+		'select p.id as person_id, p.name as person, coalesce(sum(r.cost), 0) as cost from people p left join runs r on r.person_id = p.id group by p.id',
 	);
-	metric('agents_cost_usd_total', 'counter', 'What runs have cost, per person (US$).', cost.map((c) => [{ person_id: c.person_id, person: c.person }, c.cost]));
+	metric(
+		'agents_cost_usd_total',
+		'counter',
+		'What runs have cost, per person (US$).',
+		cost.map((c) => [{ person_id: c.person_id, person: c.person }, c.cost]),
+	);
 	const ended = await rows<{ status: string; n: number }>('select status, count(*) as n from runs group by status');
-	metric('agents_runs_total', 'counter', 'Runs ever, by current status.', ended.map((e) => [{ status: e.status }, e.n]));
-	const start = await rows<{ secs: number | null }>(
-		"select avg(extract(epoch from started_at - created_at))::float as secs from runs where started_at > now() - interval '1 hour'"
+	metric(
+		'agents_runs_total',
+		'counter',
+		'Runs ever, by current status.',
+		ended.map((e) => [{ status: e.status }, e.n]),
 	);
-	metric('agents_run_start_seconds_avg', 'gauge', 'Average wait from launch to sandbox start, last hour.', [[{}, start[0]?.secs ?? 0]]);
-	metric('agents_stream_bytes_total', 'counter', 'Bytes of browser images sent to viewers.', [[{ kind: 'thumb' }, hub.sent.thumb], [{ kind: 'frame' }, hub.sent.frame]]);
-	metric('agents_monitor_age_seconds', 'gauge', 'Seconds since the monitor last collected.', [[{}, s.at ? (Date.now() - s.at) / 1000 : -1]]);
+	const start = await rows<{ secs: number | null }>(
+		"select avg(extract(epoch from started_at - created_at))::float as secs from runs where started_at > now() - interval '1 hour'",
+	);
+	metric('agents_run_start_seconds_avg', 'gauge', 'Average wait from launch to sandbox start, last hour.', [
+		[{}, start[0]?.secs ?? 0],
+	]);
+	metric('agents_stream_bytes_total', 'counter', 'Bytes of browser images sent to viewers.', [
+		[{ kind: 'thumb' }, hub.sent.thumb],
+		[{ kind: 'frame' }, hub.sent.frame],
+	]);
+	metric('agents_monitor_age_seconds', 'gauge', 'Seconds since the monitor last collected.', [
+		[{}, s.at ? (Date.now() - s.at) / 1000 : -1],
+	]);
 	return lines.join('\n') + '\n';
 }

@@ -19,30 +19,32 @@ const SITE = `mkdir -p ~/site && printf '%s' '<html><body><h1>Portal de prueba</
 const SCRIPTS: { match: RegExp; steps: Step[] }[] = [
 	{
 		match: /\[lento\]/,
-		steps: [{ bash: 'sleep 10 && echo uno' }, { bash: 'sleep 10 && echo dos' }, { text: 'Terminé lo lento.' }]
+		steps: [{ bash: 'sleep 10 && echo uno' }, { bash: 'sleep 10 && echo dos' }, { text: 'Terminé lo lento.' }],
 	},
 	{
 		// A page that never stops moving: the browser streams frames the whole time (frame-rate tests).
 		match: /\[animado\]/,
 		steps: [
-			{ bash: `mkdir -p ~/site && printf '%s' '<html><body style="margin:0;background:#123"><div style="width:200px;height:200px;margin:100px;background:#e84;animation:s 1s linear infinite"></div><style>@keyframes s{to{transform:rotate(360deg)}}</style></body></html>' > ~/site/anim.html && (cd ~/site && nohup python3 -m http.server 8001 >/dev/null 2>&1 &) && sleep 1 && agent-browser open http://localhost:8001/anim.html && sleep 40 && echo listo` },
-			{ text: 'Miré la animación 40 s.' }
-		]
+			{
+				bash: `mkdir -p ~/site && printf '%s' '<html><body style="margin:0;background:#123"><div style="width:200px;height:200px;margin:100px;background:#e84;animation:s 1s linear infinite"></div><style>@keyframes s{to{transform:rotate(360deg)}}</style></body></html>' > ~/site/anim.html && (cd ~/site && nohup python3 -m http.server 8001 >/dev/null 2>&1 &) && sleep 1 && agent-browser open http://localhost:8001/anim.html && sleep 40 && echo listo`,
+			},
+			{ text: 'Miré la animación 40 s.' },
+		],
 	},
 	{
 		match: /\[adjunto\]/,
 		steps: [
 			{ bash: 'for f in ~/work/in/*/*; do echo "$f: $(cat "$f")"; done' },
-			{ text: (c) => `Leí los adjuntos:\n\n\`\`\`\n${c.lastOutput.trim() || '(ninguno)'}\n\`\`\`` }
-		]
+			{ text: (c) => `Leí los adjuntos:\n\n\`\`\`\n${c.lastOutput.trim() || '(ninguno)'}\n\`\`\`` },
+		],
 	},
 	{
 		match: /\[blocked\]/,
 		steps: [
 			{ bash: 'agent-browser open https://example.com' },
 			{ bash: 'agents-blocked "El sitio pide un captcha. ¿Lo salto?"' },
-			{ text: 'Terminé: el sitio pedía captcha y seguí sin él.' }
-		]
+			{ text: 'Terminé: el sitio pedía captcha y seguí sin él.' },
+		],
 	},
 	{
 		match: /\[vault\]/,
@@ -51,31 +53,43 @@ const SCRIPTS: { match: RegExp; steps: Step[] }[] = [
 			{ bash: 'agents-login local-test' },
 			{ bash: 'agent-browser get url | sed "s/[?].*//"' },
 			{ bash: 'agents-login no-concedida' },
-			{ text: 'Entré al portal de prueba con `local-test`; `no-concedida` me fue negada.' }
-		]
+			{ text: 'Entré al portal de prueba con `local-test`; `no-concedida` me fue negada.' },
+		],
 	},
 	{
 		match: /\[cookie-set\]/,
 		steps: [
 			// A persistent cookie (a session one dies with the browser, like on any desktop) and a localStorage value.
-			{ bash: 'agent-browser open https://example.com >/dev/null && agent-browser cookies set probe agents-v2 --url https://example.com --expires $(( $(date +%s) + 86400 )) && agent-browser eval "localStorage.setItem(\'probe\', \'agents-v2\')" >/dev/null && agent-browser cookies get' },
-			{ text: 'Dejé la cookie `probe` y `localStorage.probe` en example.com.' }
-		]
+			{
+				bash: "agent-browser open https://example.com >/dev/null && agent-browser cookies set probe agents-v2 --url https://example.com --expires $(( $(date +%s) + 86400 )) && agent-browser eval \"localStorage.setItem('probe', 'agents-v2')\" >/dev/null && agent-browser cookies get",
+			},
+			{ text: 'Dejé la cookie `probe` y `localStorage.probe` en example.com.' },
+		],
 	},
 	{
 		match: /\[cookie-get\]/,
 		steps: [
-			{ bash: 'agent-browser open https://example.com >/dev/null && echo "cookies: $(agent-browser cookies get | tr \'\\n\' \' \')" && echo "localStorage.probe: $(agent-browser eval "localStorage.getItem(\'probe\')" | tail -1)"' },
-			{ text: (c) => `En example.com:\n\n\`\`\`\n${c.lastOutput.trim() || '(nada)'}\n\`\`\`` }
-		]
+			{
+				bash: 'agent-browser open https://example.com >/dev/null && echo "cookies: $(agent-browser cookies get | tr \'\\n\' \' \')" && echo "localStorage.probe: $(agent-browser eval "localStorage.getItem(\'probe\')" | tail -1)"',
+			},
+			{ text: (c) => `En example.com:\n\n\`\`\`\n${c.lastOutput.trim() || '(nada)'}\n\`\`\`` },
+		],
 	},
-	{ match: /\[texto\]/, steps: [{ text: '## Respuesta\n\nSin herramientas ni archivos: sólo esta respuesta en **markdown**.' }] },
+	{
+		match: /\[texto\]/,
+		steps: [{ text: '## Respuesta\n\nSin herramientas ni archivos: sólo esta respuesta en **markdown**.' }],
+	},
 	{
 		match: /anota el n[uú]mero (\d+)/i,
 		steps: [
-			{ bash: (p) => { const n = p.match(/anota el n[uú]mero (\d+)/i)![1]; return `echo ${n} > ~/work/nota.txt && echo "anotado ${n}"`; } },
-			{ text: (c) => `Anoté el **${c.lastOutput.match(/\d+/)?.[0] ?? '?'}** en \`~/work/nota.txt\`.` }
-		]
+			{
+				bash: (p) => {
+					const n = p.match(/anota el n[uú]mero (\d+)/i)![1];
+					return `echo ${n} > ~/work/nota.txt && echo "anotado ${n}"`;
+				},
+			},
+			{ text: (c) => `Anoté el **${c.lastOutput.match(/\d+/)?.[0] ?? '?'}** en \`~/work/nota.txt\`.` },
+		],
 	},
 	{
 		match: /qu[eé] n[uú]mero anotaste/i,
@@ -85,9 +99,9 @@ const SCRIPTS: { match: RegExp; steps: Step[] }[] = [
 				text: (c) => {
 					const asked = c.history.match(/anota el n[uú]mero (\d+)/i)?.[1];
 					return `Me pediste anotar el **${asked ?? 'no lo encuentro en la conversación'}**, y \`~/work/nota.txt\` dice: \`${c.lastOutput.trim() || '(vacío)'}\`.`;
-				}
-			}
-		]
+				},
+			},
+		],
 	},
 	{
 		match: /./,
@@ -95,9 +109,11 @@ const SCRIPTS: { match: RegExp; steps: Step[] }[] = [
 			{ bash: 'agent-browser open https://example.com' },
 			{ bash: 'agent-browser screenshot ~/work/out/pagina.png' },
 			{ bash: 'printf "# Resumen\\n\\nexample.com es un dominio de ejemplo.\\n" > ~/work/out/resumen.md && echo ok' },
-			{ text: '## Listo\n\nVisité **example.com** (prueba con el LLM falso).\n\n- Captura: `pagina.png`\n- Resumen: `resumen.md`' }
-		]
-	}
+			{
+				text: '## Listo\n\nVisité **example.com** (prueba con el LLM falso).\n\n- Captura: `pagina.png`\n- Resumen: `resumen.md`',
+			},
+		],
+	},
 ];
 
 // ---------- reading what pi sent ----------
@@ -114,16 +130,28 @@ const isSteer = (item: any) => textOf(item).includes('Steer de prueba');
 function plan(input: any[]) {
 	// The run's prompt: the last user message that is not a test steer.
 	let at = -1;
-	for (let i = input.length - 1; i >= 0; i--) if (isUser(input[i]) && !isSteer(input[i])) { at = i; break; }
+	for (let i = input.length - 1; i >= 0; i--)
+		if (isUser(input[i]) && !isSteer(input[i])) {
+			at = i;
+			break;
+		}
 	const prompt = at >= 0 ? textOf(input[at]) : '';
 	const since = input.slice(at + 1);
 	const results = since.filter((i) => i?.type === 'function_call_output');
 	const steps = SCRIPTS.find((s) => s.match.test(prompt))!.steps;
 	const ctx: Ctx = {
-		history: input.slice(0, at >= 0 ? at : input.length).filter(isUser).map(textOf).join('\n'),
-		lastOutput: String(results.at(-1)?.output ?? '')
+		history: input
+			.slice(0, at >= 0 ? at : input.length)
+			.filter(isUser)
+			.map(textOf)
+			.join('\n'),
+		lastOutput: String(results.at(-1)?.output ?? ''),
 	};
-	const steered = since.some((i) => isUser(i) && isSteer(i)) && !since.slice(since.findLastIndex((i) => isUser(i) && isSteer(i))).some((i) => i?.type === 'message' && i?.role === 'assistant');
+	const steered =
+		since.some((i) => isUser(i) && isSteer(i)) &&
+		!since
+			.slice(since.findLastIndex((i) => isUser(i) && isSteer(i)))
+			.some((i) => i?.type === 'message' && i?.role === 'assistant');
 	return { prompt, step: steps[Math.min(results.length, steps.length - 1)], ctx, steered };
 }
 
@@ -158,8 +186,12 @@ Bun.serve({
 	async fetch(req) {
 		// Also plays a person's own CLIProxyAPI in Ajustes: URL http://fake-llm:8317, key fake-proxy-key.
 		if (req.url.endsWith('/v1/models')) {
-			if (req.headers.get('authorization') !== 'Bearer fake-proxy-key') return Response.json({ error: 'bad key' }, { status: 401 });
-			return Response.json({ object: 'list', data: ['gpt-6.1-sol', 'gpt-6-sol'].map((id) => ({ id, object: 'model' })) });
+			if (req.headers.get('authorization') !== 'Bearer fake-proxy-key')
+				return Response.json({ error: 'bad key' }, { status: 401 });
+			return Response.json({
+				object: 'list',
+				data: ['gpt-6.1-sol', 'gpt-6-sol'].map((id) => ({ id, object: 'model' })),
+			});
 		}
 		const path = new URL(req.url).pathname;
 		if (path.startsWith('/hook-receiver')) return receiver(req, path);
@@ -170,14 +202,41 @@ Bun.serve({
 		await Bun.sleep(1500); // look like thinking
 
 		const id = `resp_fake_${Date.now()}_${++seq}`;
-		const usage = { input_tokens: 1200, output_tokens: 80, total_tokens: 1280, input_tokens_details: { cached_tokens: 0 }, output_tokens_details: { reasoning_tokens: 0 } };
-		const ev: unknown[] = [{ type: 'response.created', response: { id, object: 'response', status: 'in_progress', model: body.model, output: [] } }];
+		const usage = {
+			input_tokens: 1200,
+			output_tokens: 80,
+			total_tokens: 1280,
+			input_tokens_details: { cached_tokens: 0 },
+			output_tokens_details: { reasoning_tokens: 0 },
+		};
+		const ev: unknown[] = [
+			{
+				type: 'response.created',
+				response: { id, object: 'response', status: 'in_progress', model: body.model, output: [] },
+			},
+		];
 		const output: unknown[] = [];
 		const message = (text: string) => {
 			const idx = output.length;
-			const item = { type: 'message', id: `msg_${id}_${idx}`, role: 'assistant', status: 'completed', content: [{ type: 'output_text', text, annotations: [] }] };
-			ev.push({ type: 'response.output_item.added', output_index: idx, item: { ...item, status: 'in_progress', content: [] } });
-			ev.push({ type: 'response.output_text.delta', output_index: idx, item_id: item.id, content_index: 0, delta: text });
+			const item = {
+				type: 'message',
+				id: `msg_${id}_${idx}`,
+				role: 'assistant',
+				status: 'completed',
+				content: [{ type: 'output_text', text, annotations: [] }],
+			};
+			ev.push({
+				type: 'response.output_item.added',
+				output_index: idx,
+				item: { ...item, status: 'in_progress', content: [] },
+			});
+			ev.push({
+				type: 'response.output_text.delta',
+				output_index: idx,
+				item_id: item.id,
+				content_index: 0,
+				delta: text,
+			});
 			ev.push({ type: 'response.output_item.done', output_index: idx, item });
 			output.push(item);
 		};
@@ -186,8 +245,19 @@ Bun.serve({
 			const idx = output.length;
 			const command = typeof step.bash === 'function' ? step.bash(prompt) : step.bash;
 			const args = JSON.stringify({ command });
-			const item = { type: 'function_call', id: `fc_${id}_${idx}`, call_id: `call_${id}_${idx}`, name: 'bash', arguments: args, status: 'completed' };
-			ev.push({ type: 'response.output_item.added', output_index: idx, item: { ...item, arguments: '', status: 'in_progress' } });
+			const item = {
+				type: 'function_call',
+				id: `fc_${id}_${idx}`,
+				call_id: `call_${id}_${idx}`,
+				name: 'bash',
+				arguments: args,
+				status: 'completed',
+			};
+			ev.push({
+				type: 'response.output_item.added',
+				output_index: idx,
+				item: { ...item, arguments: '', status: 'in_progress' },
+			});
 			ev.push({ type: 'response.function_call_arguments.delta', output_index: idx, item_id: item.id, delta: args });
 			ev.push({ type: 'response.function_call_arguments.done', output_index: idx, item_id: item.id, arguments: args });
 			ev.push({ type: 'response.output_item.done', output_index: idx, item });
@@ -195,8 +265,11 @@ Bun.serve({
 		} else {
 			message(typeof step.text === 'function' ? step.text(ctx) : step.text);
 		}
-		ev.push({ type: 'response.completed', response: { id, object: 'response', status: 'completed', model: body.model, output, usage } });
+		ev.push({
+			type: 'response.completed',
+			response: { id, object: 'response', status: 'completed', model: body.model, output, usage },
+		});
 		return new Response(sse(ev), { headers: { 'content-type': 'text/event-stream' } });
-	}
+	},
 });
 console.log('fake LLM (OpenAI Responses) on :8317');

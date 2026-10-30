@@ -25,5 +25,11 @@ export interface SandboxProvider {
 }
 
 export type SandboxInfo = { id: string; name: string; labels: Record<string, string>; state: string; created: number };
-export type SandboxStats = { cpuPercent: number; memoryBytes: number; memoryLimit: number; netRx: number; netTx: number };
+export type SandboxStats = {
+	cpuPercent: number;
+	memoryBytes: number;
+	memoryLimit: number;
+	netRx: number;
+	netTx: number;
+};
 export type HostInfo = { cpus: number; memoryTotal: number; memoryAvailable: number; load1: number };

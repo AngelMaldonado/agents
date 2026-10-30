@@ -15,8 +15,18 @@ import * as vault from './vault';
 import * as hub from './hub';
 import { settings, saveSettings, loadSettings } from './settings';
 import {
-	keysOf, setKey, deleteKey, writeProxyConfig, PROVIDERS, type Provider,
-	proxyOf, proxyCredentials, normalizeProxyUrl, proxyModels, setProxy, deleteProxy
+	keysOf,
+	setKey,
+	deleteKey,
+	writeProxyConfig,
+	PROVIDERS,
+	type Provider,
+	proxyOf,
+	proxyCredentials,
+	normalizeProxyUrl,
+	proxyModels,
+	setProxy,
+	deleteProxy,
 } from './providers';
 import { checkMasterKey, open } from './crypto';
 import { gateway } from './llm';
@@ -27,6 +37,7 @@ import * as whatsapp from './whatsapp';
 import * as secrets from './secrets';
 import { verify, checkLink } from './sign';
 import { artifactHeaders, readPreview } from './artifact-preview';
+import { FEATURES } from '../../sandbox/features';
 
 checkMasterKey();
 await migrate();
@@ -45,15 +56,33 @@ Bun.serve({
 	fetch: async (req) =>
 		new URL(req.url).pathname === '/metrics'
 			? new Response(await monitor.metricsText(), { headers: { 'content-type': 'text/plain; version=0.0.4' } })
-			: new Response('not here', { status: 404 })
+			: new Response('not here', { status: 404 }),
 });
 
 type Env = { Variables: { me: people.Person } };
 const app = new Hono<Env>();
+app.use('*', async (c, next) => {
+	if (
+		!FEATURES.whatsapp &&
+		(c.req.path.startsWith('/api/admin/whatsapp') ||
+			/^\/api\/agents\/[^/]+\/channels\/whatsapp(?:\/|$)/.test(c.req.path) ||
+			c.req.path.startsWith('/internal/whatsapp/'))
+	)
+		return c.json({ error: 'Feature fuera de esta release.' }, 404);
+	await next();
+});
+app.get('/healthz', (c) =>
+	c.json({
+		ready: true,
+		version: process.env.AGENTS_RELEASE_VERSION ?? 'development',
+		sha: process.env.AGENTS_RELEASE_SHA ?? null,
+	}),
+);
 const PORT = Number(process.env.PORT ?? 8787);
 const SECURE = process.env.AGENTS_COOKIE_SECURE !== '0';
 
-const fail = (c: Context, err: unknown, status = 400) => c.json({ error: (err as Error).message ?? String(err) }, status as 400);
+const fail = (c: Context, err: unknown, status = 400) =>
+	c.json({ error: (err as Error).message ?? String(err) }, status as 400);
 
 // ---------- the sandbox side (reached from the agents-sandbox network) ----------
 
@@ -83,9 +112,9 @@ app.get(
 			},
 			onClose() {
 				void ready.then((h) => h?.close());
-			}
+			},
 		};
-	})
+	}),
 );
 
 // ---------- channels: an agent's inbound webhook ----------
@@ -99,7 +128,8 @@ app.post('/hooks/:token', async (c) => {
 	if (Number(c.req.header('content-length') ?? 0) > MAX_HOOK_BYTES) return c.json({ error: 'body too large' }, 413);
 	const raw = await c.req.text();
 	if (raw.length > MAX_HOOK_BYTES) return c.json({ error: 'body too large' }, 413);
-	if (!verify(c.req.header('x-agents-signature'), open(hook.in_secret_enc), raw)) return c.json({ error: 'bad signature' }, 401);
+	if (!verify(c.req.header('x-agents-signature'), open(hook.in_secret_enc), raw))
+		return c.json({ error: 'bad signature' }, 401);
 	let body: any;
 	try {
 		body = JSON.parse(raw);
@@ -107,7 +137,8 @@ app.post('/hooks/:token', async (c) => {
 		return c.json({ error: 'invalid JSON' }, 400);
 	}
 	if (typeof body !== 'object' || body === null) return c.json({ error: 'the body must be a JSON object' }, 400);
-	if (body.new_conversation !== undefined && body.new_conversation !== false) return c.json({ error: 'No se puede reiniciar la conversación del agente.' }, 400);
+	if (body.new_conversation !== undefined && body.new_conversation !== false)
+		return c.json({ error: 'No se puede reiniciar la conversación del agente.' }, 400);
 	try {
 		const r = await inbox.receive({
 			agentId: hook.agent_id,
@@ -116,7 +147,7 @@ app.post('/hooks/:token', async (c) => {
 			sender: typeof body.from === 'string' ? body.from.slice(0, 200) : null,
 			context: body.context,
 			attachments: Array.isArray(body.attachments) ? body.attachments : [],
-			dedupeKey: c.req.header('idempotency-key')?.slice(0, 200) || null
+			dedupeKey: c.req.header('idempotency-key')?.slice(0, 200) || null,
 		});
 		return c.json(r, r.duplicate ? 200 : 202);
 	} catch (err) {
@@ -138,7 +169,8 @@ app.post('/internal/whatsapp/inbound', async (c) => {
 // ---------- signed links (sent in outbound webhooks; no login) ----------
 
 app.get('/api/public/runs/:id', async (c) => {
-	if (!checkLink(c.req.path, c.req.query('exp'), c.req.query('sig'))) return c.json({ error: 'expired or invalid link' }, 403);
+	if (!checkLink(c.req.path, c.req.query('exp'), c.req.query('sig')))
+		return c.json({ error: 'expired or invalid link' }, 403);
 	const t = await tasks.getTask(Number(c.req.param('id')));
 	if (!t) return c.json({ error: 'not found' }, 404);
 	const { prompt, ...run } = tasks.publicTask(t);
@@ -146,7 +178,8 @@ app.get('/api/public/runs/:id', async (c) => {
 });
 
 app.get('/api/public/runs/:id/files/:name', async (c) => {
-	if (!checkLink(c.req.path, c.req.query('exp'), c.req.query('sig'))) return c.json({ error: 'expired or invalid link' }, 403);
+	if (!checkLink(c.req.path, c.req.query('exp'), c.req.query('sig')))
+		return c.json({ error: 'expired or invalid link' }, 403);
 	const f = await tasks.file(Number(c.req.param('id')), decodeURIComponent(c.req.param('name')));
 	if (!f) return c.json({ error: 'not found' }, 404);
 	return new Response(Bun.file(f.path), { headers: artifactHeaders(c.req.param('name'), true) });
@@ -163,7 +196,13 @@ app.use('/api/*', async (c, next) => {
 });
 
 function login(c: Context, token: string) {
-	setCookie(c, people.COOKIE, token, { httpOnly: true, sameSite: 'Lax', secure: SECURE, path: '/', maxAge: 400 * 86400 });
+	setCookie(c, people.COOKIE, token, {
+		httpOnly: true,
+		sameSite: 'Lax',
+		secure: SECURE,
+		path: '/',
+		maxAge: 400 * 86400,
+	});
 }
 
 const adminOnly = (c: Context<Env>) => (c.get('me').admin ? null : c.json({ error: 'Sólo admin.' }, 403));
@@ -175,7 +214,14 @@ app.get('/api/me', (c) => {
 
 function publicSettings() {
 	const s = settings();
-	return { models: s.models, maxConcurrent: s.maxConcurrent, maxMinutes: s.maxMinutes, maxCostUsd: s.maxCostUsd, blockedWaitMinutes: s.blockedWaitMinutes, sandboxImage: s.sandboxImage };
+	return {
+		models: s.models,
+		maxConcurrent: s.maxConcurrent,
+		maxMinutes: s.maxMinutes,
+		maxCostUsd: s.maxCostUsd,
+		blockedWaitMinutes: s.blockedWaitMinutes,
+		sandboxImage: s.sandboxImage,
+	};
 }
 
 app.post('/api/join', async (c) => {
@@ -201,7 +247,8 @@ app.post('/api/logout', (c) => {
 
 app.post('/api/admin/unlock', async (c) => {
 	const { pin } = await c.req.json();
-	if (!(await people.unlock(getCookie(c, people.COOKIE)!, String(pin ?? '')))) return c.json({ error: 'PIN incorrecto.' }, 403);
+	if (!(await people.unlock(getCookie(c, people.COOKIE)!, String(pin ?? ''))))
+		return c.json({ error: 'PIN incorrecto.' }, 403);
 	return c.json({ ok: true });
 });
 app.post('/api/admin/lock', async (c) => {
@@ -217,7 +264,7 @@ app.get('/api/keys', async (c) => c.json({ keys: await keysOf(c.get('me').id), p
 function catalogCheck(ids: string[]) {
 	return {
 		total: ids.length,
-		catalog: settings().models.map((m) => ({ id: m.id, label: m.label, served: ids.includes(m.id.split('/')[1]) }))
+		catalog: settings().models.map((m) => ({ id: m.id, label: m.label, served: ids.includes(m.id.split('/')[1]) })),
 	};
 }
 
@@ -264,48 +311,81 @@ app.delete('/api/keys/:provider', async (c) => {
 
 // ---------- agents and tasks ----------
 
-app.get('/api/agents', async (c) => c.json({ agents: (await agents.visible(c.get('me'))).map((a) => agents.forViewer(a, c.get('me'))) }));
+app.get('/api/agents', async (c) =>
+	c.json({ agents: (await agents.visible(c.get('me'))).map((a) => agents.forViewer(a, c.get('me'))) }),
+);
 
 // Creation is now an explicit approval of a stored contract, not a form bypass.
 app.post('/api/agents', (c) => c.json({ error: 'Define y aprueba el contrato en Nuevo agente.' }, 409));
 
 app.post('/api/designs', async (c) => {
-	try { return c.json({ design: await designs.create(c.get('me').id, await c.req.json()) }); }
-	catch (err) { return fail(c, err); }
+	try {
+		return c.json({ design: await designs.create(c.get('me').id, await c.req.json()) });
+	} catch (err) {
+		return fail(c, err);
+	}
 });
 app.get('/api/designs/:id', async (c) => {
-	try { return c.json({ design: await designs.get(c.get('me').id, c.req.param('id')) }); }
-	catch (err) { return fail(c, err, 404); }
+	try {
+		return c.json({ design: await designs.get(c.get('me').id, c.req.param('id')) });
+	} catch (err) {
+		return fail(c, err, 404);
+	}
 });
 app.post('/api/designs/:id/messages', async (c) => {
-	try { return c.json({ design: await designs.message(c.get('me').id, c.req.param('id'), await c.req.json(), c.req.raw.signal) }); }
-	catch (err) { return fail(c, err); }
+	try {
+		return c.json({
+			design: await designs.message(c.get('me').id, c.req.param('id'), await c.req.json(), c.req.raw.signal),
+		});
+	} catch (err) {
+		return fail(c, err);
+	}
 });
 app.get('/api/designs/:id/files/:file', async (c) => {
 	try {
 		const f = await designs.file(c.get('me').id, c.req.param('id'), c.req.param('file'));
 		if (!f) return c.json({ error: 'No existe.' }, 404);
 		return new Response(Bun.file(f.path), { headers: artifactHeaders(f.name, c.req.query('download') === '1') });
-	} catch (err) { return fail(c, err, 404); }
+	} catch (err) {
+		return fail(c, err, 404);
+	}
 });
 app.post('/api/designs/:id/validate', async (c) => {
-	try { return c.json({ design: await designs.testHarness(c.get('me').id, c.req.param('id'), (await c.req.json()).version) }); }
-	catch (err) { return fail(c, err); }
+	try {
+		return c.json({
+			design: await designs.testHarness(c.get('me').id, c.req.param('id'), (await c.req.json()).version),
+		});
+	} catch (err) {
+		return fail(c, err);
+	}
 });
 app.post('/api/designs/:id/approve', async (c) => {
 	try {
 		let design = await designs.approve(c.get('me').id, c.req.param('id'), (await c.req.json()).version);
-		if (!design.agent_id && !design.init_run_id && !design.last_error) design = await designs.initialize(c.get('me').id, design.id, c.get('me').admin, { retry: false });
+		if (!design.agent_id && !design.init_run_id && !design.last_error)
+			design = await designs.initialize(c.get('me').id, design.id, c.get('me').admin, { retry: false });
 		return c.json({ design });
-	} catch (err) { return fail(c, err); }
+	} catch (err) {
+		return fail(c, err);
+	}
 });
 app.post('/api/designs/:id/initialize', async (c) => {
-	try { return c.json({ design: await designs.initialize(c.get('me').id, c.req.param('id'), c.get('me').admin, { previousRunId: (await c.req.json().catch(() => ({}))).runId }) }); }
-	catch (err) { return fail(c, err); }
+	try {
+		return c.json({
+			design: await designs.initialize(c.get('me').id, c.req.param('id'), c.get('me').admin, {
+				previousRunId: (await c.req.json().catch(() => ({}))).runId,
+			}),
+		});
+	} catch (err) {
+		return fail(c, err);
+	}
 });
 app.get('/api/agents/:id/configuration', async (c) => {
-	try { return c.json(await designs.configuration(c.get('me'), Number(c.req.param('id')))); }
-	catch (err) { return fail(c, err, 404); }
+	try {
+		return c.json(await designs.configuration(c.get('me'), Number(c.req.param('id'))));
+	} catch (err) {
+		return fail(c, err, 404);
+	}
 });
 
 /** The owner or someone it is shared with: they run tasks; configuration stays the owner's. */
@@ -337,7 +417,8 @@ app.delete('/api/agents/:id', async (c) => {
 	const a = await ownAgent(c);
 	if (!a) return c.json({ error: 'No es tuyo.' }, 404);
 	const input = await c.req.json().catch(() => null);
-	if (input?.confirmName !== a.name) return c.json({ error: 'Escribe el nombre exacto del agente para confirmar el retiro.' }, 400);
+	if (input?.confirmName !== a.name)
+		return c.json({ error: 'Escribe el nombre exacto del agente para confirmar el retiro.' }, 400);
 	await agents.retire(a);
 	// Its schedules would keep firing at a retired agent: they go too.
 	for (const s of await channels.schedules(a.id)) await channels.deleteSchedule(a.id, s.name);
@@ -356,7 +437,15 @@ app.post('/api/agents/:id/tasks', async (c) => {
 	const { prompt } = await c.req.json();
 	if (typeof prompt !== 'string' || !prompt.trim()) return c.json({ error: 'Describe la tarea.' }, 400);
 	try {
-		return c.json({ task: tasks.publicTask(await tasks.enqueue(a, prompt, { admin: c.get('me').admin, sender: a.person_id === c.get('me').id ? null : c.get('me').name, personId: c.get('me').id })) });
+		return c.json({
+			task: tasks.publicTask(
+				await tasks.enqueue(a, prompt, {
+					admin: c.get('me').admin,
+					sender: a.person_id === c.get('me').id ? null : c.get('me').name,
+					personId: c.get('me').id,
+				}),
+			),
+		});
 	} catch (err) {
 		return fail(c, err);
 	}
@@ -373,7 +462,7 @@ app.get('/api/tasks/:id', async (c) => {
 	return c.json({
 		task: tasks.publicTask(t),
 		events: await tasks.events(t.id, Number(c.req.query('after') ?? 0)),
-		artifacts: await tasks.artifacts(t.id)
+		artifacts: await tasks.artifacts(t.id),
 	});
 });
 
@@ -399,10 +488,14 @@ app.post('/api/tasks/:id/steer', async (c) => {
 });
 
 app.post('/api/tasks/:id/help', async (c) => {
- const t = await usableTask(c);
- if (!t || !tasks.directs(t, c.get('me').id)) return c.json({ error: 'Sólo quien pidió esta tarea le responde al agente.' }, 403);
- try { return c.json({ ok: true, ...await tasks.answerHelp(t.id, await c.req.json()) }); }
- catch (err) { return fail(c, err); }
+	const t = await usableTask(c);
+	if (!t || !tasks.directs(t, c.get('me').id))
+		return c.json({ error: 'Sólo quien pidió esta tarea le responde al agente.' }, 403);
+	try {
+		return c.json({ ok: true, ...(await tasks.answerHelp(t.id, await c.req.json())) });
+	} catch (err) {
+		return fail(c, err);
+	}
 });
 
 // ---------- takeover: only the owner drives the agent's browser; the admin can only watch ----------
@@ -412,8 +505,11 @@ app.get('/api/people', async (c) => c.json({ people: await people.directory() })
 app.put('/api/agents/:id/shares', async (c) => {
 	const a = await ownAgent(c);
 	if (!a) return c.json({ error: 'Sólo el dueño comparte su agente.' }, 403);
-	try { return c.json({ shares: await agents.setShares(a, (await c.req.json()).people) }); }
-	catch (err) { return fail(c, err); }
+	try {
+		return c.json({ shares: await agents.setShares(a, (await c.req.json()).people) });
+	} catch (err) {
+		return fail(c, err);
+	}
 });
 
 app.post('/api/agents/:id/browser', async (c) => {
@@ -421,7 +517,9 @@ app.post('/api/agents/:id/browser', async (c) => {
 	if (!a) return c.json({ error: 'Sólo el dueño abre el navegador de su agente.' }, 403);
 	try {
 		const prompt = 'Abrí el navegador del agente para iniciar sesión o guardar métodos de pago.';
-		return c.json({ task: tasks.publicTask(await tasks.enqueue(a, prompt, { admin: c.get('me').admin, kind: 'browser' })) });
+		return c.json({
+			task: tasks.publicTask(await tasks.enqueue(a, prompt, { admin: c.get('me').admin, kind: 'browser' })),
+		});
 	} catch (err) {
 		return fail(c, err);
 	}
@@ -430,7 +528,8 @@ app.post('/api/agents/:id/browser', async (c) => {
 app.post('/api/tasks/:id/control', async (c) => {
 	// Only its owner: someone it is shared with runs tasks, never drives its browser.
 	const t = await tasks.getTask(Number(c.req.param('id')));
-	if (!t || t.person_id !== c.get('me').id) return c.json({ error: 'Sólo el dueño toma el control del navegador.' }, 403);
+	if (!t || t.person_id !== c.get('me').id)
+		return c.json({ error: 'Sólo el dueño toma el control del navegador.' }, 403);
 	try {
 		await tasks.setControl(t.id, Boolean((await c.req.json()).on), c.get('me').id);
 		return c.json({ ok: true });
@@ -465,7 +564,8 @@ app.post('/api/tasks/:id/close', async (c) => {
 app.post('/api/tasks/:id/cancel', async (c) => {
 	const t = await seeableTask(c);
 	if (!t) return c.json({ error: 'No existe.' }, 404);
-	if (!c.get('me').admin && !tasks.directs(t, c.get('me').id)) return c.json({ error: 'Sólo quien pidió esta tarea la cancela.' }, 403);
+	if (!c.get('me').admin && !tasks.directs(t, c.get('me').id))
+		return c.json({ error: 'Sólo quien pidió esta tarea la cancela.' }, 403);
 	try {
 		await tasks.cancel(t.id);
 		return c.json({ ok: true });
@@ -475,14 +575,22 @@ app.post('/api/tasks/:id/cancel', async (c) => {
 });
 
 app.get('/api/tasks/:id/files/:name/preview', async (c) => {
- const t = await seeableTask(c);
- if (!t) return c.json({ error: 'No existe.' }, 404);
- c.header('Cache-Control', 'private, no-store');
- const name = c.req.param('name');
- const f = await tasks.file(t.id, name);
- if (!f) return c.json({ error: 'No existe.' }, 404);
- try { return c.json({ agentId: t.agent_id, runId: t.id, ...await readPreview(f.path, name), artifacts: await tasks.artifacts(t.id) }); }
- catch (err) { return fail(c, err); }
+	const t = await seeableTask(c);
+	if (!t) return c.json({ error: 'No existe.' }, 404);
+	c.header('Cache-Control', 'private, no-store');
+	const name = c.req.param('name');
+	const f = await tasks.file(t.id, name);
+	if (!f) return c.json({ error: 'No existe.' }, 404);
+	try {
+		return c.json({
+			agentId: t.agent_id,
+			runId: t.id,
+			...(await readPreview(f.path, name)),
+			artifacts: await tasks.artifacts(t.id),
+		});
+	} catch (err) {
+		return fail(c, err);
+	}
 });
 
 app.get('/api/tasks/:id/files/:name', async (c) => {
@@ -490,13 +598,21 @@ app.get('/api/tasks/:id/files/:name', async (c) => {
 	if (!t) return c.json({ error: 'No existe.' }, 404);
 	const f = await tasks.file(t.id, c.req.param('name'));
 	if (!f) return c.json({ error: 'No existe.' }, 404);
-	return new Response(Bun.file(f.path), { headers: artifactHeaders(c.req.param('name'), c.req.query('download') === '1') });
+	return new Response(Bun.file(f.path), {
+		headers: artifactHeaders(c.req.param('name'), c.req.query('download') === '1'),
+	});
 });
 
 // ---------- an agent's channels (owner only: they hold its secrets) ----------
 
 async function channelsView(agentId: number) {
-	return { ...(await channels.view(agentId)), deliveries: await channels.deliveries(agentId), schedules: await channels.schedules(agentId), timezone: channels.TZ, whatsapp: await whatsapp.agentView(agentId) };
+	return {
+		...(await channels.view(agentId)),
+		deliveries: await channels.deliveries(agentId),
+		schedules: await channels.schedules(agentId),
+		timezone: channels.TZ,
+		whatsapp: await whatsapp.agentView(agentId),
+	};
 }
 
 app.get('/api/agents/:id/channels', async (c) => {
@@ -523,8 +639,11 @@ app.get('/api/agents/:id/secrets', async (c) => {
 app.put('/api/agents/:id/secrets/:name', async (c) => {
 	const a = await ownAgent(c);
 	if (!a) return c.json({ error: 'Sólo el dueño cambia las credenciales de su agente.' }, 403);
-	try { return c.json({ secrets: await secrets.set(a.id, c.req.param('name'), (await c.req.json()).value) }); }
-	catch (err) { return fail(c, err); }
+	try {
+		return c.json({ secrets: await secrets.set(a.id, c.req.param('name'), (await c.req.json()).value) });
+	} catch (err) {
+		return fail(c, err);
+	}
 });
 app.delete('/api/agents/:id/secrets/:name', async (c) => {
 	const a = await ownAgent(c);
@@ -536,10 +655,19 @@ app.post('/api/agents/:id/mcp/:server/login', async (c) => {
 	const a = await ownAgent(c);
 	if (!a) return c.json({ error: 'Sólo el dueño inicia sesión por su agente.' }, 403);
 	const server = (a.harness?.mcp ?? []).find((s) => s.name === c.req.param('server') && s.oauth);
-	if (!server) return c.json({ error: 'Ese servidor MCP no está aprobado para este agente o no usa inicio de sesión.' }, 404);
+	if (!server)
+		return c.json({ error: 'Ese servidor MCP no está aprobado para este agente o no usa inicio de sesión.' }, 404);
 	try {
 		const prompt = `Iniciar sesión en el servidor MCP «${server.name}».`;
-		return c.json({ task: tasks.publicTask(await tasks.enqueue(a, prompt, { admin: c.get('me').admin, kind: 'browser', context: { mcpLogin: server.name } })) });
+		return c.json({
+			task: tasks.publicTask(
+				await tasks.enqueue(a, prompt, {
+					admin: c.get('me').admin,
+					kind: 'browser',
+					context: { mcpLogin: server.name },
+				}),
+			),
+		});
 	} catch (err) {
 		return fail(c, err);
 	}
@@ -618,79 +746,134 @@ app.delete('/api/agents/:id/schedules/:name', async (c) => {
 app.get('/api/agents/:id/conversations', async (c) => {
 	const a = await agents.seeable(c.get('me'), Number(c.req.param('id')));
 	if (!a) return c.json({ error: 'No existe.' }, 404);
-	c.header('Cache-Control','private, no-store');
-	return c.json({ conversations: await agents.conversations(a.id), profileResetPending: await agents.pendingProfileReset(a.id) });
+	c.header('Cache-Control', 'private, no-store');
+	return c.json({
+		conversations: await agents.conversations(a.id),
+		profileResetPending: await agents.pendingProfileReset(a.id),
+	});
 });
 
 app.post('/api/agents/:id/conversations', async (c) => {
 	const a = await usableAgent(c);
 	if (!a) return c.json({ error: 'Sólo su dueño y quienes lo tienen compartido abren conversaciones.' }, 403);
-	const body=await c.req.json().catch(()=>null);
+	const body = await c.req.json().catch(() => null);
 	// The old empty POST was a destructive reset. It stays unavailable; new tabs require an explicit identity.
-	if(!body?.requestId)return c.json({error:'No se reinicia la conversación. Abre una nueva explícitamente.'},410);
-	try{return c.json({conversation:await conversations.create(a.id,body.requestId)});}catch(err){return fail(c,err);}
+	if (!body?.requestId) return c.json({ error: 'No se reinicia la conversación. Abre una nueva explícitamente.' }, 410);
+	try {
+		return c.json({ conversation: await conversations.create(a.id, body.requestId) });
+	} catch (err) {
+		return fail(c, err);
+	}
 });
 
-app.patch('/api/agents/:id/conversations/:conversation',async c=>{
- const a=await usableAgent(c);if(!a)return c.json({error:'Sólo su dueño y quienes lo tienen compartido administran las conversaciones.'},403);
- const body=await c.req.json().catch(()=>null);if(typeof body?.archived!=='boolean')return c.json({error:'Indica si quieres cerrar o reabrir el tab.'},400);
- try{return c.json({conversation:await conversations.archive(a.id,Number(c.req.param('conversation')),body.archived)});}catch(err){return fail(c,err);}
+app.patch('/api/agents/:id/conversations/:conversation', async (c) => {
+	const a = await usableAgent(c);
+	if (!a) return c.json({ error: 'Sólo su dueño y quienes lo tienen compartido administran las conversaciones.' }, 403);
+	const body = await c.req.json().catch(() => null);
+	if (typeof body?.archived !== 'boolean') return c.json({ error: 'Indica si quieres cerrar o reabrir el tab.' }, 400);
+	try {
+		return c.json({
+			conversation: await conversations.archive(a.id, Number(c.req.param('conversation')), body.archived),
+		});
+	} catch (err) {
+		return fail(c, err);
+	}
 });
-app.get('/api/agents/:id/conversations/:conversation',async c=>{
- const a=await agents.seeable(c.get('me'),Number(c.req.param('id')));if(!a)return c.json({error:'No existe.'},404);
- const id=Number(c.req.param('conversation'));if(!await conversations.get(a.id,id))return c.json({error:'No existe.'},404);
- const before=c.req.query('before')===undefined?undefined:Number(c.req.query('before'));
- if(before!==undefined&&(!Number.isSafeInteger(before)||before<=0))return c.json({error:'Página inválida.'},400);
- c.header('Cache-Control','private, no-store');return c.json(await conversations.transcript(a.id,id,before));
+app.get('/api/agents/:id/conversations/:conversation', async (c) => {
+	const a = await agents.seeable(c.get('me'), Number(c.req.param('id')));
+	if (!a) return c.json({ error: 'No existe.' }, 404);
+	const id = Number(c.req.param('conversation'));
+	if (!(await conversations.get(a.id, id))) return c.json({ error: 'No existe.' }, 404);
+	const before = c.req.query('before') === undefined ? undefined : Number(c.req.query('before'));
+	if (before !== undefined && (!Number.isSafeInteger(before) || before <= 0))
+		return c.json({ error: 'Página inválida.' }, 400);
+	c.header('Cache-Control', 'private, no-store');
+	return c.json(await conversations.transcript(a.id, id, before));
 });
-app.post('/api/agents/:id/conversations/:conversation/messages',async c=>{
- const a=await usableAgent(c);if(!a)return c.json({error:'Sólo su dueño y quienes lo tienen compartido escriben en esta conversación.'},403);
- const id=Number(c.req.param('conversation'));if(!await conversations.get(a.id,id))return c.json({error:'No existe.'},404);
- const body=await c.req.json().catch(()=>null);
- const attachments=Array.isArray(body?.attachments)?body.attachments:[];
- if(typeof body?.text!=='string'||body.text.length>4000||(!body.text.trim()&&!attachments.length))return c.json({error:'Escribe un mensaje de hasta 4000 caracteres o adjunta un archivo.'},400);
- try{
-  const key=conversations.requestKey(body.requestId);
-  if(body.replyTo!==undefined){
-   if(attachments.length)throw new Error('Responde la pregunta sin adjuntos y manda los archivos en un mensaje aparte.');
-   const {runId,round}=body.replyTo??{};
-   if(!Number.isSafeInteger(runId)||!Number.isSafeInteger(round))throw new Error('La solicitud de ayuda cambió. Recarga antes de responder.');
-   const t=await tasks.getTask(runId);if(!t||t.agent_id!==a.id||t.conversation_id!==id)throw new Error('La solicitud no pertenece a esta conversación.');
-   if(!tasks.directs(t,c.get('me').id))throw new Error('Sólo quien pidió esta tarea le responde al agente.');
-   return c.json({ok:true,...await tasks.answerHelpText(runId,round,body.text,key)});
-  }
-  // Someone it is shared with writes under their name, so the agent knows it is not its owner.
-  const routing=await inbox.receive({agentId:a.id,personId:c.get('me').id,sender:a.person_id===c.get('me').id?null:c.get('me').name,source:'web',conversationId:id,text:body.text,attachments,dedupeKey:`chat:${key}`},{routeNow:false});
-  return c.json({ok:true,...routing});
- }catch(err){return fail(c,err);}
+app.post('/api/agents/:id/conversations/:conversation/messages', async (c) => {
+	const a = await usableAgent(c);
+	if (!a) return c.json({ error: 'Sólo su dueño y quienes lo tienen compartido escriben en esta conversación.' }, 403);
+	const id = Number(c.req.param('conversation'));
+	if (!(await conversations.get(a.id, id))) return c.json({ error: 'No existe.' }, 404);
+	const body = await c.req.json().catch(() => null);
+	const attachments = Array.isArray(body?.attachments) ? body.attachments : [];
+	if (typeof body?.text !== 'string' || body.text.length > 4000 || (!body.text.trim() && !attachments.length))
+		return c.json({ error: 'Escribe un mensaje de hasta 4000 caracteres o adjunta un archivo.' }, 400);
+	try {
+		const key = conversations.requestKey(body.requestId);
+		if (body.replyTo !== undefined) {
+			if (attachments.length)
+				throw new Error('Responde la pregunta sin adjuntos y manda los archivos en un mensaje aparte.');
+			const { runId, round } = body.replyTo ?? {};
+			if (!Number.isSafeInteger(runId) || !Number.isSafeInteger(round))
+				throw new Error('La solicitud de ayuda cambió. Recarga antes de responder.');
+			const t = await tasks.getTask(runId);
+			if (!t || t.agent_id !== a.id || t.conversation_id !== id)
+				throw new Error('La solicitud no pertenece a esta conversación.');
+			if (!tasks.directs(t, c.get('me').id)) throw new Error('Sólo quien pidió esta tarea le responde al agente.');
+			return c.json({ ok: true, ...(await tasks.answerHelpText(runId, round, body.text, key)) });
+		}
+		// Someone it is shared with writes under their name, so the agent knows it is not its owner.
+		const routing = await inbox.receive(
+			{
+				agentId: a.id,
+				personId: c.get('me').id,
+				sender: a.person_id === c.get('me').id ? null : c.get('me').name,
+				source: 'web',
+				conversationId: id,
+				text: body.text,
+				attachments,
+				dedupeKey: `chat:${key}`,
+			},
+			{ routeNow: false },
+		);
+		return c.json({ ok: true, ...routing });
+	} catch (err) {
+		return fail(c, err);
+	}
 });
 
 // A file sent to the agent with a message (chat or webhook): whoever sees the agent sees its inbox.
-app.get('/api/agents/:id/messages/:message/files/:name',async c=>{
- const a=await agents.seeable(c.get('me'),Number(c.req.param('id')));if(!a)return c.json({error:'No existe.'},404);
- const f=await inbox.inboundFile(a.id,Number(c.req.param('message')),decodeURIComponent(c.req.param('name')));
- if(!f)return c.json({error:'No existe.'},404);
- c.header('Cache-Control','private, no-store');
- return new Response(Bun.file(f.path),{headers:artifactHeaders(f.name,c.req.query('download')==='1')});
+app.get('/api/agents/:id/messages/:message/files/:name', async (c) => {
+	const a = await agents.seeable(c.get('me'), Number(c.req.param('id')));
+	if (!a) return c.json({ error: 'No existe.' }, 404);
+	const f = await inbox.inboundFile(a.id, Number(c.req.param('message')), decodeURIComponent(c.req.param('name')));
+	if (!f) return c.json({ error: 'No existe.' }, 404);
+	c.header('Cache-Control', 'private, no-store');
+	return new Response(Bun.file(f.path), { headers: artifactHeaders(f.name, c.req.query('download') === '1') });
 });
 
 // The queue of messages sent while the agent works: send one now, or remove it.
 async function queuedMessage(c: Context<Env>) {
 	const a = await usableAgent(c);
 	if (!a) throw new Error('Sólo su dueño y quienes lo tienen compartido manejan la cola.');
-	const m = await row<{ run_id: number | null; person_id: number | null }>("select run_id, person_id::int from messages where id = $1 and agent_id = $2 and conversation_id = $3 and routed_as = 'queued'", [Number(c.req.param('message')), a.id, Number(c.req.param('conversation'))]);
+	const m = await row<{ run_id: number | null; person_id: number | null }>(
+		"select run_id, person_id::int from messages where id = $1 and agent_id = $2 and conversation_id = $3 and routed_as = 'queued'",
+		[Number(c.req.param('message')), a.id, Number(c.req.param('conversation'))],
+	);
 	if (!m?.run_id) throw new Error('Ese mensaje ya no está en la cola.');
 	// Its owner manages the whole queue; someone it is shared with, only their own messages.
-	if (a.person_id !== c.get('me').id && m.person_id !== c.get('me').id) throw new Error('Ese mensaje es de otra persona.');
+	if (a.person_id !== c.get('me').id && m.person_id !== c.get('me').id)
+		throw new Error('Ese mensaje es de otra persona.');
 	return { runId: m.run_id, messageId: Number(c.req.param('message')) };
 }
 app.post('/api/agents/:id/conversations/:conversation/messages/:message/send', async (c) => {
-	try { const q = await queuedMessage(c); await tasks.sendQueuedNow(q.runId, q.messageId); return c.json({ ok: true }); }
-	catch (err) { return fail(c, err); }
+	try {
+		const q = await queuedMessage(c);
+		await tasks.sendQueuedNow(q.runId, q.messageId);
+		return c.json({ ok: true });
+	} catch (err) {
+		return fail(c, err);
+	}
 });
 app.delete('/api/agents/:id/conversations/:conversation/messages/:message', async (c) => {
-	try { const q = await queuedMessage(c); await tasks.removeQueued(q.runId, q.messageId); return c.json({ ok: true }); }
-	catch (err) { return fail(c, err); }
+	try {
+		const q = await queuedMessage(c);
+		await tasks.removeQueued(q.runId, q.messageId);
+		return c.json({ ok: true });
+	} catch (err) {
+		return fail(c, err);
+	}
 });
 
 app.post('/api/agents/:id/profile/reset', async (c) => {
@@ -702,11 +885,18 @@ app.post('/api/agents/:id/profile/reset', async (c) => {
 
 // ---------- vault ----------
 
-app.get('/api/vault', async (c) => c.json({ credentials: await vault.list(c.get('me').id), uses: await vault.uses(c.get('me').id) }));
+app.get('/api/vault', async (c) =>
+	c.json({ credentials: await vault.list(c.get('me').id), uses: await vault.uses(c.get('me').id) }),
+);
 app.post('/api/vault', async (c) => {
 	try {
 		const b = await c.req.json();
-		const name = await vault.save(c.get('me').id, { name: b.name, loginUrl: b.loginUrl, username: b.username, password: b.password });
+		const name = await vault.save(c.get('me').id, {
+			name: b.name,
+			loginUrl: b.loginUrl,
+			username: b.username,
+			password: b.password,
+		});
 		return c.json({ name, credentials: await vault.list(c.get('me').id) });
 	} catch (err) {
 		return fail(c, err);
@@ -715,7 +905,11 @@ app.post('/api/vault', async (c) => {
 app.put('/api/vault/:id/grants', async (c) => {
 	try {
 		const { agents: ids } = await c.req.json();
-		const lost = await vault.grant(c.get('me').id, Number(c.req.param('id')), Array.isArray(ids) ? ids.map(Number) : []);
+		const lost = await vault.grant(
+			c.get('me').id,
+			Number(c.req.param('id')),
+			Array.isArray(ids) ? ids.map(Number) : [],
+		);
 		for (const a of lost) await tasks.purgeNow(a);
 		return c.json({ credentials: await vault.list(c.get('me').id) });
 	} catch (err) {
@@ -741,18 +935,28 @@ app.get('/api/admin/whatsapp', async (c) => adminOnly(c) ?? c.json(await whatsap
 app.post('/api/admin/whatsapp/pair', async (c) => {
 	const denied = adminOnly(c);
 	if (denied) return denied;
-	try { await whatsapp.pair(); return c.json(await whatsapp.status()); }
-	catch (err) { return fail(c, err); }
+	try {
+		await whatsapp.pair();
+		return c.json(await whatsapp.status());
+	} catch (err) {
+		return fail(c, err);
+	}
 });
 app.post('/api/admin/whatsapp/logout', async (c) => {
 	const denied = adminOnly(c);
 	if (denied) return denied;
-	try { await whatsapp.logout(); return c.json(await whatsapp.status()); }
-	catch (err) { return fail(c, err); }
+	try {
+		await whatsapp.logout();
+		return c.json(await whatsapp.status());
+	} catch (err) {
+		return fail(c, err);
+	}
 });
 
-app.get('/api/admin', async (c) =>
-	adminOnly(c) ?? c.json({ settings: settings(), people: await people.everyone(), uses: await vault.uses(0, true) })
+app.get(
+	'/api/admin',
+	async (c) =>
+		adminOnly(c) ?? c.json({ settings: settings(), people: await people.everyone(), uses: await vault.uses(0, true) }),
 );
 app.put('/api/admin/settings', async (c) => {
 	const denied = adminOnly(c);
@@ -774,7 +978,10 @@ app.put('/api/admin/people/:id/quota', async (c) => {
 		return fail(c, err);
 	}
 });
-app.post('/api/admin/people/:id/invite', async (c) => adminOnly(c) ?? c.json({ code: await people.invite(Number(c.req.param('id'))) }));
+app.post(
+	'/api/admin/people/:id/invite',
+	async (c) => adminOnly(c) ?? c.json({ code: await people.invite(Number(c.req.param('id'))) }),
+);
 app.delete('/api/admin/people/:id', async (c) => {
 	const denied = adminOnly(c);
 	if (denied) return denied;
@@ -799,7 +1006,13 @@ app.get(
 				void me.then((person) => {
 					if (closed) return;
 					if (!person) return ws.close(4401, 'login');
-					viewer = hub.join(person, (d: string) => ws.send(d), () => ((ws.raw as { getBufferedAmount?: () => number } | undefined)?.getBufferedAmount?.() ?? 0) > hub.BACKLOG_BYTES);
+					viewer = hub.join(
+						person,
+						(d: string) => ws.send(d),
+						() =>
+							((ws.raw as { getBufferedAmount?: () => number } | undefined)?.getBufferedAmount?.() ?? 0) >
+							hub.BACKLOG_BYTES,
+					);
 				});
 			},
 			async onMessage(e) {
@@ -826,9 +1039,9 @@ app.get(
 			onClose() {
 				closed = true;
 				if (viewer) hub.leave(viewer);
-			}
+			},
 		};
-	})
+	}),
 );
 
 // ---------- the web app (built) ----------

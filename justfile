@@ -123,6 +123,36 @@ check:
     cd server && bun test
     cd web && bun test
 
+# ---- quality and release (never sync the checkout serving users) ----
+
+sanitize mode="history":
+    bun scripts/tooling/sanitize.mjs {{mode}}
+
+format mode="check":
+    #!/usr/bin/env bash
+    set -euo pipefail
+    case "{{mode}}" in
+      check) bun run format:check ;;
+      write) bun run format ;;
+      *) echo 'format: check | write' >&2; exit 2 ;;
+    esac
+
+lint:
+    bun run lint
+
+# Fast checks above may skip DB tests locally. CI MUST supply a throwaway _test DB.
+ci:
+    bun scripts/ci/verify-database.ts
+    just sanitize history
+    just format check
+    just lint
+    just check
+    bun test scripts/release
+    cd web && bun run build
+
+release mode="run":
+    bun scripts/release/main.mjs {{mode}}
+
 # ---- production (Komodo stack `agents` on reko-3) ----
 
 # deploy: image | sandbox | whatsapp — then redeploy the stack in Komodo with IMAGE_TAG=<commit>

@@ -1,0 +1,24 @@
+{
+	"publicationEnabled": false,
+	"deploymentEnabled": false,
+	"baseline": "0.0.1-beta",
+	"repository": "AngelMaldonado/agents",
+	"workBranch": "wip",
+	"releaseBranch": "main",
+	"stableBranch": "stable",
+	"platform": "linux/amd64",
+	"registry": "registry.cubytest.space/cuby",
+	"executorHost": "reko-3",
+	"cosignVersion": "3.1.4",
+	"cosignPublicKeySha256": null,
+	"transparencyLog": null,
+	"komodo": {
+		"url": "https://komodo.cubytest.space",
+		"appBuild": "agents-release-app",
+		"sandboxBuild": "agents-release-sandbox",
+		"signProcedure": "agents-release-sign",
+		"verifyProcedure": "agents-release-verify",
+		"stack": "agents"
+	},
+	"publicUrl": "https://agents.cubytest.space"
+}

@@ -1,0 +1,13 @@
+# Future cutover definition ONLY. Do not apply to the current stack during setup.
+# Migration, backups, credentials, networking and owner approval are prerequisites.
+# Both variables MUST be signed, verified references of the same release manifest.
+services:
+  server:
+    image: ${AGENTS_RELEASE_APP_IMAGE:?verified registry reference with sha256 digest required}
+    environment:
+      AGENTS_SANDBOX_IMAGE: ${AGENTS_RELEASE_SANDBOX_IMAGE:?verified sandbox preloaded on reko-3 required}
+      AGENTS_RELEASE_VERSION: ${AGENTS_RELEASE_VERSION:?set from release manifest}
+      AGENTS_RELEASE_SHA: ${AGENTS_RELEASE_SHA:?set full Git SHA}
+      AGENTS_PUBLIC_URL: https://agents.cubytest.space
+# This is intentionally an overlay, NOT a runnable production stack.
+# Merge with a reviewed base WITHOUT a whatsapp service/secret requirement at cutover.
