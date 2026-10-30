@@ -1,5 +1,5 @@
 {
-	"publicationEnabled": false,
+	"publicationEnabled": true,
 	"deploymentEnabled": false,
 	"baseline": "0.0.1-beta",
 	"repository": "AngelMaldonado/agents",

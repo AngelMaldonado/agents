@@ -69,45 +69,6 @@ jobs:
         run: bash scripts/ci/e2e.sh
         env:
           DOCKER_CONTEXT: default
-  setup:
-    name: Release setup rehearsal
-    if: github.event_name == 'pull_request' && github.event.pull_request.head.sha == vars.AGENTS_RELEASE_SETUP_SHA
-    runs-on: [self-hosted, linux, X64, '${{ vars.AGENTS_RELEASE_SETUP_RUNNER }}']
-    timeout-minutes: 20
-    steps:
-      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
-        with:
-          ref: ${{ github.event.pull_request.head.sha }}
-          fetch-depth: 0
-          persist-credentials: true
-      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38
-        with:
-          node-version-file: .node-version
-      - name: Private temporary Git source
-        run: |
-          node scripts/release/source.mjs > "$RUNNER_TEMP/source.log" 2>&1 &
-          for attempt in $(seq 1 15); do
-            if curl -fsS http://127.0.0.1:9418/agents.git/HEAD >/dev/null; then exit 0; fi
-            sleep 1
-          done
-          tail -n 40 "$RUNNER_TEMP/source.log"
-          exit 1
-      - name: Real isolated build/sign/verify, never publish baseline or deploy
-        run: node scripts/release/setup-probe.mjs
-        env:
-          AGENTS_RELEASE_SETUP_SHA: ${{ vars.AGENTS_RELEASE_SETUP_SHA }}
-          AGENTS_RELEASE_GIT_PROVIDER: ${{ vars.AGENTS_RELEASE_SETUP_SOURCE }}
-          AGENTS_RELEASE_KOMODO_KEY: ${{ secrets.AGENTS_RELEASE_SETUP_KOMODO_KEY }}
-          AGENTS_RELEASE_KOMODO_SECRET: ${{ secrets.AGENTS_RELEASE_SETUP_KOMODO_SECRET }}
-      - uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f
-        if: always()
-        with:
-          name: agents-release-setup-proof
-          include-hidden-files: true
-          path: |
-            .release/public-key.json
-            .release/setup-proof.json
-          if-no-files-found: error
   required:
     name: Required checks
     if: always()

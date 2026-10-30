@@ -77,7 +77,9 @@ Lefthook no reescribe ni hace staging: secretos del índice, formato, lint, tipo
 
 `just ci` exige una base explícita `_test`, analiza historial de secretos, formato/lint/tipos/tests y construye web. CI arranca la imagen app real con dependencias sólo de producción y hace E2E con PostgreSQL temporal, sandbox/pi/Chrome reales, GPT simulado y usuarios sintéticos, incluido reinicio de API y sharing. Ninguna credencial de usuarios del producto participa. Los tests locales sin URL explícita omiten integración DB; eso no cuenta como CI completo.
 
-El ensayo de infraestructura construye app y sandbox desde el SHA fijado, pero en namespaces `agents-release-probe*` con versión `setup`, y verifica firmas reales con la clave existente. No crea una release/tag de producto ni despliega. Su resultado y CI quedan enlazados en el hilo de Bubble; mocks solos no constituyen prueba de firma.
+Ensayo real completo: [CI 41119238161](https://github.com/AngelMaldonado/agents/actions/runs/41119238161), fuente `212dc828b94db7c121c6b4fa15f587d19090fb90`. App y sandbox construidas en Komodo en namespaces `agents-release-probe*`, versión `setup`, firmadas y verificadas por digest con la huella fijada y sin Rekor. Se comprobó también la descarga de `public-key.json` y `setup-proof.json` del artifact. No se creó una release/tag de producto ni se desplegó. El job, Build, variables y secretos de repositorio temporales del ensayo se retiraron; las credenciales duraderas quedan sólo en el entorno GitHub `agents-release`. Mocks solos no constituyen prueba de firma.
+
+**Incidente de inventario:** una consulta admin inicial de variables devolvió material secreto a memoria del proceso del Mac antes de filtrar la salida. No se escribió ese material en archivos, logs o commits, pero la lectura incumplió el límite de mantenerlo exclusivamente en Komodo. Se notificó a Angel, se retiró esa consulta y se registró en el hilo #16 del proyecto Agents en Bubble. No se rotó la clave compartida sin autorización: afectaría otros proyectos. El flujo definitivo no necesita esa lectura ni transportar la clave al Mac o al runner.
 
 ## Fallos, límites y recuperación
 
