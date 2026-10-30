@@ -75,6 +75,10 @@ try {
 		);
 	} else {
 		assertPublicationAllowed();
+		if (process.env.GIT_DIR || process.env.GIT_WORK_TREE || process.env.GIT_INDEX_FILE)
+			throw new Error('No ejecutes release desde un hook ni con el repositorio Git redirigido.');
+		if (!existsSync(resolve(root, 'node_modules/semantic-release/package.json')))
+			throw new Error('Faltan dependencias: ejecuta bun install --frozen-lockfile antes de release.');
 		lock = resolve(await command('git', ['rev-parse', '--git-common-dir'], true), 'agents-release.lock');
 		fd = openSync(lock, 'wx', 0o600);
 		if (await command('git', ['status', '--porcelain'], true))
