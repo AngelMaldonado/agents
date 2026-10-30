@@ -11,25 +11,31 @@ if (
 	execFileSync('git', ['rev-parse', 'HEAD'], { encoding: 'utf8' }).trim() !== sha
 )
 	throw new Error('Ensayo no aprobado para este SHA.');
+let rejection = '';
 const client = new Komodo({
 	url: config.komodo.url,
 	key: process.env.AGENTS_RELEASE_KOMODO_KEY,
 	secret: process.env.AGENTS_RELEASE_KOMODO_SECRET,
+	fetcher: async (url, options) => {
+		const response = await fetch(url, options);
+		if (JSON.parse(options.body).type === 'GetStack' && !response.ok) rejection = await response.clone().text();
+		return response;
+	},
 });
 console.log('Komodo', (await client.request('read', 'GetVersion')).version);
-for (const [type, params] of [
-	['GetStack', { stack: 'agents' }],
-	['GetVariable', { name: 'COSIGN_PRIVATE_KEY_B64' }],
-]) {
-	let denied = false;
-	try {
-		await client.request('read', type, params);
-	} catch (error) {
-		denied = /HTTP 403/.test(error.message);
-	}
-	if (!denied) throw new Error(`Cuenta de release obtuvo acceso inesperado: ${type}`);
-	console.log(`Acceso denegado correctamente: ${type}`);
+await client.request('read', 'GetBuild', { build: config.komodo.appBuild });
+let denied = false;
+try {
+	await client.request('read', 'GetStack', { stack: 'agents' });
+} catch {
+	denied = /permission/i.test(rejection);
 }
+if (!denied) throw new Error('La cuenta no demostró denegación de acceso al stack existente.');
+console.log('Stack existente: acceso denegado por permisos.');
+const sentinel = await client.request('read', 'GetVariable', { name: 'AGENTS_RELEASE_PERMISSION_PROBE' });
+if (sentinel.is_secret !== true || !/^#+$/.test(sentinel.value ?? ''))
+	throw new Error('El API no ocultó el secreto sintético de prueba.');
+console.log('Secretos: el API oculta el valor del secreto sintético; no se consultó ninguna clave real.');
 await client.request('write', 'UpdateBuild', {
 	id: 'agents-release-probe',
 	config: {
