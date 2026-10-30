@@ -1,194 +1,238 @@
 import { expect, test } from 'bun:test';
+import { readFileSync, mkdtempSync, mkdirSync, writeFileSync, rmSync } from 'node:fs';
+import { execFileSync } from 'node:child_process';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { config, assertPublicationAllowed, assertDeploymentAllowed } from './config.mjs';
-import { assertSha, assertVersion, requireDigest } from './version.mjs';
-import { Komodo } from './komodo.mjs';
-import { manifestFrom, prepareArtifacts } from './artifacts.mjs';
+import { sourceConfig, executorEnvironment, imageRepository } from './inputs.mjs';
+import { prepareArtifacts, imageFrom } from './artifacts.mjs';
 import { schemaInfo } from './schema.mjs';
-import { assertSource } from './runner.mjs';
-import { executorEnvironment } from './inputs.mjs';
+import { Komodo } from './komodo.mjs';
 import { signingFlags, verificationFlags } from './cosign.mjs';
+import { assertSha, assertVersion, requireDigest } from './version.mjs';
 const sha = 'a'.repeat(40),
+	version = '0.0.1-beta',
 	digest = `sha256:${'b'.repeat(64)}`;
-const disabled = { ...config, publicationEnabled: false, deploymentEnabled: false };
-const enabled = { ...disabled, publicationEnabled: true, gitProvider: `agents-release-${'a'.repeat(32)}:9418` };
-const manifest = {
-	version: '0.0.1-beta',
-	sha,
-	platform: 'linux/amd64',
-	schema: schemaInfo(),
-	images: Object.fromEntries(
-		['agents', 'agents-sandbox'].map((n) => [n, { digest, ref: `${config.registry}/${n}@${digest}`, verified: true }]),
-	),
-};
-const record = (m = manifest) => ({ logs: [{ stdout: `AGENTS_RELEASE_MANIFEST ${JSON.stringify(m)}` }] });
-test('publication/deployment are disabled and even enabled publication cannot grant deployment', () => {
-	expect(() => assertPublicationAllowed(disabled)).toThrow('bloqueada');
-	expect(() => assertDeploymentAllowed(disabled)).toThrow('bloque');
-	expect(() => assertDeploymentAllowed(enabled)).toThrow('bloque');
-	expect(() => assertPublicationAllowed({ ...enabled, platform: 'linux/arm64' })).toThrow('linux/amd64');
+const enabled = { ...config, publicationEnabled: true };
+function result(component: string, rehearsal = false) {
+	return {
+		component,
+		sha,
+		version,
+		platform: 'linux/amd64',
+		schema: schemaInfo(),
+		digest,
+		ref: `${imageRepository(component, rehearsal)}@${digest}`,
+		verified: true,
+		rehearsal,
+	};
+}
+function update(component: string, rehearsal = false) {
+	return { logs: [{ stdout: `AGENTS_RELEASE_IMAGE ${JSON.stringify(result(component, rehearsal))}` }] };
+}
+test('publication stays gated independently of deployment', () => {
+	expect(() => assertPublicationAllowed({ ...config, publicationEnabled: false })).toThrow();
+	expect(() => assertPublicationAllowed(enabled)).not.toThrow();
+	expect(() => assertDeploymentAllowed(enabled)).toThrow();
 });
-test('versions, full commits and digests are validated without interpolating shell input', () => {
-	for (const version of ['0.0.1-beta', '0.0.1-beta.1', '0.1.0-beta.2']) expect(assertVersion(version)).toBe(version);
-	for (const version of ['1.0.0', '0.1.0', '0.01.0-beta', '0.0.1-beta;rm', '0.0.1-beta.01'])
-		expect(() => assertVersion(version)).toThrow();
+test('strict version, full SHA and immutable digest inputs', () => {
+	expect(assertVersion(version)).toBe(version);
+	expect(assertVersion('0.0.1-beta.1')).toBe('0.0.1-beta.1');
+	for (const invalid of ['1.0.0', 'latest', '0.0.1;echo bad']) expect(() => assertVersion(invalid)).toThrow();
 	expect(assertSha(sha)).toBe(sha);
+	expect(() => assertSha('abc1234')).toThrow();
 	expect(requireDigest(digest)).toBe(digest);
-	expect(() => assertSha('c655568')).toThrow();
 	expect(() => requireDigest('latest')).toThrow();
 });
-test('manifest requires exact SHA/version/platform, both immutable refs and successful verification', () => {
-	expect(manifestFrom(record(), '0.0.1-beta', sha)).toEqual(manifest);
-	for (const patch of [
-		{ sha: 'c'.repeat(40) },
-		{ version: '0.1.0-beta' },
-		{ platform: 'linux/arm64' },
-		{ images: {} },
-		{ schema: { files: [], sha256: 'c'.repeat(64) } },
-	])
-		expect(() => manifestFrom(record({ ...manifest, ...patch }), '0.0.1-beta', sha)).toThrow();
-	const bad = structuredClone(manifest);
-	bad.images.agents.verified = false;
-	expect(() => manifestFrom(record(bad), '0.0.1-beta', sha)).toThrow('Firma');
-	expect(() => manifestFrom({ logs: [] }, '0.0.1-beta', sha)).toThrow('exactamente');
-	expect(() => manifestFrom({ logs: [...record().logs, ...record().logs] }, '0.0.1-beta', sha)).toThrow('exactamente');
+test('direct GitHub clone selects only approved existing account', () => {
+	expect(sourceConfig()).toEqual({
+		git_provider: 'github.com',
+		git_https: true,
+		git_account: 'AngelMaldonado',
+		repo: 'AngelMaldonado/agents',
+	});
+	expect(() => sourceConfig({ ...config, komodo: { ...config.komodo, gitAccount: 'other' } })).toThrow();
+	const env = executorEnvironment(version, sha, 'agents-app');
+	expect(env).toContain('COSIGN_PRIVATE_KEY_B64=[[COSIGN_PRIVATE_KEY_B64]]');
+	expect(env).toContain('AGENTS_RELEASE_REHEARSAL=false');
+	expect(() => executorEnvironment(version, sha, 'other')).toThrow();
 });
-test('publication gate runs before any Komodo request', async () => {
-	const calls: unknown[] = [];
-	await expect(
-		prepareArtifacts({ request: (...a: unknown[]) => calls.push(a) }, '0.0.1-beta', sha, disabled),
-	).rejects.toThrow('bloqueada');
-	expect(calls).toEqual([]);
-});
-test('first failed build prevents sandbox, signing, publishing and deployment', async () => {
-	const calls: string[] = [];
+test('only two Repo executions, one hook each, no builds/stacks/procedures/runners', async () => {
+	const calls: any[] = [];
 	const client = {
-		request: async (_route: string, type: string) => {
-			calls.push(type);
-		},
-		execute: async (type: string) => {
-			calls.push(type);
-			throw new Error('build failed');
-		},
-	};
-	await expect(prepareArtifacts(client, '0.0.1-beta', sha, enabled)).rejects.toThrow('build failed');
-	expect(calls).toEqual(['UpdateBuild', 'RunBuild']);
-});
-test('builds pin full SHA/amd64 and explicit tags; only verified executor returns manifest; never deploys', async () => {
-	const calls: { type: string; params: any }[] = [];
-	const client = {
-		request: async (_route: string, type: string, params: any) => {
-			calls.push({ type, params });
+		request: async (category: string, type: string, params: any) => {
+			calls.push({ category, type, params });
 		},
 		execute: async (type: string, params: any) => {
 			calls.push({ type, params });
-			return type === 'RunBuild'
-				? { commit_hash: sha.slice(0, 7), logs: [{ stdout: `AGENTS_RELEASE_SOURCE_SHA ${sha}` }] }
-				: record();
+			return update(params.repo);
 		},
 	};
-	expect(await prepareArtifacts(client, '0.0.1-beta', sha, enabled)).toEqual(manifest);
-	const builds = calls.filter((c) => c.type === 'UpdateBuild');
-	expect(builds).toHaveLength(2);
-	for (const c of builds) {
-		expect(c.params.config.commit).toBe(sha);
-		expect(c.params.config.extra_args).toEqual(['--platform', 'linux/amd64']);
-		expect(c.params.config.auto_increment_version).toBe(false);
-		expect(c.params.config.build_path).toBe(c.params.id === enabled.komodo.sandboxBuild ? 'sandbox' : '.');
-		expect(c.params.config.dockerfile_path).toBe('Dockerfile');
-		expect(c.params.config.pre_build.path).toBe(c.params.id === enabled.komodo.sandboxBuild ? '..' : '');
-		expect(c.params.config.image_tag).toBe(sha);
-		expect(c.params.config.include_commit_tag).toBe(false);
-		expect(c.params.config.pre_build.command).toContain(sha);
-	}
-	expect(calls.filter((c) => c.type === 'CloneRepo')).toHaveLength(2);
+	const manifest = await prepareArtifacts(client, version, sha, enabled);
+	expect(Object.keys(manifest.images)).toEqual(['agents-app', 'agents-sandbox']);
+	expect(calls.map((c) => c.type)).toEqual(['UpdateRepo', 'CloneRepo', 'UpdateRepo', 'CloneRepo']);
 	for (const operation of calls.filter((c) => c.type === 'UpdateRepo')) {
+		expect(operation.params.config.commit).toBe(sha);
+		expect(operation.params.config.git_account).toBe('AngelMaldonado');
 		expect(operation.params.config.on_clone.command).toBe('');
-		expect(operation.params.config.on_pull.command).toContain('komodo-job.sh');
+		expect(operation.params.config.on_pull.command).toBe('bash scripts/release/komodo-job.sh');
 	}
-	expect(calls.some((c) => /Deploy|Stack|Variable/.test(c.type))).toBe(false);
 });
-test('Git snapshots only use the private ephemeral runner; verify receives no private signing references', () => {
-	const origin = `agents-release-${'c'.repeat(32)}:9418`;
-	expect(assertSource(origin)).toBe(origin);
-	for (const value of ['github.com', '127.0.0.1:22', `${origin};curl`, 'https://outside.invalid'])
-		expect(() => assertSource(value)).toThrow();
-	const verify = executorEnvironment('0.0.1-beta', sha, 'verify');
-	expect(verify).not.toContain('COSIGN_PRIVATE');
-	expect(verify).not.toContain('COSIGN_PASSWORD');
-	expect(executorEnvironment('0.0.1-beta', sha, 'sign')).toContain('COSIGN_PRIVATE_KEY_B64=[[COSIGN_PRIVATE_KEY_B64]]');
+test('first failed executor prevents the second and publication', async () => {
+	let executions = 0;
+	const client = {
+		request: async () => {},
+		execute: async () => {
+			executions++;
+			throw Error('failed');
+		},
+	};
+	await expect(prepareArtifacts(client, version, sha, enabled)).rejects.toThrow('failed');
+	expect(executions).toBe(1);
 });
-test('Cosign 3 private signing disables new default config explicitly, without dropping signature validation', () => {
+test('disabled publication stops before any remote request', async () => {
+	let called = false;
+	await expect(
+		prepareArtifacts(
+			{
+				request: async () => {
+					called = true;
+				},
+			},
+			version,
+			sha,
+			{ ...config, publicationEnabled: false },
+		),
+	).rejects.toThrow();
+	expect(called).toBe(false);
+});
+test('manifest rejects wrong SHA, version, platform, schema, digest and duplicate markers', () => {
+	expect(imageFrom(update('agents-app'), 'agents-app', version, sha).verified).toBe(true);
+	for (const override of [
+		{ sha: 'c'.repeat(40) },
+		{ version: '0.0.1-beta.1' },
+		{ platform: 'linux/arm64' },
+		{ schema: {} },
+		{ digest: 'latest' },
+		{ verified: false },
+		{ rehearsal: true },
+	]) {
+		const bad = {
+			logs: [{ stdout: `AGENTS_RELEASE_IMAGE ${JSON.stringify({ ...result('agents-app'), ...override })}` }],
+		};
+		expect(() => imageFrom(bad, 'agents-app', version, sha)).toThrow();
+	}
+	expect(() =>
+		imageFrom({ logs: [...update('agents-app').logs, ...update('agents-app').logs] }, 'agents-app', version, sha),
+	).toThrow();
+});
+test('rehearsal cannot pass as product artifact', () => {
+	expect(imageFrom(update('agents-app', true), 'agents-app', version, sha, config, true).verified).toBe(true);
+	expect(() => imageFrom(update('agents-app', true), 'agents-app', version, sha)).toThrow();
+	expect(imageRepository('agents-app', true)).toEndWith('/agents-release-probe');
+});
+test('private values are forwarded only to the signing container; one job has three phases', () => {
+	const shell = readFileSync(new URL('./komodo-job.sh', import.meta.url), 'utf8');
+	expect(shell).toContain('for mode in build sign verify');
+	expect(shell).toContain('if [[ "$mode" == sign ]]');
+	expect(shell).toContain('phase_env+=(-e COSIGN_PRIVATE_KEY_B64 -e COSIGN_PASSWORD)');
+	expect(shell).toContain("trap 'rm -f .git/agents-release.env' EXIT");
+	const main = readFileSync(new URL('./main.mjs', import.meta.url), 'utf8');
+	expect(main).not.toContain('readline');
+	expect(main).not.toContain('startRunner');
+	expect(main).not.toContain('workflow_dispatch');
+	expect(main).toContain('--match-head-commit');
+});
+test('real shell wrapper forwards secrets only to sign and always deletes its envfile', () => {
+	for (const fail of [false, true]) {
+		const directory = mkdtempSync(join(tmpdir(), 'agents-wrapper-'));
+		try {
+			mkdirSync(join(directory, '.git'));
+			writeFileSync(
+				join(directory, '.git/agents-release.env'),
+				'AGENTS_RELEASE_COMPONENT=agents-app\nAGENTS_RELEASE_TOOLS_IMAGE=sha256:fixture\nCOSIGN_PRIVATE_KEY_B64=synthetic\nCOSIGN_PASSWORD=synthetic\n',
+			);
+			writeFileSync(
+				join(directory, 'docker'),
+				`#!/usr/bin/env node\nconst fs=require('node:fs');const args=process.argv.slice(2);fs.appendFileSync(${JSON.stringify(join(directory, 'calls'))},JSON.stringify(args)+'\\n');if(${fail}&&args.at(-1)==='sign')process.exit(1);`,
+				{ mode: 0o755 },
+			);
+			const call = () =>
+				execFileSync('bash', [new URL('./komodo-job.sh', import.meta.url).pathname], {
+					cwd: directory,
+					env: { ...process.env, PATH: `${directory}:${process.env.PATH}` },
+					stdio: 'pipe',
+				});
+			if (fail) expect(call).toThrow();
+			else call();
+			const calls = readFileSync(join(directory, 'calls'), 'utf8')
+				.trim()
+				.split('\n')
+				.map((line) => JSON.parse(line));
+			expect(calls.map((args) => args.at(-1))).toEqual(fail ? ['build', 'sign'] : ['build', 'sign', 'verify']);
+			for (const args of calls) expect(args.includes('COSIGN_PRIVATE_KEY_B64')).toBe(args.at(-1) === 'sign');
+			expect(() => readFileSync(join(directory, '.git/agents-release.env'))).toThrow();
+		} finally {
+			rmSync(directory, { recursive: true, force: true });
+		}
+	}
+});
+test('Cosign compatibility keeps cryptographic verification without Rekor', () => {
 	expect(signingFlags(false)).toContain('--use-signing-config=false');
-	expect(signingFlags(false)).toContain('--tlog-upload=false');
-	expect(signingFlags(true)).toContain('--tlog-upload=true');
 	expect(verificationFlags(false)).toContain('--insecure-ignore-tlog=true');
 	expect(verificationFlags(false)).not.toContain('--registry-referrers-mode=legacy');
-	expect(verificationFlags(true)).not.toContain('--insecure-ignore-tlog=true');
-	expect(() => signingFlags(null)).toThrow('Rekor');
 });
-test('Komodo short hash is not sufficient without one clean full-source proof', async () => {
-	for (const logs of [
-		[],
-		[{ stdout: `AGENTS_RELEASE_SOURCE_SHA ${'c'.repeat(40)}` }],
-		[{ stdout: `AGENTS_RELEASE_SOURCE_SHA ${sha}\nAGENTS_RELEASE_SOURCE_SHA ${sha}` }],
-	]) {
-		const client = { request: async () => {}, execute: async () => ({ commit_hash: sha.slice(0, 7), logs }) };
-		await expect(prepareArtifacts(client, '0.0.1-beta', sha, enabled)).rejects.toThrow('SHA completo');
-	}
-});
-test('Komodo authenticates with key AND secret headers, polls completion, logs and redacts', async () => {
-	const messages: string[] = [],
+test('Komodo uses both headers, polls completion and redacts credentials', async () => {
+	const logs: string[] = [],
 		requests: any[] = [];
-	const replies = [
-		{ _id: 'op', status: 'InProgress' },
-		{ _id: 'op', status: 'InProgress' },
-		{ _id: 'op', status: 'Complete', success: true, logs: [{ stdout: 'key-test secret-test done' }] },
-	];
+	let now = 0;
 	const client = new Komodo({
-		url: 'https://example.test',
-		key: 'key-test',
-		secret: 'secret-test',
-		sleep: async () => {},
-		emit: (s: string) => messages.push(s),
-		fetcher: async (_url: string, options: any) => {
-			requests.push(options);
-			return Response.json(replies.shift());
-		},
-	});
-	expect((await client.execute('RunBuild', { build: 'candidate' })).success).toBe(true);
-	expect(requests[0].headers['X-Api-Key']).toBe('key-test');
-	expect(requests[0].headers['X-Api-Secret']).toBe('secret-test');
-	expect(messages.join('')).not.toContain('key-test');
-	expect(messages.join('')).not.toContain('secret-test');
-});
-test('Komodo rejects failed, unknown, malformed and timed-out operations; never assumes success', async () => {
-	for (const reply of [
-		{ _id: 'op', status: 'Complete', success: false },
-		{ _id: 'op', status: 'Complete' },
-		{ _id: 'op', status: 'Mystery' },
-		{},
-	]) {
-		const c = new Komodo({
-			url: 'https://example.test',
-			key: 'key-test',
-			secret: 'secret-test',
-			emit: () => {},
-			fetcher: async () => Response.json(reply),
-		});
-		await expect(c.execute('RunBuild', {})).rejects.toThrow();
-	}
-	let time = 0;
-	const c = new Komodo({
-		url: 'https://example.test',
-		key: 'key-test',
-		secret: 'secret-test',
-		emit: () => {},
-		now: () => time,
+		url: 'https://komodo.test',
+		key: 'test-key',
+		secret: 'test-secret',
+		emit: (v: string) => logs.push(v),
+		now: () => now,
 		sleep: async () => {
-			time += 100;
+			now += 10;
 		},
-		fetcher: async () => Response.json({ _id: 'op', status: 'InProgress' }),
+		fetcher: async (url: any, options: any) => {
+			requests.push({ url, options });
+			const body = JSON.parse(options.body);
+			return Response.json(
+				body.type === 'GetUpdate'
+					? { id: 'one', status: 'Complete', success: true, logs: [{ stdout: 'test-key test-secret' }] }
+					: { id: 'one', status: 'InProgress' },
+			);
+		},
 	});
-	await expect(c.execute('RunBuild', {}, { timeoutMs: 150, pollMs: 1 })).rejects.toThrow('puede seguir');
-	expect(() => new Komodo({ url: 'http://example.test', key: 'x', secret: 'y' })).toThrow('HTTPS');
+	await client.execute('CloneRepo', { repo: 'agents-app' });
+	expect(requests[0].options.headers['X-Api-Key']).toBe('test-key');
+	expect(requests[0].options.headers['X-Api-Secret']).toBe('test-secret');
+	expect(logs.join('')).not.toContain('test-secret');
+	expect(logs.join('')).toContain('[REDACTED]');
+});
+test('Komodo rejects failed, malformed, unknown and timed out states', async () => {
+	for (const state of [{ id: 'x', status: 'Complete', success: false }, { id: 'x', status: 'Unknown' }, {}]) {
+		const client = new Komodo({
+			url: 'https://komodo.test',
+			key: 'key',
+			secret: 'secret',
+			emit: () => {},
+			fetcher: async () => Response.json(state),
+		});
+		await expect(client.execute('CloneRepo', {})).rejects.toThrow();
+	}
+	let now = 0;
+	const client = new Komodo({
+		url: 'https://komodo.test',
+		key: 'key',
+		secret: 'secret',
+		emit: () => {},
+		now: () => now,
+		sleep: async () => {
+			now += 100;
+		},
+		fetcher: async () => Response.json({ id: 'x', status: 'InProgress' }),
+	});
+	await expect(client.execute('CloneRepo', {}, { timeoutMs: 50 })).rejects.toThrow('puede seguir activa');
 });

@@ -1,4 +1,4 @@
-// Trusted release runner only. No deployment or migration is performed by this publisher.
+// Operator-controlled temporary main checkout. Builds/signatures run only in Komodo; never deploys.
 import { execFileSync } from 'node:child_process';
 import { writeFileSync, mkdirSync } from 'node:fs';
 import semanticRelease from 'semantic-release';
@@ -11,9 +11,10 @@ assertPublicationAllowed();
 if (git('branch', '--show-current') !== config.releaseBranch)
 	throw new Error('Publicación sólo desde main; no se admite un checkout de trabajo.');
 const sha = assertSha(git('rev-parse', 'HEAD'));
-if (process.env.GITHUB_EVENT_NAME !== 'workflow_dispatch' || process.env.AGENTS_RELEASE_APPROVED_SHA !== sha)
-	throw new Error('Publicación requiere disparo manual y el SHA aprobado por la persona.');
-if (sha !== process.env.GITHUB_SHA) throw new Error('El runner no está en el SHA integrado que disparó el workflow.');
+if (process.env.AGENTS_RELEASE_APPROVED_SHA !== sha || process.env.GITHUB_SHA !== sha)
+	throw new Error('Publicación requiere el SHA integrado y validado por just release.');
+if (git('ls-remote', 'origin', `refs/heads/${config.releaseBranch}`).split(/\s/)[0] !== sha)
+	throw new Error('main avanzó antes de publicar; vuelve a validar el commit actual.');
 if (git('status', '--porcelain')) throw new Error('Checkout sucio: no se publica.');
 if (!process.env.GITHUB_TOKEN) throw new Error('Falta GITHUB_TOKEN del workflow.');
 let publishedVersion = null;
@@ -82,7 +83,7 @@ if (tags.length === 0) {
 	const published = git('rev-list', '-n', '1', tag);
 	if (published === sha)
 		throw new Error('Este SHA ya tiene baseline. Revisa la release existente en lugar de duplicarla.');
-	const result = await semanticRelease();
+	const result = await semanticRelease({ ci: false });
 	if (!result) console.log('Sin cambios publicables; no se crean tags ni artefactos.');
 	else publishedVersion = result.nextRelease.version;
 }
@@ -92,4 +93,5 @@ writeFileSync(
 	JSON.stringify({ sha, state: publishedVersion ? 'published' : 'unchanged', version: publishedVersion }, null, 2) +
 		'\n',
 );
+console.log(publishedVersion ? `Publicado v${publishedVersion} (${sha}).` : `Sin cambios publicables (${sha}).`);
 console.log('Publicación finalizada. Despliegue NO ejecutado: el corte queda para una autorización posterior.');

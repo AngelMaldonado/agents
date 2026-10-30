@@ -1,29 +1,39 @@
 import { spawn } from 'node:child_process';
-import { mkdirSync, openSync, closeSync, rmSync, appendFileSync, readFileSync } from 'node:fs';
+import {
+	mkdirSync,
+	openSync,
+	closeSync,
+	rmSync,
+	appendFileSync,
+	mkdtempSync,
+	symlinkSync,
+	existsSync,
+	cpSync,
+} from 'node:fs';
 import { resolve } from 'node:path';
+import { tmpdir } from 'node:os';
 import { config, assertPublicationAllowed } from './config.mjs';
-import { checkRunner, startRunner } from './runner.mjs';
 const mode = process.argv[2] ?? 'run';
 if (!['run', 'plan'].includes(mode)) throw new Error('Uso: just release [plan]');
+const root = process.cwd();
 mkdirSync('.release', { recursive: true });
 const logfile = resolve('.release', `${new Date().toISOString().replaceAll(':', '-')}.log`);
 const privateValues = Object.entries(process.env)
 	.filter(([k, v]) => /TOKEN|SECRET|PASSWORD|(?:PRIVATE|MASTER|API|KOMODO)_KEY/.test(k) && v && v.length >= 8)
 	.map(([, v]) => v);
-const clean = (value) => privateValues.reduce((text, v) => text.split(v).join('[REDACTED]'), String(value));
+const clean = (value) => privateValues.reduce((text, secret) => text.split(secret).join('[REDACTED]'), String(value));
 const emit = (text) => {
 	const safe = clean(text);
 	process.stdout.write(safe);
 	appendFileSync(logfile, safe, { mode: 0o600 });
 };
-async function command(bin, args, capture = false) {
+async function command(bin, args, capture = false, options = {}) {
 	return new Promise((accept, reject) => {
-		const child = spawn(bin, args, { stdio: ['inherit', 'pipe', 'pipe'], timeout: 75 * 60_000 });
+		const child = spawn(bin, args, { stdio: ['inherit', 'pipe', 'pipe'], timeout: 75 * 60_000, ...options });
 		let out = '',
 			err = '',
 			pendingOut = '',
 			pendingErr = '';
-		// Buffer complete lines so a secret split across pipe chunks is still redacted.
 		const lines = (text) => {
 			const end = text.lastIndexOf('\n');
 			if (end < 0) return text;
@@ -48,49 +58,51 @@ async function command(bin, args, capture = false) {
 				? accept(out.trim())
 				: reject(
 						new Error(
-							code === null && child.killed
-								? `Timeout de ${bin}; revisa operaciones remotas antes de reintentar, pueden seguir activas.`
-								: `${bin} terminó con código ${code}. ${capture ? clean(err) : ''}`,
+							clean(
+								`${bin}: ${code === null && child.killed ? 'timeout; una operación remota puede continuar' : `código ${code}`}. ${capture ? err : ''}`,
+							),
 						),
 					);
 		});
 	});
 }
-let fd, lock, runner;
-let dispatched = false,
-	workflowComplete = false;
+let fd, lock, work;
 try {
-	emit(`Agents release · target ${config.platform} · registry ${config.registry}\nLogs: ${logfile}\n`);
+	emit(`Agents release · ${config.platform} · logs ${logfile}\n`);
 	if (mode === 'plan') {
-		emit(`[PLAN] publicationEnabled=${config.publicationEnabled}; deploymentEnabled=${config.deploymentEnabled}\n`);
 		emit(
-			'Preflight → calidad → push wip → PR/checks → confirmación merge → workflow main → build/firma/verificación Komodo → GitHub prerelease.\n',
+			`[PLAN] publicationEnabled=${config.publicationEnabled}; deploymentEnabled=${config.deploymentEnabled}\nCalidad → PR/checks → merge sin prompt → CI main → dos Repos Komodo (build/sign/verify) → GitHub prerelease.\nNo se ejecutan operaciones remotas. No hay runner ni servidor Git temporal.\n`,
 		);
-		emit('No se ejecutan comandos remotos, publicación, despliegue, redirección ni migración.\n');
 	} else {
-		// This gate precedes even git push or PR creation. No env variable can bypass it.
 		assertPublicationAllowed();
-		const common = await command('git', ['rev-parse', '--git-common-dir'], true);
-		lock = resolve(common, 'agents-release.lock');
+		lock = resolve(await command('git', ['rev-parse', '--git-common-dir'], true), 'agents-release.lock');
 		fd = openSync(lock, 'wx', 0o600);
 		if (await command('git', ['status', '--porcelain'], true))
-			throw new Error('Hay cambios sin commit; no se publican ni se corrigen automáticamente.');
+			throw new Error('Hay cambios sin commit; no se corrigen ni confirman automáticamente.');
 		if ((await command('git', ['branch', '--show-current'], true)) !== config.workBranch)
 			throw new Error('Ejecuta desde wip.');
 		await command('gh', ['auth', 'status']);
-		const enabled = await command(
-			'gh',
-			['variable', 'get', 'AGENTS_RELEASE_ENABLED', '--repo', config.repository],
-			true,
-		);
-		if (enabled !== 'true') throw new Error('Workflow de release deshabilitado en GitHub. No se hará push ni merge.');
-		checkRunner(config);
-		emit('[1/5] Calidad local\n');
-		for (const args of [['sanitize', 'history'], ['format', 'check'], ['lint'], ['check']]) await command('just', args);
-		emit('[2/5] Publicar wip y abrir/reutilizar PR\n');
-		await command('git', ['push', '-u', 'origin', config.workBranch]);
-		let prs = JSON.parse(
+		if (
+			(await command('gh', ['variable', 'get', 'AGENTS_RELEASE_ENABLED', '--repo', config.repository], true)) !== 'true'
+		)
+			throw new Error('Publicación bloqueada en GitHub.');
+		// Validate credentials before even pushing/merging; only the scoped API credential leaves 1Password.
+		const item = JSON.parse(
 			await command(
+				'op',
+				['item', 'get', config.komodo.credentialsItem, '--vault', config.komodo.credentialsVault, '--format=json'],
+				true,
+			),
+		);
+		const fields = Object.fromEntries(item.fields.map((field) => [field.label, field.value]));
+		if (!fields.key || !fields.secret) throw new Error('Faltan key/secret de API Komodo en 1Password.');
+		privateValues.push(fields.key, fields.secret);
+		const env = { ...process.env, AGENTS_RELEASE_KOMODO_KEY: fields.key, AGENTS_RELEASE_KOMODO_SECRET: fields.secret };
+		// No sandbox image builds, signing keys, SSH sessions or custom runners on this Mac.
+		for (const args of [['sanitize', 'history'], ['format', 'check'], ['lint'], ['check']]) await command('just', args);
+		await command('git', ['push', '-u', 'origin', config.workBranch]);
+		const list = () =>
+			command(
 				'gh',
 				[
 					'pr',
@@ -107,9 +119,9 @@ try {
 					'number,url',
 				],
 				true,
-			),
-		);
-		if (prs.length === 0) {
+			).then(JSON.parse);
+		let prs = await list();
+		if (!prs.length) {
 			await command('gh', [
 				'pr',
 				'create',
@@ -121,30 +133,11 @@ try {
 				config.releaseBranch,
 				'--fill-first',
 			]);
-			prs = JSON.parse(
-				await command(
-					'gh',
-					[
-						'pr',
-						'list',
-						'--repo',
-						config.repository,
-						'--head',
-						config.workBranch,
-						'--base',
-						config.releaseBranch,
-						'--state',
-						'open',
-						'--json',
-						'number,url',
-					],
-					true,
-				),
-			);
+			prs = await list();
 		}
-		if (prs.length !== 1) throw new Error('No hay una PR inequívoca para wip → main.');
+		if (prs.length !== 1) throw new Error('No hay una PR inequívoca.');
 		const pr = prs[0];
-		emit(`${pr.url}\n[3/5] Esperar checks obligatorios\n`);
+		emit(`PR ${pr.url}\n`);
 		await command('gh', [
 			'pr',
 			'checks',
@@ -160,17 +153,8 @@ try {
 			['pr', 'view', String(pr.number), '--repo', config.repository, '--json', 'headRefOid', '--jq', '.headRefOid'],
 			true,
 		);
-		if (!process.stdin.isTTY) throw new Error('Merge requiere confirmación interactiva. No se omiten protecciones.');
-		const { createInterface } = await import('node:readline/promises');
-		const rl = createInterface({ input: process.stdin, output: process.stdout });
-		let answer;
-		try {
-			answer = await rl.question(`¿Integrar PR #${pr.number} (${head}) y publicar? Escribe PUBLICAR: `);
-		} finally {
-			rl.close();
-		}
-		if (answer !== 'PUBLICAR') throw new Error('Cancelado por la persona antes del merge.');
-		emit('[4/5] Merge protegido\n');
+		// Invoking just release is the authorization. There is deliberately no interactive confirmation.
+		emit(`Merge protegido del SHA ${head}; sin prompt interactivo.\n`);
 		await command('gh', [
 			'pr',
 			'merge',
@@ -196,125 +180,42 @@ try {
 			],
 			true,
 		);
-		// The first merge introduces this workflow; GitHub may take a moment to index it.
-		let workflowReady = false;
-		for (let attempt = 0; attempt < 15; attempt++) {
-			try {
-				const workflow = JSON.parse(
-					await command('gh', ['api', `repos/${config.repository}/actions/workflows/release.yml`], true),
-				);
-				if (workflow.state !== 'active') throw new Error('Workflow no activo.');
-				workflowReady = true;
-				break;
-			} catch {
-				await new Promise((r) => setTimeout(r, 2000));
-			}
-		}
-		if (!workflowReady)
-			throw new Error('Merge realizado, pero GitHub aún no tiene el workflow de release activo. No se publica.');
-		runner = startRunner(config);
-		emit(`[5/5] Runner efímero ${runner.name}; release manual del SHA ${sha}\n`);
-		dispatched = true; // A transport failure after this point may still have dispatched the job.
-		await command('gh', [
-			'workflow',
-			'run',
-			'release.yml',
-			'--repo',
-			config.repository,
-			'--ref',
-			config.releaseBranch,
-			'-f',
-			`sha=${sha}`,
-			'-f',
-			`runner_label=${runner.name}`,
-			'-f',
-			`git_provider=${runner.source}`,
-		]);
-		let run;
-		for (let i = 0; i < 30; i++) {
-			const runs = JSON.parse(
-				await command(
-					'gh',
-					[
-						'run',
-						'list',
-						'--repo',
-						config.repository,
-						'--workflow',
-						'release.yml',
-						'--commit',
-						sha,
-						'--json',
-						'databaseId,url,displayTitle',
-					],
-					true,
-				),
-			);
-			const matches = runs.filter((candidate) => candidate.displayTitle.endsWith(runner.name));
-			if (matches.length > 1) throw new Error('Múltiples workflows para este intento; revisión manual necesaria.');
-			if (matches.length === 1) {
-				run = matches[0];
-				break;
-			}
-			await new Promise((r) => setTimeout(r, 2000));
-		}
-		if (!run) throw new Error('Merge realizado pero workflow no apareció. No se publica localmente como fallback.');
-		emit(`${run.url}\n`);
-		try {
-			await command('gh', ['run', 'watch', String(run.databaseId), '--repo', config.repository, '--exit-status']);
-		} catch (error) {
-			await command('gh', ['run', 'view', String(run.databaseId), '--repo', config.repository, '--log-failed']);
-			throw error;
-		}
-		workflowComplete = true;
-		await command('gh', ['run', 'view', String(run.databaseId), '--repo', config.repository, '--log']);
-		const jobs = JSON.parse(
-			await command('gh', ['run', 'view', String(run.databaseId), '--repo', config.repository, '--json', 'jobs'], true),
-		).jobs;
-		if (jobs.length !== 1 || jobs[0].conclusion !== 'success')
-			throw new Error('El job de publicación no terminó correctamente (posible skip).');
-		const resultDir = resolve('.release', `result-${run.databaseId}-${Date.now()}`);
-		await command('gh', [
-			'run',
-			'download',
-			String(run.databaseId),
-			'--repo',
-			config.repository,
-			'--name',
-			`release-record-${sha}`,
-			'--dir',
-			resultDir,
-		]);
-		const outcome = JSON.parse(readFileSync(resolve(resultDir, 'outcome.json'), 'utf8'));
-		if (outcome.sha !== sha || !['published', 'unchanged'].includes(outcome.state))
-			throw new Error('Resultado de publicación ausente o no coincide con el SHA aprobado.');
-		emit(
-			outcome.state === 'published'
-				? `Publicado v${outcome.version} (${sha}).\n`
-				: `Sin cambios publicables (${sha}); no se creó una release.\n`,
-		);
-		emit('No se ejecutó despliegue ni migración.\n');
+		if (!/^[a-f0-9]{40}$/.test(sha)) throw new Error('SHA integrado inválido.');
+		const token = await command('gh', ['auth', 'token'], true);
+		privateValues.push(token);
+		Object.assign(env, {
+			GH_TOKEN: token,
+			GITHUB_TOKEN: token,
+			GITHUB_REPOSITORY: config.repository,
+			GITHUB_SHA: sha,
+			AGENTS_RELEASE_APPROVED_SHA: sha,
+		});
+		await command('bun', ['scripts/ci/wait-checks.mjs'], false, { env });
+		work = mkdtempSync(resolve(tmpdir(), 'agents-publish-'));
+		await command('git', ['clone', '--no-hardlinks', '--no-checkout', root, work]);
+		const git = (args) => command('git', args, false, { cwd: work });
+		await git(['remote', 'set-url', 'origin', `https://github.com/${config.repository}.git`]);
+		await git(['fetch', 'origin', config.releaseBranch, '--tags']);
+		if (await command('git', ['ls-remote', 'origin', 'refs/notes/semantic-release'], true, { cwd: work }))
+			await git(['fetch', 'origin', 'refs/notes/semantic-release:refs/notes/semantic-release']);
+		await git(['checkout', '-B', config.releaseBranch, sha]);
+		symlinkSync(resolve(root, 'node_modules'), resolve(work, 'node_modules'), 'dir');
+		await command('node', [resolve(work, 'scripts/release/publish.mjs')], false, { cwd: work, env });
 	}
 } catch (error) {
 	emit(
-		`\nERROR: ${error.message}\nSe detiene el release. Un merge/artefacto ya publicado no se revierte automáticamente.\n`,
+		`ERROR: ${error.message}\nSe detiene. Merge/artefactos publicados no se revierten. Revisa GitHub y los IDs Komodo antes de reintentar.\n`,
 	);
 	process.exitCode = 1;
 } finally {
-	if (runner) {
-		if (!dispatched || workflowComplete) {
-			try {
-				runner.stop();
-				emit(`Runner efímero ${runner.name} retirado.\n`);
-			} catch (error) {
-				emit(`ERROR de limpieza: ${error.message}\n`);
-				process.exitCode = 1;
-			}
-		} else {
-			emit(
-				`No destruyo ${runner.name}: el workflow puede seguir publicando. Revisa GitHub antes de reintentar; el contenedor expira como máximo en 75 minutos.\n`,
-			);
+	if (work) {
+		const records = resolve(work, '.release');
+		if (existsSync(records)) {
+			const target = resolve(root, '.release', `result-${Date.now()}`);
+			cpSync(records, target, { recursive: true });
+			emit(`Registros: ${target}\n`);
 		}
+		rmSync(work, { recursive: true, force: true });
 	}
 	if (fd !== undefined) {
 		closeSync(fd);

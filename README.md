@@ -9,7 +9,7 @@ Código: [AngelMaldonado/agents](https://github.com/AngelMaldonado/agents) (priv
 - `bun install --frozen-lockfile`: dependencias fijadas y hook Lefthook (en CI, `LEFTHOOK=0`). No requiere instalaciones globales de ESLint/Prettier/Lefthook.
 - `just sanitize staged|history`, `just format check|write`, `just lint`, `just check`. El hook sólo comprueba: no reescribe ni hace staging.
 - `just ci`: exige PostgreSQL `_test` aislado mediante `AGENTS_TEST_DATABASE_URL` y `AGENTS_DATABASE_URL` idénticas. Nunca apuntar a una base con usuarios.
-- `just release plan`: explica sin operar. `just release`: calidad → PR/checks → confirmación `PUBLICAR` → publicación manual por Komodo y runner efímero. Nunca despliega ni migra; la preparación no ejecuta el comando de publicación.
+- `just release plan`: explica sin operar. `just release`: calidad → PR/checks → merge protegido sin confirmación interactiva → dos ejecutores Komodo (`agents-app`, `agents-sandbox`) → prerelease GitHub. Sin runner ni servidor Git temporal. Nunca despliega ni migra; la preparación no ejecuta el comando de publicación.
 - [Operación, activación, firma en Komodo y recuperación](release/README.md). Builds app+sandbox `linux/amd64`; clave privada Cosign sólo en Komodo. Primer baseline previsto: `v0.0.1-beta`, todavía NO publicado.
 - WhatsApp está fuera del producto beta por un feature gate compartido. Se conserva código/migración para después; no se alteran los servicios ni los datos actuales.
 
@@ -155,7 +155,7 @@ Código: `server/src/designs.ts`, `design-format.ts`, `harnesses.ts`, migracione
 
 ## Producción
 
-- Stack `agents` de Komodo en reko-3; imágenes fijadas al commit (`IMAGE_TAG`), sin auto-update. `just deploy image` publica el server y `just deploy sandbox` construye el sandbox en reko-3; después se actualiza el compose y el tag del stack y se despliega desde Komodo.
+- Stack actual `agents` de Komodo en reko-3, sin auto-update y conservado durante la preparación. `just release` sólo publica artefactos por SHA/digest; los antiguos `just deploy image|sandbox|whatsapp` están retirados y fallan sin operar. El despliegue/corte se autoriza y prepara aparte.
 - Datos: `/srv/agents/{data,cliproxy,postgres}`; respaldos: `/srv/agents/backups/agents-AAAA-MM-DD.dump`. El primer `pg_dump` espera a las tablas de la app y DBOS para no respaldar una base recién creada todavía vacía; luego corre cada 24 h y conserva 14 días.
 - Secretos y PIN de administrador: **1Password, bóveda Cuby, ítem `agents`**. No perder `AGENTS_MASTER_KEY`: cifra las keys y el vault de la app. `.env.production` contiene el acceso operativo con prefijo `AGENTS_PROD_`, modo 600 e ignorado por git; nunca se copia al entorno de la app.
 - El POC Buyer nunca se desplegó en producción: no había `/srv/buyer` ni stack `buyer`, por lo que no existe un archivo de datos del POC que restaurar. No se migran las keys ni los datos de dev; cada persona registra su credencial GPT en Ajustes.
