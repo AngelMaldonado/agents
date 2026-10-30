@@ -33,7 +33,7 @@ Estos ejecutores tienen Docker socket y ejecutan código aprobado con autoridad 
 
 ## Credenciales
 
-- API Komodo: cuenta de servicio `agents-release`, sólo Write sobre los dos Repos y Read de metadatos necesarios. El Mac carga `key` y `secret` desde **1Password / Cuby / Agents Release**, por stdin/memoria, sin archivos locales ni valores en argv. No es el token GitHub ni la clave Cosign.
+- API Komodo: cuenta de servicio `agents-release`; objetivo final de permisos: sólo Write sobre los dos Repos y Read de metadatos necesarios. Durante la transición aún conserva acceso a los cuatro recursos previos: el intento de revocarlo se detuvo al agotar la autorización de 1Password, antes de enviar cambios. El Mac carga `key` y `secret` desde **1Password / Cuby / Agents Release**, por stdin/memoria, sin archivos locales ni valores en argv. No es el token GitHub ni la clave Cosign.
 - GitHub del Mac: autenticación existente de `gh`; se usa para PR, merge, checks, tags y release.
 - GitHub de Komodo: cuenta Git provider existente `AngelMaldonado`, autorizada expresamente por Angel. No se exporta su token al Mac.
 - Cosign y registry: referencias `[[COSIGN_PRIVATE_KEY_B64]]`, `[[COSIGN_PASSWORD]]`, `[[REGISTRY_USERNAME]]`, `[[REGISTRY_PASSWORD]]` resueltas sólo en Komodo.
@@ -50,7 +50,7 @@ El manifest incluye referencias por digest, versión, SHA, plataforma y hash/lis
 
 Publicación **bloqueada** tanto en config versionada como en variable GitHub mientras se valida la simplificación. Despliegue siempre false. Se configuraron los dos Repos con la cuenta solicitada. El primer clonado real de `agents-app` recibió **GitHub 403**, mensaje `Write access to repository not granted`; el paso sólo requiere lectura. Revisar selección del repo y acceso al contenido en la credencial agregada a Komodo. No se ha declarado funcional esa credencial ni aprobado un ensayo real del flujo nuevo.
 
-Los cuatro recursos anteriores permanecen inactivos hasta validar el reemplazo; se retirarán después, sin borrar imágenes. Se retiran del código el runner, snapshot HTTP, workflow de publicación y ejecutores sign/verify separados. Los ensayos nuevos usarán sólo namespaces `agents-release-probe*`, jamás tag/release de producto.
+Los cuatro recursos anteriores permanecen inactivos hasta validar el reemplazo; se retirarán después, sin borrar imágenes. La revocación de sus permisos y la eliminación de los secretos API obsoletos del entorno GitHub requieren completar la autorización de 1Password; el primer intento no ejecutó cambios. Se retiran del código el runner, snapshot HTTP, workflow de publicación y ejecutores sign/verify separados. Los ensayos nuevos usarán sólo namespaces `agents-release-probe*`, jamás tag/release de producto.
 
 Evidencia histórica de la arquitectura anterior: [ensayo real app+sandbox build/sign/verify](https://github.com/AngelMaldonado/agents/actions/runs/41119238161) y [CI 75ea2f8](https://github.com/AngelMaldonado/agents/actions/runs/41121510012). No sustituyen la validación del flujo nuevo.
 
