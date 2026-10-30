@@ -43,7 +43,7 @@ if (tags.length === 0) {
 		if (!response.ok) throw new Error(`GitHub ${path}: HTTP ${response.status}; revisa el estado antes de reintentar.`);
 		return response.json();
 	};
-	// Bootstrap release metadata is written to git notes before creating the remote release.
+	// semantic-release reads notes on commits; do NOT attach the note to the annotated tag object.
 	git('-c', 'user.name=agents-release', '-c', 'user.email=release@cuby.local', 'tag', '-a', tag, sha, '-m', tag);
 	git(
 		'-c',
@@ -55,7 +55,7 @@ if (tags.length === 0) {
 		'add',
 		'-m',
 		'{"channels":["beta"]}',
-		tag,
+		sha,
 	);
 	git('push', 'origin', tag, 'refs/notes/semantic-release');
 	const release = await api('releases', {

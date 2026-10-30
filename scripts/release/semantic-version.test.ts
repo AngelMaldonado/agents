@@ -32,8 +32,9 @@ test('semantic-release accepts main beta + dormant stable and the exact unnumber
 		git('branch', 'stable');
 		git('remote', 'add', 'origin', remote);
 		git('push', '--all', 'origin');
-		git('tag', 'v0.0.1-beta');
-		git('notes', '--ref=semantic-release', 'add', '-m', '{"channels":["beta"]}', 'v0.0.1-beta');
+		git('tag', '-a', 'v0.0.1-beta', '-m', 'v0.0.1-beta');
+		expect(git('cat-file', '-t', 'v0.0.1-beta')).toBe('tag');
+		git('notes', '--ref=semantic-release', 'add', '-m', '{"channels":["beta"]}', git('rev-parse', 'v0.0.1-beta^{}'));
 		git('push', 'origin', 'v0.0.1-beta', 'refs/notes/semantic-release');
 		git('commit', '--allow-empty', '-m', 'fix: next beta');
 		git('push', 'origin', 'main');
