@@ -3,6 +3,7 @@ import { config, assertPublicationAllowed, assertDeploymentAllowed } from './con
 import { assertSha, assertVersion, requireDigest } from './version.mjs';
 import { Komodo } from './komodo.mjs';
 import { manifestFrom, prepareArtifacts } from './artifacts.mjs';
+import { schemaInfo } from './schema.mjs';
 const sha = 'a'.repeat(40),
 	digest = `sha256:${'b'.repeat(64)}`;
 const enabled = { ...config, publicationEnabled: true };
@@ -10,6 +11,7 @@ const manifest = {
 	version: '0.0.1-beta',
 	sha,
 	platform: 'linux/amd64',
+	schema: schemaInfo(),
 	images: Object.fromEntries(
 		['agents', 'agents-sandbox'].map((n) => [n, { digest, ref: `${config.registry}/${n}@${digest}`, verified: true }]),
 	),
@@ -32,7 +34,13 @@ test('versions, full commits and digests are validated without interpolating she
 });
 test('manifest requires exact SHA/version/platform, both immutable refs and successful verification', () => {
 	expect(manifestFrom(record(), '0.0.1-beta', sha)).toEqual(manifest);
-	for (const patch of [{ sha: 'c'.repeat(40) }, { version: '0.1.0-beta' }, { platform: 'linux/arm64' }, { images: {} }])
+	for (const patch of [
+		{ sha: 'c'.repeat(40) },
+		{ version: '0.1.0-beta' },
+		{ platform: 'linux/arm64' },
+		{ images: {} },
+		{ schema: { files: [], sha256: 'c'.repeat(64) } },
+	])
 		expect(() => manifestFrom(record({ ...manifest, ...patch }), '0.0.1-beta', sha)).toThrow();
 	const bad = structuredClone(manifest);
 	bad.images.agents.verified = false;

@@ -1,5 +1,5 @@
 import { spawn } from 'node:child_process';
-import { mkdirSync, openSync, closeSync, rmSync, appendFileSync } from 'node:fs';
+import { mkdirSync, openSync, closeSync, rmSync, appendFileSync, readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { config, assertPublicationAllowed } from './config.mjs';
 const mode = process.argv[2] ?? 'run';
@@ -186,7 +186,18 @@ try {
 			],
 			true,
 		);
-		emit(`[5/5] Seguir release del SHA ${sha}\n`);
+		emit(`[5/5] Disparar y seguir release manual del SHA ${sha}\n`);
+		await command('gh', [
+			'workflow',
+			'run',
+			'release.yml',
+			'--repo',
+			config.repository,
+			'--ref',
+			config.releaseBranch,
+			'-f',
+			`sha=${sha}`,
+		]);
 		let run;
 		for (let i = 0; i < 30; i++) {
 			const runs = JSON.parse(
@@ -223,7 +234,32 @@ try {
 			throw error;
 		}
 		await command('gh', ['run', 'view', String(run.databaseId), '--repo', config.repository, '--log']);
-		emit('Release completada. No se ejecutó despliegue ni migración.\n');
+		const jobs = JSON.parse(
+			await command('gh', ['run', 'view', String(run.databaseId), '--repo', config.repository, '--json', 'jobs'], true),
+		).jobs;
+		if (jobs.length !== 1 || jobs[0].conclusion !== 'success')
+			throw new Error('El job de publicación no terminó correctamente (posible skip).');
+		const resultDir = resolve('.release', `result-${run.databaseId}-${Date.now()}`);
+		await command('gh', [
+			'run',
+			'download',
+			String(run.databaseId),
+			'--repo',
+			config.repository,
+			'--name',
+			`release-record-${sha}`,
+			'--dir',
+			resultDir,
+		]);
+		const outcome = JSON.parse(readFileSync(resolve(resultDir, 'outcome.json'), 'utf8'));
+		if (outcome.sha !== sha || !['published', 'unchanged'].includes(outcome.state))
+			throw new Error('Resultado de publicación ausente o no coincide con el SHA aprobado.');
+		emit(
+			outcome.state === 'published'
+				? `Publicado v${outcome.version} (${sha}).\n`
+				: `Sin cambios publicables (${sha}); no se creó una release.\n`,
+		);
+		emit('No se ejecutó despliegue ni migración.\n');
 	}
 } catch (error) {
 	emit(

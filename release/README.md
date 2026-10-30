@@ -1,6 +1,6 @@
 # Release beta: configuración preparada, publicación y despliegue bloqueados
 
-Este setup NO altera los entornos con usuarios. No despliega, migra, copia bases, cambia dominios ni crea `v0.0.1-beta`. Los dos bloqueos de `config.json` están en `false`; GitHub requiere además `AGENTS_RELEASE_ENABLED=true` y aprobación del entorno `agents-release`.
+Este setup NO altera los entornos con usuarios. No despliega, migra, copia bases, cambia dominios ni crea `v0.0.1-beta`. Los dos bloqueos de `config.json` están en `false`; GitHub requiere además `AGENTS_RELEASE_ENABLED=true` y un disparo manual desde `just release` tras escribir `PUBLICAR`. Un push a `main` NO publica.
 
 ## Flujo único
 
@@ -12,7 +12,7 @@ wip → PR → Required checks → confirmación PUBLICAR → squash protegido a
                                                      ↓
                                       checks del SHA integrado
                                                      ↓
-                              runner confiable, privado, sólo main
+                              disparo manual → runner privado, sólo main
                                                      ↓
                          Komodo build app + sandbox, linux/amd64
                                                      ↓
@@ -33,20 +33,21 @@ wip → PR → Required checks → confirmación PUBLICAR → squash protegido a
 
 1. Autorizar publicar el baseline en una PR que cambie `publicationEnabled`; mantener `deploymentEnabled=false` hasta acordar el corte. Un cambio de variable de entorno no puede saltar el bloqueo versionado.
 2. Provisionar runner Linux x64 exclusivo con etiqueta `agents-release`, Node/Bun fijados, acceso privado a Komodo y checkout independiente. No usar los checkouts que sirven a los usuarios. No ejecutar PRs ni código externo en este runner. Los checks de PR usan runners efímeros de GitHub.
-3. Crear entorno GitHub `agents-release` con revisión de Angel y sin autoaprobación. Clave + secreto de API de Komodo de mínimo privilegio se guardan allí como `AGENTS_RELEASE_KOMODO_KEY` y `AGENTS_RELEASE_KOMODO_SECRET`. Cosign privado sigue sólo en Komodo; nunca en GitHub, Mac, build args, imágenes o logs.
+3. El entorno GitHub `agents-release` admite únicamente `main`. El plan actual del repo privado NO permite required reviewers (API devolvió 422); no se finge esa protección. La aprobación es el disparo manual autorizado de `just release`, no un job automático de push. Clave + secreto de API de Komodo de mínimo privilegio se guardan allí como `AGENTS_RELEASE_KOMODO_KEY` y `AGENTS_RELEASE_KOMODO_SECRET`. Cosign privado sigue sólo en Komodo; nunca en GitHub, Mac, build args, imágenes o logs.
 4. Crear recursos NUEVOS `agents-release-app`, `agents-release-sandbox`, `agents-release-sign`, `agents-release-verify`. No reutilizar un build que despliegue automáticamente el stack actual. Desactivar webhooks, auto-incremento, `latest`, tags flotantes mayor/menor y cualquier auto-redeploy. El builder debe ser el Server de reko-3 con Buildx, plataforma `linux/amd64`, repo privado y credenciales del registry ya autorizadas.
 5. Build app usa `Dockerfile`, sandbox usa `sandbox/Dockerfile`, contexto `sandbox/`. Imágenes: `registry.cubytest.space/cuby/agents` y `agents-sandbox`. El coordinador fija SHA completo, desactiva incrementos y tags flotantes, y agrega labels OCI de SHA/versión. Los tags concretos emitidos por la versión instalada de Komodo deben verificarse antes de activar; no inferirlos de un SHA abreviado. Los procedimientos reciben esos tags exactos en `AGENTS_RELEASE_APP_TAG` y `AGENTS_RELEASE_SANDBOX_TAG`.
 6. Crear variables NO secretas `AGENTS_RELEASE_SHA` y `AGENTS_RELEASE_VERSION`; son inputs nuevos y exclusivos del release. La concurrencia global del workflow serializa todo build/firma/publicación. Ningún webhook/usuario debe disparar estas mismas procedures fuera del coordinador mientras corre un release.
 7. Los procedimientos de firma/verificación ejecutan `node scripts/release/sign-images.mjs sign|verify` desde el mismo SHA en reko-3 con `DOCKER_CONTEXT` explícito. Inyectar allí los dos inputs anteriores, tags resueltos del build y, sólo en firma, la referencia `COSIGN_KEY_REF` y el material ya existente en Komodo. Se admite `env://NOMBRE_EXISTENTE`, archivo privado del executor o KMS; no pegar material privado en el comando. El procedimiento de verificación no necesita clave privada. No crear/copiar otra clave por comodidad.
 8. Obtener únicamente la clave PÚBLICA, fijar su SHA-256 en `cosignPublicKeySha256` y disponer de `COSIGN_PUBLIC_KEY_FILE` en el executor. Usar Cosign `3.1.4` (comprobar compatibilidad con el registry actual antes de habilitar). Autorizar `transparencyLog=true|false`: publicar en Rekor expone metadatos; si se elige `false`, la verificación mantiene clave/claims/digest pero omite deliberadamente Rekor. No se decide por defecto.
-9. Verificador exige una sola plataforma runtime amd64 (permite atestaciones), labels del SHA/versión, firma con la clave fijada y digest coincidente. Imprime exactamente un marcador `AGENTS_RELEASE_MANIFEST {...}`. El coordinador rechaza markers ausentes, repetidos, versiones/SHAs distintos o refs mutables. Debe probarse una firma auténtica con los recursos reales antes de activar la publicación; las pruebas con mocks no la sustituyen.
-10. Habilitar `AGENTS_RELEASE_ENABLED=true` sólo después del ensayo y autorización. Primer `just release` abre/reutiliza PR, espera checks, pide PUBLICAR, integra y sigue workflow/logs. Un fallo detiene los pasos siguientes y deja visible el estado parcial.
+9. Verificador exige una sola plataforma runtime amd64 (permite atestaciones), labels del SHA/versión, firma con la clave fijada y digest coincidente. Imprime exactamente un marcador `AGENTS_RELEASE_MANIFEST {...}`. El manifiesto incluye la lista y SHA-256 del conjunto de migraciones que trae el commit, no el estado de una base viva; no se conecta a PostgreSQL para calcularlo. El coordinador rechaza markers ausentes, repetidos, versiones/SHAs/migraciones distintos o refs mutables. Debe probarse una firma auténtica con los recursos reales antes de activar la publicación; las pruebas con mocks no la sustituyen.
+10. Habilitar `AGENTS_RELEASE_ENABLED=true` sólo después del ensayo y autorización. Primer `just release` abre/reutiliza PR, espera checks, pide PUBLICAR, integra dispara el workflow manual con ese SHA y sigue sus logs. Un fallo detiene los pasos siguientes y deja visible el estado parcial.
 
 ## Qué NO hace el comando
 
 - No instala herramientas del sistema, usa sudo, hace commits ni modifica archivos sin commit.
 - No conecta al PostgreSQL actual ni a cuentas/modelos de usuarios, no modifica la pila Komodo `agents`, su `.env` ni sus secretos.
 - No cambia `agents-dev.cubytest.space`, `agents.cubytest.space`, Traefik, datos, volúmenes ni imágenes ya fijadas por agentes.
+- Los antiguos `just deploy image|sandbox|whatsapp` quedan retirados: fallan sin construir/publicar, para no saltarse el flujo único.
 - No configura un auto-deploy escondido. `deploymentEnabled` existe como segunda barrera para la fase futura, pero esta versión del coordinador no incluye una operación DeployStack.
 - WhatsApp queda fuera del producto beta por un feature gate estático compartido API/web/prompt. Rutas devuelven 404 y operaciones internas rechazan el canal aun con variables antiguas. Se conserva el código y `009_whatsapp.sql`; el overlay futuro no incluye puente/secretos WhatsApp. No se modifica el compose de los entornos existentes.
 

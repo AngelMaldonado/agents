@@ -246,6 +246,8 @@ try {
 				AGENTS_INSTANCE: instance,
 				AGENTS_MASTER_KEY: masterKey,
 				AGENTS_PROXY_KEY: 'fixture-internal-key-not-a-secret',
+				AGENTS_WHATSAPP_URL: 'http://127.0.0.1:9',
+				AGENTS_WHATSAPP_SECRET: 'fixture-whatsapp-disabled',
 				AGENTS_ADMIN_PIN: '1111',
 				AGENTS_COOKIE_SECURE: '0',
 				AGENTS_CLIPROXY_CONFIG: join(dir, 'proxy.yaml'),
@@ -271,6 +273,24 @@ try {
 		30000,
 	);
 	await api('/join', { name: 'Contract smoke fixture' });
+	assert.equal(((await (await fetch(`http://127.0.0.1:${port}/healthz`)).json()) as any).ready, true);
+	for (const [path, method] of [
+		['/api/admin/whatsapp', 'GET'],
+		['/api/agents/999/channels/whatsapp', 'PUT'],
+		['/internal/whatsapp/inbound', 'POST'],
+	]) {
+		assert.equal(
+			(
+				await fetch(`http://127.0.0.1:${port}${path}`, {
+					method,
+					headers: { cookie, 'content-type': 'application/json' },
+					body: method === 'GET' ? undefined : '{}',
+				})
+			).status,
+			404,
+		);
+	}
+	console.log('PASS baseline health and WhatsApp API/internal routes disabled even with bridge credentials');
 	await api('/proxy', { url: fake.url.origin, key: 'fixture-key-not-a-secret' }, 'PUT');
 	let { design } = await api('/designs', { model: 'openai/gpt-6-sol' });
 	({ design } = await api(`/designs/${design.id}/messages`, { text: 'Comparar fuentes.', version: design.version }));
@@ -339,6 +359,12 @@ try {
 	const agentId = approvals[0].design.applied_agent_id;
 	assert.equal(approvals[1].design.applied_agent_id, agentId);
 	assert.equal((await api('/agents')).agents.length, 1);
+	assert.deepEqual((await api(`/agents/${agentId}/channels`)).whatsapp, {
+		available: false,
+		phone: null,
+		enabled: false,
+		contacts: [],
+	});
 	console.log(
 		'PASS real isolated pi attestation and concurrent approval; immutable tested image survives an admin tag change',
 	);

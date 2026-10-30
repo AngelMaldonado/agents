@@ -11,9 +11,12 @@ assertPublicationAllowed();
 if (git('branch', '--show-current') !== config.releaseBranch)
 	throw new Error('Publicación sólo desde main; no se admite un checkout de trabajo.');
 const sha = assertSha(git('rev-parse', 'HEAD'));
+if (process.env.GITHUB_EVENT_NAME !== 'workflow_dispatch' || process.env.AGENTS_RELEASE_APPROVED_SHA !== sha)
+	throw new Error('Publicación requiere disparo manual y el SHA aprobado por la persona.');
 if (sha !== process.env.GITHUB_SHA) throw new Error('El runner no está en el SHA integrado que disparó el workflow.');
 if (git('status', '--porcelain')) throw new Error('Checkout sucio: no se publica.');
 if (!process.env.GITHUB_TOKEN) throw new Error('Falta GITHUB_TOKEN del workflow.');
+let publishedVersion = null;
 const tag = `v${config.baseline}`;
 const tags = git('tag', '--list', 'v*').split('\n').filter(Boolean);
 if (tags.length === 0) {
@@ -72,6 +75,7 @@ if (tags.length === 0) {
 		throw new Error(
 			`Baseline publicado pero manifiesto no adjuntado: HTTP ${upload.status}. No repitas bootstrap sin revisar.`,
 		);
+	publishedVersion = config.baseline;
 } else {
 	if (!tags.includes(tag))
 		throw new Error(`Existe historial sin ${tag}. Requiere conciliación manual, no se inventa otro baseline.`);
@@ -80,5 +84,12 @@ if (tags.length === 0) {
 		throw new Error('Este SHA ya tiene baseline. Revisa la release existente en lugar de duplicarla.');
 	const result = await semanticRelease();
 	if (!result) console.log('Sin cambios publicables; no se crean tags ni artefactos.');
+	else publishedVersion = result.nextRelease.version;
 }
+mkdirSync('.release', { recursive: true });
+writeFileSync(
+	'.release/outcome.json',
+	JSON.stringify({ sha, state: publishedVersion ? 'published' : 'unchanged', version: publishedVersion }, null, 2) +
+		'\n',
+);
 console.log('Publicación finalizada. Despliegue NO ejecutado: el corte queda para una autorización posterior.');

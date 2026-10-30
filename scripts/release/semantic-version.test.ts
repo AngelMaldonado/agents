@@ -13,7 +13,7 @@ test('semantic-release accepts main beta + dormant stable and the exact unnumber
 		execFileSync('git', args, { cwd, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] }).trim();
 	try {
 		execFileSync('git', ['init', '--initial-branch=main', cwd], { stdio: 'pipe' });
-		execFileSync('git', ['init', '--bare', remote], { stdio: 'pipe' });
+		execFileSync('git', ['init', '--bare', '--initial-branch=main', remote], { stdio: 'pipe' });
 		git('config', 'user.name', 'Fixture');
 		git('config', 'user.email', 'fixture@example.test');
 		git('commit', '--allow-empty', '-m', 'feat: initial fixture');

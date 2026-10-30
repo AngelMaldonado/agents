@@ -155,27 +155,10 @@ release mode="run":
 
 # ---- production (Komodo stack `agents` on reko-3) ----
 
-# deploy: image | sandbox | whatsapp — then redeploy the stack in Komodo with IMAGE_TAG=<commit>
+# Legacy direct publication is intentionally blocked; `just release` is the only release interface.
 deploy verb="image":
-    #!/usr/bin/env bash
-    set -euo pipefail
-    git diff --quiet HEAD || { echo "commit first: the image must match a commit" >&2; exit 1; }
-    tag=$(git rev-parse --short HEAD)
-    case "{{verb}}" in
-      image)
-        docker --context {{ctx}} buildx build --platform linux/amd64 -t registry.cubytest.space/cuby/agents:$tag -t registry.cubytest.space/cuby/agents:latest --push .
-        echo "pushed registry.cubytest.space/cuby/agents:$tag"
-        ;;
-      sandbox)
-        docker --context {{ctx}} build -t agents-sandbox:$tag -t agents-sandbox:latest sandbox/
-        echo "built agents-sandbox:$tag on {{ctx}}"
-        ;;
-      whatsapp)
-        docker --context {{ctx}} buildx build --platform linux/amd64 -t registry.cubytest.space/cuby/agents-whatsapp:$tag -t registry.cubytest.space/cuby/agents-whatsapp:latest --push whatsapp/
-        echo "pushed registry.cubytest.space/cuby/agents-whatsapp:$tag"
-        ;;
-      *) echo "unknown: just deploy {{verb}}"; exit 1 ;;
-    esac
+    @echo 'just deploy {{verb}} está retirado. Usa just release; publicación/corte requieren autorización.' >&2
+    @exit 1
 
 # prod: psql | tunnel | stop — the production database, in tmux `cuby-agents-prod` (read-only by default)
 prod action:

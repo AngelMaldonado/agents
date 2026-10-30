@@ -67,6 +67,7 @@ test('global policy distinguishes visible browsing from authorized APIs and depe
 	expect(prompt).toContain('no uses sudo');
 	expect(prompt).toContain('no pidas permiso para cada detalle de implementación');
 	expect(prompt).toContain('no supongas que puedes ejecutar comandos');
+	expect(prompt).not.toContain('WhatsApp');
 	expect(prompt).not.toContain('Nunca uses `curl`, `wget`, scripts ni APIs');
 });
 

@@ -4,6 +4,7 @@ import { readFileSync } from 'node:fs';
 import { createHash } from 'node:crypto';
 import { config, assertPublicationAllowed } from './config.mjs';
 import { assertSha, assertVersion, requireDigest } from './version.mjs';
+import { schemaInfo } from './schema.mjs';
 assertPublicationAllowed();
 const mode = process.argv[2];
 if (!['sign', 'verify'].includes(mode)) throw new Error('Uso: sign-images.mjs sign|verify');
@@ -32,6 +33,7 @@ const run = (bin, args) => {
 		throw new Error(clean(`${bin} falló (${error.status}): ${error.stdout ?? ''}${error.stderr ?? ''}`));
 	}
 };
+if (run('git', ['rev-parse', 'HEAD']) !== sha) throw new Error('El verificador no está en el SHA aprobado.');
 const docker = (...args) => run('docker', ['--context', ctx, ...args]);
 if (docker('info', '--format', '{{.Name}}') !== config.executorHost) throw new Error('El Docker Engine no es reko-3.');
 const cosignVersion = JSON.parse(run('cosign', ['version', '--json']));
@@ -109,4 +111,6 @@ for (const [name, env] of [
 	images[name] = { digest, ref, verified: true };
 }
 if (mode === 'verify')
-	console.log(`AGENTS_RELEASE_MANIFEST ${JSON.stringify({ version, sha, platform: config.platform, images })}`);
+	console.log(
+		`AGENTS_RELEASE_MANIFEST ${JSON.stringify({ version, sha, platform: config.platform, schema: schemaInfo(), images })}`,
+	);

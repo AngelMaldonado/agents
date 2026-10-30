@@ -1,5 +1,6 @@
 import { config, assertPublicationAllowed } from './config.mjs';
 import { assertSha, assertVersion, requireDigest } from './version.mjs';
+import { schemaInfo } from './schema.mjs';
 export function manifestFrom(update, version, sha, value = config) {
 	const markers = (update.logs ?? [])
 		.flatMap((log) => (log.stdout ?? '').split(/\r?\n/))
@@ -8,6 +9,12 @@ export function manifestFrom(update, version, sha, value = config) {
 	const result = JSON.parse(markers[0].slice('AGENTS_RELEASE_MANIFEST '.length));
 	if (result.version !== version || result.sha !== sha || result.platform !== value.platform)
 		throw new Error('Los artefactos no corresponden al commit, versión o arquitectura aprobados.');
+	const expectedSchema = schemaInfo();
+	if (
+		result.schema?.sha256 !== expectedSchema.sha256 ||
+		JSON.stringify(result.schema?.files) !== JSON.stringify(expectedSchema.files)
+	)
+		throw new Error('El manifiesto no corresponde al conjunto de migraciones del commit.');
 	for (const name of ['agents', 'agents-sandbox']) {
 		const image = result.images?.[name];
 		requireDigest(image?.digest);
