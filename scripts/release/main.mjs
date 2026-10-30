@@ -109,7 +109,7 @@ try {
 				config.workBranch,
 				'--base',
 				config.releaseBranch,
-				'--fill',
+				'--fill-first',
 			]);
 			prs = JSON.parse(
 				await command(
@@ -167,7 +167,7 @@ try {
 			String(pr.number),
 			'--repo',
 			config.repository,
-			'--squash',
+			'--merge',
 			'--match-head-commit',
 			head,
 		]);

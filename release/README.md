@@ -8,7 +8,7 @@ Este setup NO altera los entornos con usuarios. No despliega, migra, copia bases
 just release plan                      sólo explica, sin operaciones remotas
 just release                           falla antes de push mientras esté bloqueado
 
-wip → PR → Required checks → confirmación PUBLICAR → squash protegido a main
+wip → PR → Required checks → confirmación PUBLICAR → merge protegido a main
                                                      ↓
                                       checks del SHA integrado
                                                      ↓
@@ -25,7 +25,7 @@ wip → PR → Required checks → confirmación PUBLICAR → squash protegido a
 
 - `main`: prereleases beta. `wip`: desarrollo, nunca publica. `stable`: rama ordinaria protegida e inactiva, necesaria para semantic-release; no se publican versiones estables en esta fase.
 - `v2` se conserva congelada porque los entornos actuales pueden referenciarla. No se borra ni se cambia su configuración durante este setup. `wip` la sustituye para trabajo nuevo.
-- Primer release: bootstrap explícito `v0.0.1-beta`. Después semantic-release calcula versiones a partir de Conventional Commits, mediante el título de la PR que se integra por squash. No se inventa un `1.0.0` inicial ni se permite salir de `0.x-beta` inadvertidamente.
+- Primer release: bootstrap explícito `v0.0.1-beta`. Después semantic-release calcula versiones a partir de los Conventional Commits integrados. CI valida los commits nuevos y el título de PR. Se usa merge normal (no squash/rebase) para conservar la ascendencia de `wip`, que es una rama continua; no se reescribe ni fuerza su historial al publicar. No se inventa un `1.0.0` inicial ni se permite salir de `0.x-beta` inadvertidamente.
 - Lefthook no reescribe ni hace staging: sanitización del índice, formato, lint y types/tests. La primera normalización de formato se incluye en el setup. Gitleaks usa reglas estándar y salida redactada; no sustituye una rotación si aparece un secreto auténtico.
 - `just ci` exige conexión explícita a una base `_test`, ejecuta historial de secretos, formato, lint, tipos/tests, tests de release y build web. El workflow añade sandbox real, Chrome, GPT simulado, usuarios sintéticos y reinicio de API. Ninguna credencial real del producto participa.
 
