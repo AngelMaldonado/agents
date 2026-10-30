@@ -15,7 +15,7 @@ if (/credential|extraheader|includeif/i.test(localConfig))
 const sourceUrl = execFileSync('git', ['--git-dir', join(root, 'agents.git'), 'config', '--get', 'remote.origin.url'], {
 	encoding: 'utf8',
 }).trim();
-if (sourceUrl !== process.cwd()) throw new Error('Origen del snapshot inesperado.');
+if (resolve(sourceUrl) !== process.cwd()) throw new Error('Origen del snapshot inesperado.');
 const sha = execFileSync('git', ['rev-parse', 'HEAD'], { encoding: 'utf8' }).trim();
 execFileSync('git', ['--git-dir', join(root, 'agents.git'), 'update-ref', 'refs/heads/approved', sha]);
 execFileSync('git', ['--git-dir', join(root, 'agents.git'), 'update-server-info'], { stdio: 'ignore' });

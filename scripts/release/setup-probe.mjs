@@ -1,4 +1,4 @@
-// One-off setup rehearsal. No product tag/release, app build, deployment or data access.
+// One-off setup rehearsal. Real builds only in test namespaces; no product tag/release, deployment or data access.
 import { execFileSync } from 'node:child_process';
 import { mkdirSync, writeFileSync } from 'node:fs';
 import { config } from './config.mjs';
@@ -36,24 +36,32 @@ const sentinel = await client.request('read', 'GetVariable', { name: 'AGENTS_REL
 if (sentinel.is_secret !== true || !/^#+$/.test(sentinel.value ?? ''))
 	throw new Error('El API no ocultó el secreto sintético de prueba.');
 console.log('Secretos: el API oculta el valor del secreto sintético; no se consultó ninguna clave real.');
-await client.request('write', 'UpdateBuild', {
-	id: 'agents-release-probe',
-	config: {
-		...sourceConfig(),
-		branch: 'approved',
-		commit: sha,
-		image_tag: sha,
-		labels: `org.opencontainers.image.revision=${sha}\norg.opencontainers.image.version=setup`,
-		pre_build: {
-			path: '',
-			command: `test "$(git rev-parse HEAD)" = ${sha} && printf 'AGENTS_RELEASE_SOURCE_SHA %s\\n' "$(git rev-parse HEAD)"`,
-			shell_mode: false,
+const builds = [];
+for (const sandbox of [false, true]) {
+	await client.request('write', 'UpdateBuild', {
+		id: 'agents-release-probe',
+		config: {
+			...sourceConfig(),
+			branch: 'approved',
+			commit: sha,
+			image_tag: sha,
+			image_name: sandbox ? 'agents-release-probe-sandbox' : 'agents-release-probe',
+			build_path: sandbox ? 'sandbox' : '.',
+			dockerfile_path: 'Dockerfile',
+			dockerfile: '',
+			labels: `org.opencontainers.image.revision=${sha}\norg.opencontainers.image.version=setup`,
+			pre_build: {
+				path: sandbox ? '..' : '',
+				command: `bash scripts/release/source-check.sh ${sha}`,
+				shell_mode: false,
+			},
 		},
-	},
-});
-const build = await client.execute('RunBuild', { build: 'agents-release-probe' });
-if (!sha.startsWith(build.commit_hash ?? '!')) throw new Error('Build de prueba no corresponde al SHA.');
-console.log('Build de prueba completado con SHA fijado.');
+	});
+	const build = await client.execute('RunBuild', { build: 'agents-release-probe' });
+	if (!sha.startsWith(build.commit_hash ?? '!')) throw new Error('Build de prueba no corresponde al SHA.');
+	builds.push(build._id);
+	console.log(`Build real ${sandbox ? 'sandbox' : 'app'} completado con SHA fijado en namespace de ensayo.`);
+}
 await client.request('write', 'UpdateRepo', {
 	id: config.komodo.signRepo,
 	config: {
@@ -77,5 +85,5 @@ const publicKey = pick('AGENTS_RELEASE_PUBLIC_KEY '),
 if (proof.verified !== true || proof.transparencyLog !== false) throw new Error('No hay firma/verificación real.');
 mkdirSync('.release', { recursive: true });
 writeFileSync('.release/public-key.json', JSON.stringify(publicKey, null, 2));
-writeFileSync('.release/setup-proof.json', JSON.stringify({ sha, build: build._id, ...proof }, null, 2));
+writeFileSync('.release/setup-proof.json', JSON.stringify({ sha, builds, ...proof }, null, 2));
 console.log('SETUP_SIGNATURE_VERIFIED: clave pública y evidencia listas; cero releases y despliegues.');

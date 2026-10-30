@@ -93,6 +93,9 @@ test('builds pin full SHA/amd64 and explicit tags; only verified executor return
 		expect(c.params.config.commit).toBe(sha);
 		expect(c.params.config.extra_args).toEqual(['--platform', 'linux/amd64']);
 		expect(c.params.config.auto_increment_version).toBe(false);
+		expect(c.params.config.build_path).toBe(c.params.id === enabled.komodo.sandboxBuild ? 'sandbox' : '.');
+		expect(c.params.config.dockerfile_path).toBe('Dockerfile');
+		expect(c.params.config.pre_build.path).toBe(c.params.id === enabled.komodo.sandboxBuild ? '..' : '');
 		expect(c.params.config.image_tag).toBe(sha);
 		expect(c.params.config.include_commit_tag).toBe(false);
 		expect(c.params.config.pre_build.command).toContain(sha);

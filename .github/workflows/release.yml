@@ -67,6 +67,7 @@ jobs:
             if curl -fsS http://127.0.0.1:9418/agents.git/HEAD >/dev/null; then exit 0; fi
             sleep 1
           done
+          tail -n 40 "$RUNNER_TEMP/source.log"
           exit 1
       - name: Build, sign, verify and publish (NO deploy)
         run: node scripts/release/publish.mjs

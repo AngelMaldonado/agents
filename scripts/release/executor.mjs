@@ -3,6 +3,7 @@ import { execFileSync } from 'node:child_process';
 import { mkdirSync, writeFileSync } from 'node:fs';
 import { createHash } from 'node:crypto';
 import { signingFlags, verificationFlags } from './cosign.mjs';
+import { config } from './config.mjs';
 const mode = process.argv[2];
 if (!['sign', 'verify', 'probe'].includes(mode)) throw new Error('Modo de executor inválido.');
 process.env.DOCKER_CONFIG = '/tmp/agents-docker';
@@ -24,41 +25,49 @@ if (mode === 'probe') {
 	try {
 		const pub = run('cosign', ['public-key', '--key', 'env://COSIGN_PRIVATE_KEY']);
 		const publicKey = `${pub}\n`;
+		if (createHash('sha256').update(publicKey).digest('hex') !== config.cosignPublicKeySha256)
+			throw new Error('Clave real distinta de la huella fijada.');
 		console.log(
 			`AGENTS_RELEASE_PUBLIC_KEY ${JSON.stringify({ publicKey, sha256: createHash('sha256').update(publicKey).digest('hex') })}`,
 		);
 		writeFileSync('/tmp/cosign.pub', publicKey);
 		const docker = (...args) => run('docker', ['--context', 'default', ...args]);
 		if (docker('info', '--format', '{{.Name}}') !== 'reko-3') throw new Error('Executor equivocado.');
-		// Sign exactly the test image already built and pushed by Komodo, never rebuild it here.
-		const tag = `registry.cubytest.space/cuby/agents-release-probe:${process.env.AGENTS_RELEASE_SHA}`;
-		const manifest = JSON.parse(docker('buildx', 'imagetools', 'inspect', tag, '--format', '{{json .Manifest}}'));
-		if (!/^sha256:[a-f0-9]{64}$/.test(manifest.digest)) throw new Error('Digest inválido.');
-		const ref = `registry.cubytest.space/cuby/agents-release-probe@${manifest.digest}`;
-		run('cosign', [
-			'sign',
-			'--yes',
-			'--key',
-			'env://COSIGN_PRIVATE_KEY',
-			...signingFlags(false),
-			'-a',
-			'purpose=agents-release-probe',
-			ref,
-		]);
-		const claims = JSON.parse(
+		const images = [];
+		// Sign exactly the real app + sandbox test builds pushed by Komodo; never rebuild here.
+		for (const name of ['agents-release-probe', 'agents-release-probe-sandbox']) {
+			const repository = `registry.cubytest.space/cuby/${name}`;
+			const tag = `${repository}:${process.env.AGENTS_RELEASE_SHA}`;
+			const manifest = JSON.parse(docker('buildx', 'imagetools', 'inspect', tag, '--format', '{{json .Manifest}}'));
+			if (!/^sha256:[a-f0-9]{64}$/.test(manifest.digest)) throw new Error('Digest inválido.');
+			const ref = `${repository}@${manifest.digest}`;
+			docker('pull', '--platform', 'linux/amd64', ref);
+			const [image] = JSON.parse(docker('image', 'inspect', ref));
+			if (
+				image.Os !== 'linux' ||
+				image.Architecture !== 'amd64' ||
+				image.Config.Labels?.['org.opencontainers.image.revision'] !== process.env.AGENTS_RELEASE_SHA ||
+				image.Config.Labels?.['org.opencontainers.image.version'] !== 'setup'
+			)
+				throw new Error('Plataforma/labels incorrectos en el ensayo.');
+			const annotations = ['-a', `git_sha=${process.env.AGENTS_RELEASE_SHA}`, '-a', 'version=setup'];
 			run('cosign', [
-				'verify',
+				'sign',
+				'--yes',
 				'--key',
-				'/tmp/cosign.pub',
-				...verificationFlags(false),
-				'-a',
-				'purpose=agents-release-probe',
+				'env://COSIGN_PRIVATE_KEY',
+				...signingFlags(false),
+				...annotations,
 				ref,
-			]),
-		);
-		if (!claims.some((claim) => claim.critical?.image?.['docker-manifest-digest'] === manifest.digest))
-			throw new Error('Firma no corresponde al digest.');
-		console.log(`AGENTS_RELEASE_PROBE ${JSON.stringify({ ref, verified: true, transparencyLog: false })}`);
+			]);
+			const claims = JSON.parse(
+				run('cosign', ['verify', '--key', '/tmp/cosign.pub', ...verificationFlags(false), ...annotations, ref]),
+			);
+			if (!claims.some((claim) => claim.critical?.image?.['docker-manifest-digest'] === manifest.digest))
+				throw new Error('Firma no corresponde al digest.');
+			images.push({ name, ref, verified: true });
+		}
+		console.log(`AGENTS_RELEASE_PROBE ${JSON.stringify({ images, verified: true, transparencyLog: false })}`);
 	} catch (error) {
 		// Do not stringify subprocess errors: they contain the entire environment / private buffers.
 		const secrets = [

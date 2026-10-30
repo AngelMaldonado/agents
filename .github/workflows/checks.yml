@@ -79,7 +79,7 @@ jobs:
         with:
           ref: ${{ github.event.pull_request.head.sha }}
           fetch-depth: 0
-          persist-credentials: false
+          persist-credentials: true
       - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38
         with:
           node-version-file: .node-version
@@ -90,6 +90,7 @@ jobs:
             if curl -fsS http://127.0.0.1:9418/agents.git/HEAD >/dev/null; then exit 0; fi
             sleep 1
           done
+          tail -n 40 "$RUNNER_TEMP/source.log"
           exit 1
       - name: Real isolated build/sign/verify, never publish baseline or deploy
         run: node scripts/release/setup-probe.mjs

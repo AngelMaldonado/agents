@@ -32,13 +32,20 @@ export async function prepareArtifacts(client, version, sha, value = config) {
 	// These dedicated resources must never be attached to auto-redeploy of the live stack.
 	for (const name of [value.komodo.appBuild, value.komodo.sandboxBuild]) {
 		if (!name.startsWith('agents-release-')) throw new Error('Se requieren builds nuevos y exclusivos del release.');
+		const sandbox = name === value.komodo.sandboxBuild;
 		await client.request('write', 'UpdateBuild', {
 			id: name,
 			config: {
 				...source,
+				build_path: sandbox ? 'sandbox' : '.',
+				dockerfile_path: 'Dockerfile',
 				commit: sha,
 				image_tag: sha,
-				pre_build: { path: '', command: `bash scripts/release/source-check.sh ${sha}`, shell_mode: false },
+				pre_build: {
+					path: sandbox ? '..' : '',
+					command: `bash scripts/release/source-check.sh ${sha}`,
+					shell_mode: false,
+				},
 				branch: 'approved',
 				auto_increment_version: false,
 				include_latest_tag: false,
