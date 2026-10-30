@@ -4,10 +4,12 @@ import { assertSha, assertVersion, requireDigest } from './version.mjs';
 import { Komodo } from './komodo.mjs';
 import { manifestFrom, prepareArtifacts } from './artifacts.mjs';
 import { schemaInfo } from './schema.mjs';
+import { assertSource } from './runner.mjs';
+import { executorEnvironment } from './inputs.mjs';
 const sha = 'a'.repeat(40),
 	digest = `sha256:${'b'.repeat(64)}`;
 const disabled = { ...config, publicationEnabled: false, deploymentEnabled: false };
-const enabled = { ...disabled, publicationEnabled: true };
+const enabled = { ...disabled, publicationEnabled: true, gitProvider: `agents-release-${'a'.repeat(32)}:9418` };
 const manifest = {
 	version: '0.0.1-beta',
 	sha,
@@ -70,7 +72,7 @@ test('first failed build prevents sandbox, signing, publishing and deployment', 
 	await expect(prepareArtifacts(client, '0.0.1-beta', sha, enabled)).rejects.toThrow('build failed');
 	expect(calls).toEqual(['UpdateBuild', 'RunBuild']);
 });
-test('builds pin the full SHA and amd64; only verified sign procedure returns a manifest; never deploys', async () => {
+test('builds pin full SHA/amd64 and explicit tags; only verified executor returns manifest; never deploys', async () => {
 	const calls: { type: string; params: any }[] = [];
 	const client = {
 		request: async (_route: string, type: string, params: any) => {
@@ -78,7 +80,9 @@ test('builds pin the full SHA and amd64; only verified sign procedure returns a 
 		},
 		execute: async (type: string, params: any) => {
 			calls.push({ type, params });
-			return type === 'RunBuild' ? { commit_hash: sha } : record();
+			return type === 'RunBuild'
+				? { commit_hash: sha.slice(0, 7), logs: [{ stdout: `AGENTS_RELEASE_SOURCE_SHA ${sha}` }] }
+				: record();
 		},
 	};
 	expect(await prepareArtifacts(client, '0.0.1-beta', sha, enabled)).toEqual(manifest);
@@ -88,8 +92,32 @@ test('builds pin the full SHA and amd64; only verified sign procedure returns a 
 		expect(c.params.config.commit).toBe(sha);
 		expect(c.params.config.extra_args).toEqual(['--platform', 'linux/amd64']);
 		expect(c.params.config.auto_increment_version).toBe(false);
+		expect(c.params.config.image_tag).toBe(sha);
+		expect(c.params.config.include_commit_tag).toBe(false);
+		expect(c.params.config.pre_build.command).toContain(sha);
 	}
-	expect(calls.some((c) => /Deploy|Stack/.test(c.type))).toBe(false);
+	expect(calls.filter((c) => c.type === 'CloneRepo')).toHaveLength(2);
+	expect(calls.some((c) => /Deploy|Stack|Variable/.test(c.type))).toBe(false);
+});
+test('Git snapshots only use the private ephemeral runner; verify receives no private signing references', () => {
+	const origin = `agents-release-${'c'.repeat(32)}:9418`;
+	expect(assertSource(origin)).toBe(origin);
+	for (const value of ['github.com', '127.0.0.1:22', `${origin};curl`, 'https://outside.invalid'])
+		expect(() => assertSource(value)).toThrow();
+	const verify = executorEnvironment('0.0.1-beta', sha, 'verify');
+	expect(verify).not.toContain('COSIGN_PRIVATE');
+	expect(verify).not.toContain('COSIGN_PASSWORD');
+	expect(executorEnvironment('0.0.1-beta', sha, 'sign')).toContain('COSIGN_PRIVATE_KEY_B64=[[COSIGN_PRIVATE_KEY_B64]]');
+});
+test('Komodo short hash is not sufficient without one clean full-source proof', async () => {
+	for (const logs of [
+		[],
+		[{ stdout: `AGENTS_RELEASE_SOURCE_SHA ${'c'.repeat(40)}` }],
+		[{ stdout: `AGENTS_RELEASE_SOURCE_SHA ${sha}\nAGENTS_RELEASE_SOURCE_SHA ${sha}` }],
+	]) {
+		const client = { request: async () => {}, execute: async () => ({ commit_hash: sha.slice(0, 7), logs }) };
+		await expect(prepareArtifacts(client, '0.0.1-beta', sha, enabled)).rejects.toThrow('SHA completo');
+	}
 });
 test('Komodo authenticates with key AND secret headers, polls completion, logs and redacts', async () => {
 	const messages: string[] = [],

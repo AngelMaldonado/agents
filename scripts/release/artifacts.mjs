@@ -1,6 +1,7 @@
 import { config, assertPublicationAllowed } from './config.mjs';
 import { assertSha, assertVersion, requireDigest } from './version.mjs';
 import { schemaInfo } from './schema.mjs';
+import { sourceConfig, executorEnvironment } from './inputs.mjs';
 export function manifestFrom(update, version, sha, value = config) {
 	const markers = (update.logs ?? [])
 		.flatMap((log) => (log.stdout ?? '').split(/\r?\n/))
@@ -27,34 +28,59 @@ export async function prepareArtifacts(client, version, sha, value = config) {
 	assertPublicationAllowed(value);
 	assertVersion(version);
 	assertSha(sha);
+	const source = sourceConfig(value);
 	// These dedicated resources must never be attached to auto-redeploy of the live stack.
 	for (const name of [value.komodo.appBuild, value.komodo.sandboxBuild]) {
 		if (!name.startsWith('agents-release-')) throw new Error('Se requieren builds nuevos y exclusivos del release.');
 		await client.request('write', 'UpdateBuild', {
 			id: name,
 			config: {
+				...source,
 				commit: sha,
-				branch: value.releaseBranch,
+				image_tag: sha,
+				pre_build: { path: '', command: `bash scripts/release/source-check.sh ${sha}`, shell_mode: false },
+				branch: 'approved',
 				auto_increment_version: false,
 				include_latest_tag: false,
 				include_version_tags: false,
-				include_commit_tag: true,
+				include_commit_tag: false,
 				labels: `org.opencontainers.image.revision=${sha}\norg.opencontainers.image.version=${version}`,
 				use_buildx: true,
 				extra_args: ['--platform', value.platform],
 			},
 		});
 		const update = await client.execute('RunBuild', { build: name });
-		if (update.commit_hash !== sha) throw new Error(`Build ${name} no confirmó el SHA completo esperado.`);
+		// Komodo 2.3.3 reports a short hash. Require the separately observed full, clean source proof.
+		const observed = (update.logs ?? [])
+			.flatMap((log) => (log.stdout ?? '').split(/\r?\n/))
+			.filter((line) => line.startsWith('AGENTS_RELEASE_SOURCE_SHA '));
+		if (
+			!/^[a-f0-9]{7,40}$/.test(update.commit_hash ?? '') ||
+			!sha.startsWith(update.commit_hash) ||
+			observed.length !== 1 ||
+			observed[0] !== `AGENTS_RELEASE_SOURCE_SHA ${sha}`
+		)
+			throw new Error(`Build ${name} no confirmó el SHA completo esperado y una fuente limpia.`);
 	}
-	// Only new, non-secret inputs for dedicated procedures. Existing secret values are never read.
-	for (const [name, input] of [
-		['AGENTS_RELEASE_SHA', sha],
-		['AGENTS_RELEASE_VERSION', version],
+	// Only dedicated Repo resources receive inputs. Secret placeholders resolve on Komodo, never here.
+	let verification;
+	for (const [mode, name] of [
+		['sign', value.komodo.signRepo],
+		['verify', value.komodo.verifyRepo],
 	]) {
-		await client.request('write', 'UpdateVariableValue', { name, value: input });
+		if (!name.startsWith('agents-release-')) throw new Error('Executor no exclusivo del release.');
+		await client.request('write', 'UpdateRepo', {
+			id: name,
+			config: {
+				...source,
+				commit: sha,
+				branch: 'approved',
+				environment: executorEnvironment(version, sha, mode, value),
+				on_clone: { path: '', command: `bash scripts/release/komodo-job.sh ${mode}`, shell_mode: false },
+				on_pull: { path: '', command: `bash scripts/release/komodo-job.sh ${mode}`, shell_mode: false },
+			},
+		});
+		verification = await client.execute('CloneRepo', { repo: name });
 	}
-	await client.execute('RunProcedure', { procedure: value.komodo.signProcedure });
-	const verification = await client.execute('RunProcedure', { procedure: value.komodo.verifyProcedure });
 	return manifestFrom(verification, version, sha, value);
 }

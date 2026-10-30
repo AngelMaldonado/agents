@@ -2,6 +2,7 @@ import { spawn } from 'node:child_process';
 import { mkdirSync, openSync, closeSync, rmSync, appendFileSync, readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { config, assertPublicationAllowed } from './config.mjs';
+import { checkRunner, startRunner } from './runner.mjs';
 const mode = process.argv[2] ?? 'run';
 if (!['run', 'plan'].includes(mode)) throw new Error('Uso: just release [plan]');
 mkdirSync('.release', { recursive: true });
@@ -55,7 +56,9 @@ async function command(bin, args, capture = false) {
 		});
 	});
 }
-let fd, lock;
+let fd, lock, runner;
+let dispatched = false,
+	workflowComplete = false;
 try {
 	emit(`Agents release · target ${config.platform} · registry ${config.registry}\nLogs: ${logfile}\n`);
 	if (mode === 'plan') {
@@ -81,6 +84,7 @@ try {
 			true,
 		);
 		if (enabled !== 'true') throw new Error('Workflow de release deshabilitado en GitHub. No se hará push ni merge.');
+		checkRunner(config);
 		emit('[1/5] Calidad local\n');
 		for (const args of [['sanitize', 'history'], ['format', 'check'], ['lint'], ['check']]) await command('just', args);
 		emit('[2/5] Publicar wip y abrir/reutilizar PR\n');
@@ -192,7 +196,9 @@ try {
 			],
 			true,
 		);
-		emit(`[5/5] Disparar y seguir release manual del SHA ${sha}\n`);
+		runner = startRunner(config);
+		emit(`[5/5] Runner efímero ${runner.name}; release manual del SHA ${sha}\n`);
+		dispatched = true; // A transport failure after this point may still have dispatched the job.
 		await command('gh', [
 			'workflow',
 			'run',
@@ -203,6 +209,10 @@ try {
 			config.releaseBranch,
 			'-f',
 			`sha=${sha}`,
+			'-f',
+			`runner_label=${runner.name}`,
+			'-f',
+			`git_provider=${runner.source}`,
 		]);
 		let run;
 		for (let i = 0; i < 30; i++) {
@@ -239,6 +249,7 @@ try {
 			await command('gh', ['run', 'view', String(run.databaseId), '--repo', config.repository, '--log-failed']);
 			throw error;
 		}
+		workflowComplete = true;
 		await command('gh', ['run', 'view', String(run.databaseId), '--repo', config.repository, '--log']);
 		const jobs = JSON.parse(
 			await command('gh', ['run', 'view', String(run.databaseId), '--repo', config.repository, '--json', 'jobs'], true),
@@ -273,6 +284,21 @@ try {
 	);
 	process.exitCode = 1;
 } finally {
+	if (runner) {
+		if (!dispatched || workflowComplete) {
+			try {
+				runner.stop();
+				emit(`Runner efímero ${runner.name} retirado.\n`);
+			} catch (error) {
+				emit(`ERROR de limpieza: ${error.message}\n`);
+				process.exitCode = 1;
+			}
+		} else {
+			emit(
+				`No destruyo ${runner.name}: el workflow puede seguir publicando. Revisa GitHub antes de reintentar; el contenedor expira como máximo en 75 minutos.\n`,
+			);
+		}
+	}
 	if (fd !== undefined) {
 		closeSync(fd);
 		rmSync(lock, { force: true });

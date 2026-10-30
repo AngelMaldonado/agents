@@ -6,6 +6,14 @@ on:
         description: 'Full merged SHA approved by just release (never deploys)'
         required: true
         type: string
+      runner_label:
+        description: 'One-job private runner label issued by just release'
+        required: true
+        type: string
+      git_provider:
+        description: 'Ephemeral Git snapshot inside the private Komodo network'
+        required: true
+        type: string
 permissions:
   contents: read
 concurrency:
@@ -17,7 +25,7 @@ jobs:
     # Publication is manual ONLY: just release confirms PUBLICAR then dispatches this workflow.
     # The versioned gate + repo variable + environment branch policy remain independent barriers.
     if: vars.AGENTS_RELEASE_ENABLED == 'true' && github.ref == 'refs/heads/main'
-    runs-on: [self-hosted, linux, X64, agents-release]
+    runs-on: [self-hosted, linux, X64, '${{ inputs.runner_label }}']
     environment: agents-release
     timeout-minutes: 60
     permissions:
@@ -30,6 +38,7 @@ jobs:
         with:
           ref: main
           fetch-depth: 0
+          persist-credentials: false
       - name: Verify exact SHA approved by the person
         env:
           APPROVED_SHA: ${{ inputs.sha }}
@@ -49,11 +58,20 @@ jobs:
       - run: bun install --frozen-lockfile
         env:
           LEFTHOOK: '0'
+      - name: Serve exact Git snapshot only inside the private Komodo network
+        run: |
+          node scripts/release/source.mjs > "$RUNNER_TEMP/source.log" 2>&1 &
+          for attempt in $(seq 1 15); do
+            if curl -fsS http://127.0.0.1:9418/agents.git/HEAD >/dev/null; then exit 0; fi
+            sleep 1
+          done
+          exit 1
       - name: Build, sign, verify and publish (NO deploy)
         run: node scripts/release/publish.mjs
         env:
           GITHUB_TOKEN: ${{ github.token }}
           AGENTS_RELEASE_APPROVED_SHA: ${{ inputs.sha }}
+          AGENTS_RELEASE_GIT_PROVIDER: ${{ inputs.git_provider }}
           AGENTS_RELEASE_KOMODO_KEY: ${{ secrets.AGENTS_RELEASE_KOMODO_KEY }}
           AGENTS_RELEASE_KOMODO_SECRET: ${{ secrets.AGENTS_RELEASE_KOMODO_SECRET }}
       - uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6

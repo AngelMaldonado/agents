@@ -9,6 +9,9 @@
 	"platform": "linux/amd64",
 	"registry": "registry.cubytest.space/cuby",
 	"executorHost": "reko-3",
+	"runnerNetwork": "komodo_komodo",
+	"runnerImage": "sha256:223eb0ce4a9a65a7af045e38ad903bb5e34d65b3eff224b0aa9db4a7b46a71bc",
+	"toolsImage": "sha256:d81e919a8c6ab1e43057f54226d60473d7d91cb0268bca6d06e19bd32800dc60",
 	"cosignVersion": "3.1.4",
 	"cosignPublicKeySha256": null,
 	"transparencyLog": null,
@@ -16,8 +19,8 @@
 		"url": "https://komodo.cubytest.space",
 		"appBuild": "agents-release-app",
 		"sandboxBuild": "agents-release-sandbox",
-		"signProcedure": "agents-release-sign",
-		"verifyProcedure": "agents-release-verify",
+		"signRepo": "agents-release-sign",
+		"verifyRepo": "agents-release-verify",
 		"stack": "agents"
 	},
 	"publicUrl": "https://agents.cubytest.space"
