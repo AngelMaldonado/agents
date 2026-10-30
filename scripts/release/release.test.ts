@@ -101,6 +101,10 @@ test('builds pin full SHA/amd64 and explicit tags; only verified executor return
 		expect(c.params.config.pre_build.command).toContain(sha);
 	}
 	expect(calls.filter((c) => c.type === 'CloneRepo')).toHaveLength(2);
+	for (const operation of calls.filter((c) => c.type === 'UpdateRepo')) {
+		expect(operation.params.config.on_clone.command).toBe('');
+		expect(operation.params.config.on_pull.command).toContain('komodo-job.sh');
+	}
 	expect(calls.some((c) => /Deploy|Stack|Variable/.test(c.type))).toBe(false);
 });
 test('Git snapshots only use the private ephemeral runner; verify receives no private signing references', () => {

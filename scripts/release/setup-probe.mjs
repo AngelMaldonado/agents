@@ -69,7 +69,7 @@ await client.request('write', 'UpdateRepo', {
 		branch: 'approved',
 		commit: sha,
 		environment: executorEnvironment('setup', sha, 'probe'),
-		on_clone: { path: '', command: 'bash scripts/release/komodo-job.sh probe', shell_mode: false },
+		on_clone: { path: '', command: '', shell_mode: false },
 		on_pull: { path: '', command: 'bash scripts/release/komodo-job.sh probe', shell_mode: false },
 	},
 });

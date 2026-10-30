@@ -83,7 +83,8 @@ export async function prepareArtifacts(client, version, sha, value = config) {
 				commit: sha,
 				branch: 'approved',
 				environment: executorEnvironment(version, sha, mode, value),
-				on_clone: { path: '', command: `bash scripts/release/komodo-job.sh ${mode}`, shell_mode: false },
+				// CloneRepo also executes on_pull; use one hook only (the envfile is removed afterwards).
+				on_clone: { path: '', command: '', shell_mode: false },
 				on_pull: { path: '', command: `bash scripts/release/komodo-job.sh ${mode}`, shell_mode: false },
 			},
 		});
