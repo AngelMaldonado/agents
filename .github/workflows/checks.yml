@@ -103,8 +103,11 @@ jobs:
         if: always()
         with:
           name: agents-release-setup-proof
-          path: .release/
-          if-no-files-found: ignore
+          include-hidden-files: true
+          path: |
+            .release/public-key.json
+            .release/setup-proof.json
+          if-no-files-found: error
   required:
     name: Required checks
     if: always()

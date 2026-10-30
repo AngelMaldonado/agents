@@ -81,6 +81,10 @@ jobs:
         if: always()
         with:
           name: release-record-${{ github.sha }}
-          path: .release/
-          if-no-files-found: ignore
+          # The directory is hidden; allow it, but whitelist only public release records.
+          include-hidden-files: true
+          path: |
+            .release/outcome.json
+            .release/release-manifest.json
+          if-no-files-found: error
           retention-days: 30
