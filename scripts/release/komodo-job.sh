@@ -1,11 +1,13 @@
 #!/usr/bin/env bash
 set -euo pipefail
 umask 077
+trap 'rm -f .git/agents-release.env' EXIT
 chmod 600 .git/agents-release.env
 set -a
 source .git/agents-release.env
 set +a
-trap 'rm -f .git/agents-release.env' EXIT
+# The read-only repo mount must never expose the signing envfile to build/verify.
+rm -f .git/agents-release.env
 case "${AGENTS_RELEASE_COMPONENT:?}" in agents-app|agents-sandbox) ;; *) exit 2 ;; esac
 : "${AGENTS_RELEASE_TOOLS_IMAGE:?Imagen inmutable obligatoria}"
 # One Repo job, three fresh containers. Private signing values enter ONLY the sign container.

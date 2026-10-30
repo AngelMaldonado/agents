@@ -154,7 +154,7 @@ test('real shell wrapper forwards secrets only to sign and always deletes its en
 			);
 			writeFileSync(
 				join(directory, 'docker'),
-				`#!/usr/bin/env node\nconst fs=require('node:fs');const args=process.argv.slice(2);fs.appendFileSync(${JSON.stringify(join(directory, 'calls'))},JSON.stringify(args)+'\\n');if(${fail}&&args.at(-1)==='sign')process.exit(1);`,
+				`#!/usr/bin/env node\nconst fs=require('node:fs');if(fs.existsSync('.git/agents-release.env'))process.exit(23);const args=process.argv.slice(2);fs.appendFileSync(${JSON.stringify(join(directory, 'calls'))},JSON.stringify(args)+'\\n');if(${fail}&&args.at(-1)==='sign')process.exit(1);`,
 				{ mode: 0o755 },
 			);
 			const call = () =>
@@ -175,6 +175,19 @@ test('real shell wrapper forwards secrets only to sign and always deletes its en
 		} finally {
 			rmSync(directory, { recursive: true, force: true });
 		}
+	}
+});
+test('failed input loading cannot leave a signing envfile behind', () => {
+	const directory = mkdtempSync(join(tmpdir(), 'agents-invalid-env-'));
+	try {
+		mkdirSync(join(directory, '.git'));
+		writeFileSync(join(directory, '.git/agents-release.env'), 'return 2\n');
+		expect(() =>
+			execFileSync('bash', [new URL('./komodo-job.sh', import.meta.url).pathname], { cwd: directory, stdio: 'pipe' }),
+		).toThrow();
+		expect(() => readFileSync(join(directory, '.git/agents-release.env'))).toThrow();
+	} finally {
+		rmSync(directory, { recursive: true, force: true });
 	}
 });
 test('Cosign compatibility keeps cryptographic verification without Rekor', () => {
