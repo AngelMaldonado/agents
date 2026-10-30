@@ -1,6 +1,6 @@
 {
 	"version": "0.0.1-beta",
-	"sha": "8802d2159a34aaccd2d77640d4af89d4887d968d",
+	"sha": "2c3c15865d2ba5d505eadffb3fa0ff7907e1a218",
 	"platform": "linux/amd64",
 	"schema": {
 		"files": [
@@ -21,19 +21,19 @@
 	},
 	"images": {
 		"agents-app": {
-			"digest": "sha256:0006452d53e491a63a62e219989ff93b72e5a97719ea4283d2d7ac3479c27473",
-			"ref": "registry.cubytest.space/cuby/agents-release-probe@sha256:0006452d53e491a63a62e219989ff93b72e5a97719ea4283d2d7ac3479c27473",
+			"digest": "sha256:e2583f458f97dd55ceb06742cc8d3b2b8dad79d3e8ce4e4c55ba4c3d6b72d422",
+			"ref": "registry.cubytest.space/cuby/agents-release-probe@sha256:e2583f458f97dd55ceb06742cc8d3b2b8dad79d3e8ce4e4c55ba4c3d6b72d422",
 			"verified": true
 		},
 		"agents-sandbox": {
-			"digest": "sha256:270c6cb257b4b66da4d5cc93abda35576c6ca4cbac4e110c8ae95813ccb75066",
-			"ref": "registry.cubytest.space/cuby/agents-release-probe-sandbox@sha256:270c6cb257b4b66da4d5cc93abda35576c6ca4cbac4e110c8ae95813ccb75066",
+			"digest": "sha256:eb8fcec664ca91fc6991fe26d20bfcbe904f1aa22fafc56966a296f1cdcf232e",
+			"ref": "registry.cubytest.space/cuby/agents-release-probe-sandbox@sha256:eb8fcec664ca91fc6991fe26d20bfcbe904f1aa22fafc56966a296f1cdcf232e",
 			"verified": true
 		}
 	},
 	"executions": {
-		"agents-app": "6ae52a865c3077fa6f9da26a",
-		"agents-sandbox": "6ae52a935c3077fa6f9da26f"
+		"agents-app": "6ae52d0d5c3077fa6f9da2fe",
+		"agents-sandbox": "6ae52d185c3077fa6f9da300"
 	},
 	"cosignPublicKeySha256": "306102f7485320db8a37e90babb847b7f99e5910775d292d6a44801736475859",
 	"transparencyLog": false
