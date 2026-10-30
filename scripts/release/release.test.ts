@@ -118,6 +118,7 @@ test('Cosign 3 private signing disables new default config explicitly, without d
 	expect(signingFlags(false)).toContain('--tlog-upload=false');
 	expect(signingFlags(true)).toContain('--tlog-upload=true');
 	expect(verificationFlags(false)).toContain('--insecure-ignore-tlog=true');
+	expect(verificationFlags(false)).not.toContain('--registry-referrers-mode=legacy');
 	expect(verificationFlags(true)).not.toContain('--insecure-ignore-tlog=true');
 	expect(() => signingFlags(null)).toThrow('Rekor');
 });

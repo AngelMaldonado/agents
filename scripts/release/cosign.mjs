@@ -11,9 +11,6 @@ export function signingFlags(transparencyLog) {
 }
 export function verificationFlags(transparencyLog) {
 	if (typeof transparencyLog !== 'boolean') throw new Error('Política de Rekor no definida.');
-	return [
-		'--new-bundle-format=false',
-		'--registry-referrers-mode=legacy',
-		...(!transparencyLog ? ['--insecure-ignore-tlog=true'] : []),
-	];
+	// 3.1.4 verify does not accept --registry-referrers-mode; the legacy bundle selector controls lookup.
+	return ['--new-bundle-format=false', ...(!transparencyLog ? ['--insecure-ignore-tlog=true'] : [])];
 }

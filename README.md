@@ -9,7 +9,7 @@ Código: [AngelMaldonado/agents](https://github.com/AngelMaldonado/agents) (priv
 - `bun install --frozen-lockfile`: dependencias fijadas y hook Lefthook (en CI, `LEFTHOOK=0`). No requiere instalaciones globales de ESLint/Prettier/Lefthook.
 - `just sanitize staged|history`, `just format check|write`, `just lint`, `just check`. El hook sólo comprueba: no reescribe ni hace staging.
 - `just ci`: exige PostgreSQL `_test` aislado mediante `AGENTS_TEST_DATABASE_URL` y `AGENTS_DATABASE_URL` idénticas. Nunca apuntar a una base con usuarios.
-- `just release plan`: explica el flujo sin operar. `just release` permanece bloqueado; no crea tags ni despliega durante el setup.
+- `just release plan`: explica sin operar. `just release`: calidad → PR/checks → confirmación `PUBLICAR` → publicación manual por Komodo y runner efímero. Nunca despliega ni migra; la preparación no ejecuta el comando de publicación.
 - [Operación, activación, firma en Komodo y recuperación](release/README.md). Builds app+sandbox `linux/amd64`; clave privada Cosign sólo en Komodo. Primer baseline previsto: `v0.0.1-beta`, todavía NO publicado.
 - WhatsApp está fuera del producto beta por un feature gate compartido. Se conserva código/migración para después; no se alteran los servicios ni los datos actuales.
 
