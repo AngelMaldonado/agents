@@ -54,7 +54,7 @@ wip → PR → Required checks → confirmación PUBLICAR → merge protegido a 
 ## Fallos y recuperación
 
 - Logs locales en `.release/` (gitignored, `0600`). Workflow ofrece estado, logs y manifiesto, sin imprimir credenciales del coordinador. Komodo puede entregar logs por bloques, no necesariamente streaming continuo.
-- Timeout local NO cancela por sí solo un build remoto. Revisar ID de operación antes de reintentar. Nunca duplicar a ciegas.
+- Las esperas/comandos del coordinador tienen tope de 75 minutos; Komodo, 30 minutos por operación; jobs de CI también tienen timeout. Timeout local o interrupción de la consola NO cancelan por sí solos un build/workflow remoto. Revisar ID de operación antes de reintentar. Nunca duplicar a ciegas.
 - Un merge ya hecho no se revierte si falla el build. Una release ya publicada no desaparece si falla el adjunto. No se borran tags ni se rebobinan migraciones automáticamente.
 - Si falla antes de publicar: revisar los IDs de Komodo y el SHA, resolver la causa, y reejecutar el workflow únicamente después de comprobar ausencia de tag/release. Si existe un tag o release parcial, completar/conciliar explícitamente, sin crear otro baseline.
 - Durante el setup se conservan todos los artefactos actuales. No ejecutar `docker image prune`: los agentes aprobados fijan IDs inmutables de sandbox que podrían ser necesarios aunque un tag se haya movido.

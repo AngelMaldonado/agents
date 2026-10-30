@@ -7,7 +7,7 @@ if (!['run', 'plan'].includes(mode)) throw new Error('Uso: just release [plan]')
 mkdirSync('.release', { recursive: true });
 const logfile = resolve('.release', `${new Date().toISOString().replaceAll(':', '-')}.log`);
 const privateValues = Object.entries(process.env)
-	.filter(([k, v]) => /TOKEN|SECRET|PASSWORD|PRIVATE_KEY/.test(k) && v && v.length >= 8)
+	.filter(([k, v]) => /TOKEN|SECRET|PASSWORD|(?:PRIVATE|MASTER|API|KOMODO)_KEY/.test(k) && v && v.length >= 8)
 	.map(([, v]) => v);
 const clean = (value) => privateValues.reduce((text, v) => text.split(v).join('[REDACTED]'), String(value));
 const emit = (text) => {
@@ -17,7 +17,7 @@ const emit = (text) => {
 };
 async function command(bin, args, capture = false) {
 	return new Promise((accept, reject) => {
-		const child = spawn(bin, args, { stdio: ['inherit', 'pipe', 'pipe'] });
+		const child = spawn(bin, args, { stdio: ['inherit', 'pipe', 'pipe'], timeout: 75 * 60_000 });
 		let out = '',
 			err = '',
 			pendingOut = '',
@@ -45,7 +45,13 @@ async function command(bin, args, capture = false) {
 			}
 			code === 0
 				? accept(out.trim())
-				: reject(new Error(`${bin} terminó con código ${code}. ${capture ? clean(err) : ''}`));
+				: reject(
+						new Error(
+							code === null && child.killed
+								? `Timeout de ${bin}; revisa operaciones remotas antes de reintentar, pueden seguir activas.`
+								: `${bin} terminó con código ${code}. ${capture ? clean(err) : ''}`,
+						),
+					);
 		});
 	});
 }

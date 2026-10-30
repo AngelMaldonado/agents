@@ -6,7 +6,8 @@ import { manifestFrom, prepareArtifacts } from './artifacts.mjs';
 import { schemaInfo } from './schema.mjs';
 const sha = 'a'.repeat(40),
 	digest = `sha256:${'b'.repeat(64)}`;
-const enabled = { ...config, publicationEnabled: true };
+const disabled = { ...config, publicationEnabled: false, deploymentEnabled: false };
+const enabled = { ...disabled, publicationEnabled: true };
 const manifest = {
 	version: '0.0.1-beta',
 	sha,
@@ -18,8 +19,8 @@ const manifest = {
 };
 const record = (m = manifest) => ({ logs: [{ stdout: `AGENTS_RELEASE_MANIFEST ${JSON.stringify(m)}` }] });
 test('publication/deployment are disabled and even enabled publication cannot grant deployment', () => {
-	expect(() => assertPublicationAllowed()).toThrow('bloqueada');
-	expect(() => assertDeploymentAllowed()).toThrow('bloque');
+	expect(() => assertPublicationAllowed(disabled)).toThrow('bloqueada');
+	expect(() => assertDeploymentAllowed(disabled)).toThrow('bloque');
 	expect(() => assertDeploymentAllowed(enabled)).toThrow('bloque');
 	expect(() => assertPublicationAllowed({ ...enabled, platform: 'linux/arm64' })).toThrow('linux/amd64');
 });
@@ -50,9 +51,9 @@ test('manifest requires exact SHA/version/platform, both immutable refs and succ
 });
 test('publication gate runs before any Komodo request', async () => {
 	const calls: unknown[] = [];
-	await expect(prepareArtifacts({ request: (...a: unknown[]) => calls.push(a) }, '0.0.1-beta', sha)).rejects.toThrow(
-		'bloqueada',
-	);
+	await expect(
+		prepareArtifacts({ request: (...a: unknown[]) => calls.push(a) }, '0.0.1-beta', sha, disabled),
+	).rejects.toThrow('bloqueada');
 	expect(calls).toEqual([]);
 });
 test('first failed build prevents sandbox, signing, publishing and deployment', async () => {
