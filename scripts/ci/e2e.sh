@@ -34,6 +34,21 @@ for _ in $(seq 1 60); do
   if docker --context "$ctx" exec "$postgres" pg_isready -U agents -d agents_test >/dev/null; then break; fi
   sleep 1
 done
+# Boot the ACTUAL production candidate too: build success is not proof that prod dependencies resolve.
+ready="$id-ready"
+docker --context "$ctx" run -d --name "$ready" --network "$network" \
+  -e AGENTS_DATABASE_URL=postgres://agents:ci-only-password@postgres:5432/agents_test \
+  -e AGENTS_MASTER_KEY=MDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDA= \
+  -e AGENTS_PROXY_KEY=ci-fixture-only -e AGENTS_ADMIN_PIN=1111 -e AGENTS_COOKIE_SECURE=0 \
+  "$app_image" >/dev/null
+healthy=0
+for _ in $(seq 1 60); do
+  if docker --context "$ctx" exec "$ready" bun -e 'const r=await fetch("http://127.0.0.1:8787/healthz"); if(!r.ok || !(await r.json()).ready) process.exit(1)' >/dev/null 2>&1; then healthy=1; break; fi
+  sleep 1
+done
+if [ "$healthy" != 1 ]; then docker --context "$ctx" logs "$ready"; exit 1; fi
+docker --context "$ctx" rm -f "$ready" >/dev/null
+echo 'PASS actual app image boots with production-only dependencies and /healthz is ready'
 # The test runner is trusted merged/PR code on a disposable CI machine, NEVER the production host.
 docker --context "$ctx" run -d --name "$api" --network "$network" --network-alias agents-ci-api \
   -v "$PWD:/app" -v /var/run/docker.sock:/var/run/docker.sock -w /app \

@@ -122,6 +122,7 @@ check:
     cd web && bunx tsc --noEmit
     cd server && bun test
     cd web && bun test
+    bun test scripts/release
 
 # ---- quality and release (never sync the checkout serving users) ----
 
@@ -147,7 +148,6 @@ ci:
     just format check
     just lint
     just check
-    bun test scripts/release
     cd web && bun run build
 
 release mode="run":

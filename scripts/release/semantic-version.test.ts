@@ -1,6 +1,6 @@
 import { expect, test } from 'bun:test';
 import { execFileSync } from 'node:child_process';
-import { mkdtempSync, rmSync } from 'node:fs';
+import { mkdtempSync, rmSync, realpathSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { createRequire } from 'node:module';
@@ -9,11 +9,23 @@ test('semantic-release accepts main beta + dormant stable and the exact unnumber
 	const dir = mkdtempSync(join(tmpdir(), 'agents-semver-'));
 	const cwd = join(dir, 'repo'),
 		remote = join(dir, 'remote.git');
+	// Hooks export GIT_DIR/GIT_INDEX_FILE/etc. NEVER inherit them into a fixture:
+	// even `git init <directory>` can otherwise reinitialize the real repository.
+	const env = {
+		PATH: process.env.PATH!,
+		HOME: dir,
+		LANG: 'en_US.UTF-8',
+		FORCE_COLOR: '0',
+		GIT_CONFIG_NOSYSTEM: '1',
+		GIT_CONFIG_GLOBAL: '/dev/null',
+		LEFTHOOK: '0',
+	};
 	const git = (...args: string[]) =>
-		execFileSync('git', args, { cwd, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] }).trim();
+		execFileSync('git', args, { cwd, env, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] }).trim();
 	try {
-		execFileSync('git', ['init', '--initial-branch=main', cwd], { stdio: 'pipe' });
-		execFileSync('git', ['init', '--bare', '--initial-branch=main', remote], { stdio: 'pipe' });
+		execFileSync('git', ['init', '--initial-branch=main', cwd], { env, stdio: 'pipe' });
+		execFileSync('git', ['init', '--bare', '--initial-branch=main', remote], { env, stdio: 'pipe' });
+		expect(realpathSync(git('rev-parse', '--show-toplevel'))).toBe(realpathSync(cwd));
 		git('config', 'user.name', 'Fixture');
 		git('config', 'user.email', 'fixture@example.test');
 		git('commit', '--allow-empty', '-m', 'feat: initial fixture');
@@ -30,7 +42,7 @@ test('semantic-release accepts main beta + dormant stable and the exact unnumber
 			cwd,
 			encoding: 'utf8',
 			timeout: 30000,
-			env: { PATH: process.env.PATH!, HOME: process.env.HOME!, LANG: 'en_US.UTF-8', FORCE_COLOR: '0' },
+			env,
 			stdio: ['ignore', 'pipe', 'pipe'],
 		});
 		expect(result).toContain('FIXTURE_VERSION=0.0.1-beta.1');
