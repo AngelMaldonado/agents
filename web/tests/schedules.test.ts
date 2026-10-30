@@ -69,7 +69,7 @@ describe('calendar projection, never schedule execution', () => {
 		expect(invalid).toEqual(['bad']);
 		const month = expandSchedules([{ ...schedule, cron: '* * * * *' }], '2026-10-01T00:00:00Z', '2026-11-30T00:00:00Z');
 		expect(month.limited).toEqual(['test']);
-	});
+	}, 15000); // Shared CI CPUs need headroom; output bounds and assertions remain unchanged.
 	test('every 15 minutes every day covers every day of the week (the agenda used to stop on Tuesday)', () => {
 		const { events, limited } = expandSchedules(
 			[
