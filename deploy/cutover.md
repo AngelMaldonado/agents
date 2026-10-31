@@ -37,7 +37,7 @@ Original prod: DB agents y /srv/agents/data quedan intactos para recuperación.
 
 - CI exacto del HEAD de PR #4, sin saltos; revisión del candidato contra la configuración **actual** de Komodo. Los ensayos previos no congelan los datos vivos.
 - Confirmar impacto de nuevas invitaciones/enlaces y disponibilidad del administrador para entregarlas por canal privado, nunca en documentos/logs de Bubble.
-- Confirmar custodia recuperable de la llave de producción fuera de esta máquina/host y destino de una copia **cifrada offsite**, o aceptar explícitamente el riesgo de recuperación sólo en reko-3. El ensayo no prueba ese escrow ni un desastre de host completo; no copiar secretos/backups crudos al Mac.
+- La copia de `AGENTS_MASTER_KEY` en `1Password → Cuby → agents` ya se comparó con la efectiva/archivo de producción y coincide (31-oct-2026, 17:40:35 UTC). Falta configurar y verificar una copia **cifrada offsite de los datos**, o aceptar explícitamente el riesgo de recuperación sólo en reko-3. [Cableado S3/restic](backup-s3.md) disponible pero deshabilitado: poner secretos no dispara subidas ni demuestra recuperación. El transporte actual acepta snapshots de ensayo ya terminados y dumps diarios, no genera el respaldo coordinado final del corte. No se ha probado un desastre de host completo; no copiar secretos/backups crudos al Mac.
 - Acordar ventana: reservar **15 minutos como presupuesto inicial**, no como duración medida del corte. Si el drenado o las comprobaciones no caben, no ampliar la interrupción silenciosamente: abortar antes de admitir escrituras y reprogramar.
 - Obtener autorización explícita de **horario y ejecución del corte**. La autorización previa de usar imágenes beta o continuar ensayos no la sustituye.
 

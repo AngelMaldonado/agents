@@ -1,0 +1,44 @@
+{
+	"schemaVersion": 1,
+	"enabled": false,
+	"realS3Requests": 0,
+	"realSecretsConfigured": false,
+	"realDataUploaded": false,
+	"deploymentExecuted": false,
+	"defaultOffCheck": {
+		"checkedAt": "2026-10-31T18:10:31.143586+00:00",
+		"state": "disabled-no-s3-requests",
+		"operatorSourceSha256": "c000b8ed9201e02c9658bc40e884d97431d21c968530a6ee05a77c862957e015",
+		"cleanupFailures": []
+	},
+	"syntheticResticProbe": {
+		"ok": true,
+		"image": "restic/restic@sha256:08916bcda4a4435f9d9828ebb4e91bb7ada3d2c8a53699788930e0ae1bd4fa67",
+		"version": "restic 0.19.1 compiled with go1.26.4 on linux/amd64",
+		"network": "none",
+		"source": "synthetic-only",
+		"realCredentialsUsed": false,
+		"s3Requests": 0,
+		"initBackupCheckReadDataRestoreVerify": true,
+		"fullSnapshotIdLength": 64,
+		"checkedAt": "2026-10-31T18:04:46.406343+00:00"
+	},
+	"focusedRegressions": {
+		"command": "python3 -B scripts/backup/s3_test.py",
+		"passed": 10,
+		"s3OrDatabaseAccess": false
+	},
+	"runtimeAudit": {
+		"productionImage": "registry.cubytest.space/cuby/agents:c655568",
+		"productionStartedAt": "2026-10-29T23:45:30.199529967Z",
+		"temporaryBackupContainers": 0
+	},
+	"limitations": [
+		"No live S3 endpoint, credentials, IAM or roundtrip verified",
+		"Synthetic fixture used an ephemeral local encrypted repository, not S3",
+		"No new scheduler, app image, release or deployment",
+		"Push accepts existing completed online migration snapshots or daily database dumps; does not create coordinated cutover backups",
+		"Daily dumps do not include profiles, artifacts or configuration",
+		"Restore verification on reko-3 does not prove recovery after losing that host"
+	]
+}

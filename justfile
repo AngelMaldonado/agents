@@ -124,6 +124,7 @@ check:
     cd web && bun test
     bun test scripts/release
     bun test scripts/deploy
+    python3 -B scripts/backup/s3_test.py
 
 # ---- quality and release (never sync the checkout serving users) ----
 
@@ -159,6 +160,10 @@ release mode="run":
 # Preparation ONLY. No apply/cutover exists; publication stays in `just release`.
 deploy verb="plan":
     python3 scripts/deploy/prepare.py {{verb}}
+
+# S3 opt-in para respaldos ya creados; no despliega ni crea snapshots coordinados.
+backup action="plan" target="":
+    python3 scripts/backup/s3.py {{quote(action)}} {{quote(target)}}
 
 # prod: psql | tunnel | stop — the production database, in tmux `cuby-agents-prod` (read-only by default)
 prod action:

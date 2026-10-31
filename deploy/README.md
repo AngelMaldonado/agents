@@ -5,6 +5,7 @@
 - [Plan de corte, accesos, interrupción, abortar y recuperar](cutover.md).
 - [Candidato Compose completo para esta beta](beta.compose.yaml): no aplicar durante preparación. El overlay antiguo `release.compose.yaml` no es un stack independiente.
 - [Evidencia de ensayos](preparation-proof.json).
+- [Transporte cifrado S3 opt-in](backup-s3.md) y [variables de Komodo pendientes de configurar](backup-s3.env.example). Deshabilitado; sin subidas reales.
 
 ```text
 DEV/PROD (lectura) ── dumps ──► Postgres temporal sin red, dos bases separadas
@@ -70,6 +71,6 @@ Antes de ese éxito se abortaron/limpiaron dos intentos: escritura del manifiest
 
 Auditoría adicional: DBOS sin payloads/checkpoints huérfanos ni filas legacy en `event_dispatch_kv`; candidato comparado semánticamente con el Compose privado vivo, PostgreSQL/CLIProxyAPI/redes/labels de routing idénticos. Contraseña de DB del archivo coincide con la efectiva y autentica una conexión read-only real. Master key/PIN/proxy key también coinciden; nada se rotó. Estas consultas fueron visibles y privadas en reko-3.
 
-**Todavía no es un corte:** backups online en el mismo host, no snapshot coordinado ni offsite. Falta confirmar escrow fuera del host, aceptar la política de accesos/enlaces, concretar/revisar la operación ejecutable contra el estado final, aprobar horario/corte, tomar backup final drenado y hacer aceptación real de navegador/tarea. Los pins históricos perdidos siguen limitando rollback: recuperar datos con la beta no recupera imágenes ausentes. El [plan de corte](cutover.md) separa estos límites del resultado del ensayo.
+**Todavía no es un corte:** backups online en el mismo host, no snapshot coordinado ni offsite. La comprobación posterior de 1Password confirmó que `Cuby → agents → AGENTS_MASTER_KEY` coincide con la llave efectiva y archivo de producción; eso resuelve custodia de la llave, no respaldo externo de datos. El transporte S3 quedó cableado pero deshabilitado, sin credenciales ni subida/recuperación real. Falta configurar/verificar ese destino, aceptar la política de accesos/enlaces, concretar/revisar la operación ejecutable contra el estado final, aprobar horario/corte, tomar backup final drenado y hacer aceptación real de navegador/tarea. Los pins históricos perdidos siguen limitando rollback: recuperar datos con la beta no recupera imágenes ausentes. El [plan de corte](cutover.md) separa estos límites del resultado del ensayo.
 
 Seguimiento: Bubble `agents`, hilo #17; PR #4. No se ha fusionado/aplicado como despliegue ni publicado otra release.
