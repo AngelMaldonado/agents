@@ -27,7 +27,9 @@ export function verify(header: string | undefined, secret: string, body: string,
 }
 
 function linkKey() {
-	return createHmac('sha256', Buffer.from(process.env.AGENTS_MASTER_KEY ?? '', 'base64')).update('agents-links-v1').digest();
+	return createHmac('sha256', Buffer.from(process.env.AGENTS_MASTER_KEY ?? '', 'base64'))
+		.update('agents-links-v1')
+		.digest();
 }
 
 const base = () => (process.env.AGENTS_PUBLIC_URL ?? 'http://localhost:8787').replace(/\/+$/, '');

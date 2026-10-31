@@ -9,7 +9,13 @@ import type { Person } from './people';
 
 // busy: its socket still holds this many bytes unsent. Images are skipped then, never queued: a
 // late frame is worthless, and a queue of them is what makes a takeover click feel dead.
-export type Viewer = { person: Person; send: (data: string) => void; watching: Set<number>; monitor: boolean; busy: () => boolean };
+export type Viewer = {
+	person: Person;
+	send: (data: string) => void;
+	watching: Set<number>;
+	monitor: boolean;
+	busy: () => boolean;
+};
 export const BACKLOG_BYTES = 512 * 1024;
 
 const viewers = new Set<Viewer>();
@@ -42,7 +48,9 @@ export function leave(v: Viewer) {
 }
 
 function canSee(v: Viewer, ownerId: number, agentId?: number) {
-	return v.person.admin || v.person.id === ownerId || (agentId !== undefined && !!shares.get(agentId)?.has(v.person.id));
+	return (
+		v.person.admin || v.person.id === ownerId || (agentId !== undefined && !!shares.get(agentId)?.has(v.person.id))
+	);
 }
 
 export const watchers = (agentId: number) => [...viewers].filter((v) => v.watching.has(agentId)).length;
@@ -78,26 +86,43 @@ export function toWatchers(agentId: number, ownerId: number, msg: Record<string,
 }
 
 // onlyPerson: during a takeover, the frames are for whoever drives.
-const allowed = (v: Viewer, ownerId: number, agentId: number, onlyPerson?: number) => (onlyPerson !== undefined ? v.person.id === onlyPerson : canSee(v, ownerId, agentId));
+const allowed = (v: Viewer, ownerId: number, agentId: number, onlyPerson?: number) =>
+	onlyPerson !== undefined ? v.person.id === onlyPerson : canSee(v, ownerId, agentId);
 
-export function thumb(ownerId: number, taskId: number, agentId: number, jpeg: string, meta: unknown, onlyPerson?: number) {
+export function thumb(
+	ownerId: number,
+	taskId: number,
+	agentId: number,
+	jpeg: string,
+	meta: unknown,
+	onlyPerson?: number,
+) {
 	const data = JSON.stringify({ t: 'thumb', taskId, agentId, jpeg, meta });
 	if (onlyPerson === undefined) lastThumb.set(agentId, data);
 	owners.set(agentId, ownerId);
-	for (const v of viewers) if (allowed(v, ownerId, agentId, onlyPerson) && !v.busy()) {
-		v.send(data);
-		sent.thumb += data.length;
-	}
+	for (const v of viewers)
+		if (allowed(v, ownerId, agentId, onlyPerson) && !v.busy()) {
+			v.send(data);
+			sent.thumb += data.length;
+		}
 }
 
-export function frame(ownerId: number, taskId: number, agentId: number, jpeg: string, meta: unknown, onlyPerson?: number) {
+export function frame(
+	ownerId: number,
+	taskId: number,
+	agentId: number,
+	jpeg: string,
+	meta: unknown,
+	onlyPerson?: number,
+) {
 	const data = JSON.stringify({ t: 'frame', taskId, agentId, jpeg, meta });
 	if (onlyPerson === undefined) lastFrame.set(agentId, data);
 	owners.set(agentId, ownerId);
-	for (const v of viewers) if (v.watching.has(agentId) && allowed(v, ownerId, agentId, onlyPerson) && !v.busy()) {
-		v.send(data);
-		sent.frame += data.length;
-	}
+	for (const v of viewers)
+		if (v.watching.has(agentId) && allowed(v, ownerId, agentId, onlyPerson) && !v.busy()) {
+			v.send(data);
+			sent.frame += data.length;
+		}
 }
 
 /** monitor: each viewer gets the view its role allows (built by the caller). */

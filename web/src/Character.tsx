@@ -3,8 +3,18 @@
 import { useEffect, useRef } from 'react';
 
 export type CharState =
-	| 'idle' | 'starting' | 'thinking' | 'browsing' | 'running' | 'writing' | 'blocked' | 'steered'
-	| 'done' | 'incomplete' | 'cancelled' | 'error';
+	| 'idle'
+	| 'starting'
+	| 'thinking'
+	| 'browsing'
+	| 'running'
+	| 'writing'
+	| 'blocked'
+	| 'steered'
+	| 'done'
+	| 'incomplete'
+	| 'cancelled'
+	| 'error';
 
 export const STATE_LABEL: Record<CharState, string> = {
 	idle: 'Libre',
@@ -18,7 +28,7 @@ export const STATE_LABEL: Record<CharState, string> = {
 	done: 'Terminado',
 	incomplete: 'Incompleto',
 	cancelled: 'Cancelado',
-	error: 'Error'
+	error: 'Error',
 };
 
 const W = 32;
@@ -53,7 +63,7 @@ function draw(ctx: CanvasRenderingContext2D, seed: string, state: CharState, t: 
 	};
 	const f = Math.floor(t / 160); // animation frame
 	const gone = state === 'cancelled';
-	const bob = state === 'idle' ? (Math.floor(t / 700) % 2) : state === 'done' ? -(f % 4 < 2 ? 2 : 0) : 0;
+	const bob = state === 'idle' ? Math.floor(t / 700) % 2 : state === 'done' ? -(f % 4 < 2 ? 2 : 0) : 0;
 	const lean = state === 'browsing' || state === 'running' ? 1 : 0;
 
 	// Desk and chair.
@@ -71,9 +81,19 @@ function draw(ctx: CanvasRenderingContext2D, seed: string, state: CharState, t: 
 		px(ox + 1, oy, 8, 9, L.skin);
 		// Hair.
 		px(ox + 1, oy, 8, 2, L.hair);
-		if (L.style === 0) px(ox, oy + 1, 1, 4, L.hair), px(ox + 9, oy + 1, 1, 4, L.hair);
-		if (L.style === 1) px(ox + 1, oy + 2, 2, 2, L.hair), px(ox + 7, oy + 2, 2, 1, L.hair);
-		if (L.style === 2) px(ox, oy - 1, 10, 2, L.hair), px(ox, oy + 1, 1, 6, L.hair), px(ox + 9, oy + 1, 1, 6, L.hair);
+		if (L.style === 0) {
+			px(ox, oy + 1, 1, 4, L.hair);
+			px(ox + 9, oy + 1, 1, 4, L.hair);
+		}
+		if (L.style === 1) {
+			px(ox + 1, oy + 2, 2, 2, L.hair);
+			px(ox + 7, oy + 2, 2, 1, L.hair);
+		}
+		if (L.style === 2) {
+			px(ox, oy - 1, 10, 2, L.hair);
+			px(ox, oy + 1, 1, 6, L.hair);
+			px(ox + 9, oy + 1, 1, 6, L.hair);
+		}
 		// Eyes: they follow the screen when browsing, blink when idle.
 		const blink = state === 'idle' && f % 25 === 0;
 		const look = state === 'browsing' ? (f % 8 < 4 ? 0 : 1) : state === 'thinking' ? -1 : 0;
@@ -90,9 +110,15 @@ function draw(ctx: CanvasRenderingContext2D, seed: string, state: CharState, t: 
 		if (L.glasses) px(ox + 1, eyeY, 8, 1, '#30303a');
 		// Mouth.
 		const mouth = state === 'done' ? '#7a2b2b' : state === 'error' || state === 'incomplete' ? '#5a3a3a' : '#9b5c4a';
-		if (state === 'done') px(ox + 3, oy + 7, 4, 1, mouth), px(ox + 3, oy + 6, 1, 1, mouth), px(ox + 6, oy + 6, 1, 1, mouth);
-		else if (state === 'error' || state === 'incomplete') px(ox + 3, oy + 7, 4, 1, mouth), px(ox + 3, oy + 8, 1, 1, mouth), px(ox + 6, oy + 8, 1, 1, mouth);
-		else px(ox + 4, oy + 7, 2, 1, mouth);
+		if (state === 'done') {
+			px(ox + 3, oy + 7, 4, 1, mouth);
+			px(ox + 3, oy + 6, 1, 1, mouth);
+			px(ox + 6, oy + 6, 1, 1, mouth);
+		} else if (state === 'error' || state === 'incomplete') {
+			px(ox + 3, oy + 7, 4, 1, mouth);
+			px(ox + 3, oy + 8, 1, 1, mouth);
+			px(ox + 6, oy + 8, 1, 1, mouth);
+		} else px(ox + 4, oy + 7, 2, 1, mouth);
 
 		// Arms.
 		if (state === 'blocked') {
@@ -102,29 +128,46 @@ function draw(ctx: CanvasRenderingContext2D, seed: string, state: CharState, t: 
 			px(ox + 10, oy + wave, 2, 2, L.skin);
 			px(ox - 1, oy + 12, 2, 6, L.shirt);
 		} else if (state === 'done') {
-			px(ox - 2, oy + 4, 2, 6, L.shirt), px(ox - 2, oy + 2, 2, 2, L.skin);
-			px(ox + 10, oy + 4, 2, 6, L.shirt), px(ox + 10, oy + 2, 2, 2, L.skin);
+			px(ox - 2, oy + 4, 2, 6, L.shirt);
+			px(ox - 2, oy + 2, 2, 2, L.skin);
+			px(ox + 10, oy + 4, 2, 6, L.shirt);
+			px(ox + 10, oy + 2, 2, 2, L.skin);
 		} else if (state === 'incomplete') {
-			px(ox - 2, oy + 10, 2, 3, L.shirt), px(ox - 3, oy + 9, 2, 2, L.skin);
-			px(ox + 10, oy + 10, 2, 3, L.shirt), px(ox + 11, oy + 9, 2, 2, L.skin);
+			px(ox - 2, oy + 10, 2, 3, L.shirt);
+			px(ox - 3, oy + 9, 2, 2, L.skin);
+			px(ox + 10, oy + 10, 2, 3, L.shirt);
+			px(ox + 11, oy + 9, 2, 2, L.skin);
 		} else {
 			const typing = state === 'running' || state === 'writing' || state === 'browsing';
 			const fast = state === 'running' ? 2 : 4;
 			const lh = typing && f % fast < fast / 2 ? 1 : 0;
 			const rh = typing && f % fast >= fast / 2 ? 1 : 0;
-			px(ox - 1, oy + 11, 2, 9 - lh, L.shirt), px(ox - 1, oy + 20 - lh, 2, 1, L.skin);
-			px(ox + 9, oy + 11, 2, 9 - rh, L.shirt), px(ox + 9, oy + 20 - rh, 2, 1, L.skin);
+			px(ox - 1, oy + 11, 2, 9 - lh, L.shirt);
+			px(ox - 1, oy + 20 - lh, 2, 1, L.skin);
+			px(ox + 9, oy + 11, 2, 9 - rh, L.shirt);
+			px(ox + 9, oy + 20 - rh, 2, 1, L.skin);
 		}
 	}
 
 	// The laptop: its screen tells what the computer is doing.
 	const screen =
-		state === 'error' ? (f % 2 ? '#ff5a5a' : '#7a1f1f')
-		: state === 'done' ? '#59d98e'
-		: state === 'blocked' ? (f % 4 < 2 ? '#ffcf4a' : '#8a6a12')
-		: state === 'idle' || state === 'cancelled' || state === 'incomplete' ? '#2a3140'
-		: state === 'starting' ? (f % 3 === 0 ? '#2a3140' : '#4a78c9')
-		: '#5fa8ff';
+		state === 'error'
+			? f % 2
+				? '#ff5a5a'
+				: '#7a1f1f'
+			: state === 'done'
+				? '#59d98e'
+				: state === 'blocked'
+					? f % 4 < 2
+						? '#ffcf4a'
+						: '#8a6a12'
+					: state === 'idle' || state === 'cancelled' || state === 'incomplete'
+						? '#2a3140'
+						: state === 'starting'
+							? f % 3 === 0
+								? '#2a3140'
+								: '#4a78c9'
+							: '#5fa8ff';
 	px(18, 17, 11, 7, '#22262e');
 	px(19, 18, 9, 5, screen);
 	if (state === 'browsing') px(19 + (f % 9), 19, 1, 3, '#d9ecff');
@@ -176,5 +219,13 @@ export function Character({ seed, state, size = 128 }: { seed: string; state: Ch
 		raf = requestAnimationFrame(loop);
 		return () => cancelAnimationFrame(raf);
 	}, [seed, state]);
-	return <canvas ref={ref} width={W} height={H} style={{ width: size, height: size, imageRendering: 'pixelated' }} aria-label={STATE_LABEL[state]} />;
+	return (
+		<canvas
+			ref={ref}
+			width={W}
+			height={H}
+			style={{ width: size, height: size, imageRendering: 'pixelated' }}
+			aria-label={STATE_LABEL[state]}
+		/>
+	);
 }

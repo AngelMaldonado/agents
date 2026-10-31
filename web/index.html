@@ -1,24 +1,27 @@
 <!doctype html>
 <html lang="es">
-  <head>
-    <meta charset="UTF-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>Agents · Cuby</title>
-    <link rel="icon" type="image/x-icon" sizes="16x16 32x32 48x48" href="/favicon.ico" />
-    <link rel="icon" type="image/png" sizes="64x64" href="/favicon.png?v=agents" />
-    <script>
-      // Same preference and first-paint behavior as Nova; storage may be blocked.
-      (() => {
-        let theme = null;
-        try { theme = localStorage.getItem('cuby-theme'); } catch {}
-        if (theme !== 'light' && theme !== 'dark') theme = matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light';
-        document.documentElement.classList.toggle('dark', theme === 'dark');
-        document.documentElement.dataset.theme = theme;
-      })();
-    </script>
-  </head>
-  <body>
-    <div id="root"></div>
-    <script type="module" src="/src/main.tsx"></script>
-  </body>
+	<head>
+		<meta charset="UTF-8" />
+		<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+		<title>Agents · Cuby</title>
+		<link rel="icon" type="image/x-icon" sizes="16x16 32x32 48x48" href="/favicon.ico" />
+		<link rel="icon" type="image/png" sizes="64x64" href="/favicon.png?v=agents" />
+		<script>
+			// Same preference and first-paint behavior as Nova; storage may be blocked.
+			(() => {
+				let theme = null;
+				try {
+					theme = localStorage.getItem('cuby-theme');
+				} catch {}
+				if (theme !== 'light' && theme !== 'dark')
+					theme = matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light';
+				document.documentElement.classList.toggle('dark', theme === 'dark');
+				document.documentElement.dataset.theme = theme;
+			})();
+		</script>
+	</head>
+	<body>
+		<div id="root"></div>
+		<script type="module" src="/src/main.tsx"></script>
+	</body>
 </html>

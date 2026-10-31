@@ -6,7 +6,12 @@
 import { useEffect, useState, useSyncExternalStore } from 'react';
 import type { Task, TaskEvent } from './api';
 
-export type Frame = { taskId: number; jpeg: string; meta: { url?: string; deviceWidth?: number; deviceHeight?: number } | null; at: number };
+export type Frame = {
+	taskId: number;
+	jpeg: string;
+	meta: { url?: string; deviceWidth?: number; deviceHeight?: number } | null;
+	at: number;
+};
 
 type Listener = () => void;
 const frames = new Map<number, Frame>(); // agent id -> frame
@@ -100,7 +105,7 @@ export function useFrame(agentId: number) {
 			frameSubs.get(agentId)!.add(l);
 			return () => frameSubs.get(agentId)!.delete(l);
 		},
-		() => frames.get(agentId)
+		() => frames.get(agentId),
 	);
 }
 
@@ -110,7 +115,7 @@ export function useConnected() {
 			connSubs.add(l);
 			return () => connSubs.delete(l);
 		},
-		() => connected
+		() => connected,
 	);
 }
 

@@ -5,7 +5,7 @@ import { randomUUID } from 'node:crypto';
 export const newRunWorkflowId = () => `run-${randomUUID()}`;
 export const isNewRunWorkflowId = (id: string) => /^run-[0-9a-f]{8}-(?:[0-9a-f]{4}-){3}[0-9a-f]{12}$/.test(id);
 export function admissionWorkflowId(runWorkflowId: string) {
- if (!/^run-.+/.test(runWorkflowId)) throw new Error('La corrida no tiene una identidad de cola válida.');
- // Legacy run-6 keeps admit-6; never rename valid in-flight/history workflows.
- return `admit-${runWorkflowId.slice(4)}`;
+	if (!/^run-.+/.test(runWorkflowId)) throw new Error('La corrida no tiene una identidad de cola válida.');
+	// Legacy run-6 keeps admit-6; never rename valid in-flight/history workflows.
+	return `admit-${runWorkflowId.slice(4)}`;
 }

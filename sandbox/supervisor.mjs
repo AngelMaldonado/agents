@@ -12,7 +12,17 @@
 // browser/ (the Chrome profile, AGENT_BROWSER_PROFILE).
 import { spawn } from 'node:child_process';
 import { createServer } from 'node:http';
-import { mkdtempSync, mkdirSync, writeFileSync, readdirSync, readFileSync, statSync, rmSync, symlinkSync, lstatSync } from 'node:fs';
+import {
+	mkdtempSync,
+	mkdirSync,
+	writeFileSync,
+	readdirSync,
+	readFileSync,
+	statSync,
+	rmSync,
+	symlinkSync,
+	lstatSync,
+} from 'node:fs';
 import { join, extname } from 'node:path';
 import { createHash } from 'node:crypto';
 import { execFile } from 'node:child_process';
@@ -168,16 +178,26 @@ function setControl(on) {
 }
 
 async function navigate(msg) {
-	const r = msg.action === 'open' ? await ab('open', String(msg.url ?? '')) : ['back', 'forward', 'reload'].includes(msg.action) ? await ab(msg.action) : null;
-	if (r?.err) send({ t: 'stderr', text: `navegación (${msg.action}): ${String(r.stderr || r.err.message).slice(0, 300)}` });
+	const r =
+		msg.action === 'open'
+			? await ab('open', String(msg.url ?? ''))
+			: ['back', 'forward', 'reload'].includes(msg.action)
+				? await ab(msg.action)
+				: null;
+	if (r?.err)
+		send({ t: 'stderr', text: `navegación (${msg.action}): ${String(r.stderr || r.err.message).slice(0, 300)}` });
 }
 
 // ---------- the browser ----------
 
 function browserCommand(args, timeout) {
-	return new Promise((resolve) => execFile('agent-browser', args, { cwd: WORK, timeout }, (err, stdout, stderr) => resolve({ err, stdout, stderr })));
+	return new Promise((resolve) =>
+		execFile('agent-browser', args, { cwd: WORK, timeout }, (err, stdout, stderr) => resolve({ err, stdout, stderr })),
+	);
 }
-function ab(...args) { return browserCommand(args, 60_000); }
+function ab(...args) {
+	return browserCommand(args, 60_000);
+}
 
 let browserReady = false;
 let lastUrl = '';
@@ -219,11 +239,14 @@ function watchBrowser() {
 		if (!watched) return;
 		pending = { t: 'frame', jpeg: m.data, meta };
 		if (!flushing) {
-			flushing = setTimeout(() => {
-				flushing = null;
-				if (pending && watched && (backend?.bufferedAmount ?? 0) <= 512 * 1024) send(pending);
-				pending = null;
-			}, control ? 66 : 200);
+			flushing = setTimeout(
+				() => {
+					flushing = null;
+					if (pending && watched && (backend?.bufferedAmount ?? 0) <= 512 * 1024) send(pending);
+					pending = null;
+				},
+				control ? 66 : 200,
+			);
 		}
 	};
 	ws.onclose = () => {
@@ -280,7 +303,9 @@ async function purgeOrigins(purges) {
 			ws.send(JSON.stringify({ id, method, params, ...(sessionId ? { sessionId } : {}) }));
 		});
 	const page = (await call('Target.getTargets')).result?.targetInfos?.find((t) => t.type === 'page');
-	const sessionId = page ? (await call('Target.attachToTarget', { targetId: page.targetId, flatten: true })).result?.sessionId : undefined;
+	const sessionId = page
+		? (await call('Target.attachToTarget', { targetId: page.targetId, flatten: true })).result?.sessionId
+		: undefined;
 	const results = [];
 	for (const p of purges) {
 		try {
@@ -293,7 +318,8 @@ async function purgeOrigins(purges) {
 				const d = c.domain.replace(/^\./, '');
 				return host === d || host.endsWith(`.${d}`);
 			});
-			for (const c of doomed) await call('Network.deleteCookies', { name: c.name, domain: c.domain, path: c.path }, sessionId);
+			for (const c of doomed)
+				await call('Network.deleteCookies', { name: c.name, domain: c.domain, path: c.path }, sessionId);
 			results.push({ id: p.id, ok: true, detail: `${doomed.length} cookies más` });
 		} catch (err) {
 			results.push({ id: p.id, ok: false, detail: err.message });
@@ -307,25 +333,63 @@ async function purgeOrigins(purges) {
 
 async function start(msg) {
 	const prepared = prepareHarness(msg.harness ?? defaultHarness(), mkdtempSync('/tmp/agents-harness-'));
-	if (msg.harnessDigest && msg.harnessDigest !== prepared.digest) throw new Error('El manifiesto no coincide con la revisión fijada a la corrida.');
+	if (msg.harnessDigest && msg.harnessDigest !== prepared.digest)
+		throw new Error('El manifiesto no coincide con la revisión fijada a la corrida.');
 	expectedHarness = prepared;
 	// GPT only: pi's one provider is OpenAI, through the backend's gateway.
-	writeFileSync(join(PI_DIR, 'models.json'), JSON.stringify({ providers: { openai: { baseUrl: `${SERVER}/llm/openai/v1` } } }));
-	if (prepared.mcpConfig) writeFileSync(join(PI_DIR, 'mcp.json'), JSON.stringify(prepared.mcpConfig, null, 1), { mode: 0o600 });
+	writeFileSync(
+		join(PI_DIR, 'models.json'),
+		JSON.stringify({ providers: { openai: { baseUrl: `${SERVER}/llm/openai/v1` } } }),
+	);
+	if (prepared.mcpConfig)
+		writeFileSync(join(PI_DIR, 'mcp.json'), JSON.stringify(prepared.mcpConfig, null, 1), { mode: 0o600 });
 	else rmSync(join(PI_DIR, 'mcp.json'), { force: true });
 	// The agent's own credentials (owner-set, per agent): environment of pi, its shell and MCP servers.
-	const secrets = msg.secrets && typeof msg.secrets === 'object' ? Object.fromEntries(Object.entries(msg.secrets).filter(([k, v]) => /^[A-Z][A-Z0-9_]{1,63}$/.test(k) && typeof v === 'string')) : {};
+	const secrets =
+		msg.secrets && typeof msg.secrets === 'object'
+			? Object.fromEntries(
+					Object.entries(msg.secrets).filter(([k, v]) => /^[A-Z][A-Z0-9_]{1,63}$/.test(k) && typeof v === 'string'),
+				)
+			: {};
 	const toolPath = `${join(TOOLS, 'bin')}:${join(TOOLS, 'npm', 'node_modules', '.bin')}:${process.env.PATH}`;
 	const systemFile = join(STATE, 'contract.md');
 	writeFileSync(systemFile, msg.system);
 	writeInbox(msg.files ?? []);
 	if (msg.kind === 'initialize') {
 		send({ t: 'initialization', step: 'workspace' });
-		await new Promise((resolve, reject) => execFile('/bin/sh', ['-ec', 'command -v pi; command -v agent-browser; command -v agents-login; command -v agents-blocked; pi --version; agent-browser --version'], { cwd: WORK, timeout: 30000 }, (err) => err ? reject(new Error('Faltan herramientas o no arrancan en esta imagen.')) : resolve()));
-		const probe = await new Promise((resolve, reject) => execFile('node', ['/opt/agents/harness-probe.mjs'], { timeout: 30000, maxBuffer: 1024 * 1024, env: { PATH: process.env.PATH, AGENTS_HARNESS: JSON.stringify(prepared.harness) } }, (err, stdout) => {
-			const marker = stdout.split(/\r?\n/).find(line => line.startsWith('AGENTS_HARNESS_PROBE '));
-			try { const report = JSON.parse(marker?.slice('AGENTS_HARNESS_PROBE '.length) ?? 'null'); if (err || !report?.ok || report.runtime.digest !== prepared.digest) throw new Error(report?.error ?? 'pi no confirmó el harness.'); resolve(report.runtime); } catch (error) { reject(error); }
-		}));
+		await new Promise((resolve, reject) =>
+			execFile(
+				'/bin/sh',
+				[
+					'-ec',
+					'command -v pi; command -v agent-browser; command -v agents-login; command -v agents-blocked; pi --version; agent-browser --version',
+				],
+				{ cwd: WORK, timeout: 30000 },
+				(err) => (err ? reject(new Error('Faltan herramientas o no arrancan en esta imagen.')) : resolve()),
+			),
+		);
+		const probe = await new Promise((resolve, reject) =>
+			execFile(
+				'node',
+				['/opt/agents/harness-probe.mjs'],
+				{
+					timeout: 30000,
+					maxBuffer: 1024 * 1024,
+					env: { PATH: process.env.PATH, AGENTS_HARNESS: JSON.stringify(prepared.harness) },
+				},
+				(err, stdout) => {
+					const marker = stdout.split(/\r?\n/).find((line) => line.startsWith('AGENTS_HARNESS_PROBE '));
+					try {
+						const report = JSON.parse(marker?.slice('AGENTS_HARNESS_PROBE '.length) ?? 'null');
+						if (err || !report?.ok || report.runtime.digest !== prepared.digest)
+							throw new Error(report?.error ?? 'pi no confirmó el harness.');
+						resolve(report.runtime);
+					} catch (error) {
+						reject(error);
+					}
+				},
+			),
+		);
 		send({ t: 'harness', ...probe });
 		send({ t: 'initialization', step: 'tools' });
 	}
@@ -361,33 +425,66 @@ async function start(msg) {
 
 	// pi gets only the LLM token, as its provider key. The bootstrap token stays out of its env.
 	// Its session is the conversation's: same id, same history, in the agent's volume.
-	const env = { ...process.env, ...secrets, ...prepared.env, PATH: toolPath, OPENAI_API_KEY: LLM_TOKEN, PI_CODING_AGENT_DIR: PI_DIR };
+	const env = {
+		...process.env,
+		...secrets,
+		...prepared.env,
+		PATH: toolPath,
+		OPENAI_API_KEY: LLM_TOKEN,
+		PI_CODING_AGENT_DIR: PI_DIR,
+	};
 	delete env.AGENTS_TASK_TOKEN;
 	delete env.AGENTS_LLM_TOKEN;
 	const session = msg.piSession ? ['--session-dir', PI_SESSIONS, '--session-id', msg.piSession] : ['--no-session'];
-	const loaded = new Promise((resolve, reject) => { harnessReady = { resolve, reject }; });
+	const loaded = new Promise((resolve, reject) => {
+		harnessReady = { resolve, reject };
+	});
 	pi = spawn(
 		'pi',
-		['--mode', 'rpc', ...session, '--offline', ...prepared.args, '--model', msg.model, '--append-system-prompt', systemFile],
+		[
+			'--mode',
+			'rpc',
+			...session,
+			'--offline',
+			...prepared.args,
+			'--model',
+			msg.model,
+			'--append-system-prompt',
+			systemFile,
+		],
 		// Its own process group, so a takeover can stop pi and whatever it started at once.
-		{ cwd: WORK, env, stdio: ['pipe', 'pipe', 'pipe'], detached: true }
+		{ cwd: WORK, env, stdio: ['pipe', 'pipe', 'pipe'], detached: true },
 	);
-	if (control) setTimeout(() => { try { process.kill(-pi.pid, 'SIGSTOP'); } catch {} });
+	if (control)
+		setTimeout(() => {
+			try {
+				process.kill(-pi.pid, 'SIGSTOP');
+			} catch {}
+		});
 	readLines(pi.stdout, onPiLine);
 	let stderrLines = 0;
 	readLines(pi.stderr, (line) => {
 		if (line.startsWith('AGENTS_HARNESS_READY ')) onPiLine(line.slice('AGENTS_HARNESS_READY '.length));
 		else if (line.trim() && stderrLines++ < 50) send({ t: 'stderr', text: line });
 	});
-	pi.on('error', err => harnessReady?.reject(err));
+	pi.on('error', (err) => harnessReady?.reject(err));
 	pi.on('exit', (code) => {
 		harnessReady?.reject(new Error(`pi terminó antes de confirmar el harness (${code}).`));
 		send({ t: 'exit', code });
 		pi = null;
 	});
 	let timer;
-	try { await Promise.race([loaded, new Promise((_, reject) => { timer = setTimeout(() => reject(new Error('pi no confirmó el harness aprobado.')), 30000); })]); }
-	finally { clearTimeout(timer); harnessReady = null; }
+	try {
+		await Promise.race([
+			loaded,
+			new Promise((_, reject) => {
+				timer = setTimeout(() => reject(new Error('pi no confirmó el harness aprobado.')), 30000);
+			}),
+		]);
+	} finally {
+		clearTimeout(timer);
+		harnessReady = null;
+	}
 	pi.stdin.write(JSON.stringify({ id: 'task', type: 'prompt', message: msg.prompt }) + '\n');
 	piReady = true;
 	for (const cmd of piQueue.splice(0)) pi.stdin.write(JSON.stringify(cmd) + '\n');
@@ -396,28 +493,57 @@ async function start(msg) {
 // ---------- CLI tools and MCP sign-in ----------
 
 function run(bin, args, env, timeout = 10 * 60_000) {
-	return new Promise((resolve, reject) => execFile(bin, args, { cwd: WORK, env, timeout, maxBuffer: 8 * 1024 * 1024 }, (err, _out, errOut) =>
-		err ? reject(new Error(`${bin} ${args.slice(0, 3).join(' ')}: ${String(errOut || err.message).trim().split('\n').slice(-3).join(' ').slice(0, 400)}`)) : resolve()));
+	return new Promise((resolve, reject) =>
+		execFile(bin, args, { cwd: WORK, env, timeout, maxBuffer: 8 * 1024 * 1024 }, (err, _out, errOut) =>
+			err
+				? reject(
+						new Error(
+							`${bin} ${args.slice(0, 3).join(' ')}: ${String(errOut || err.message)
+								.trim()
+								.split('\n')
+								.slice(-3)
+								.join(' ')
+								.slice(0, 400)}`,
+						),
+					)
+				: resolve(),
+		),
+	);
 }
 
 /** Installs the approved list once; the same list on the next start finds it done. */
 async function installTools(installs, env) {
 	if (!installs?.length) return;
-	const want = createHash('sha256').update(JSON.stringify(installs)).digest('hex'), marker = join(TOOLS, '.installed');
-	try { if (readFileSync(marker, 'utf8') === want) return; } catch {}
+	const want = createHash('sha256').update(JSON.stringify(installs)).digest('hex'),
+		marker = join(TOOLS, '.installed');
+	try {
+		if (readFileSync(marker, 'utf8') === want) return;
+	} catch {}
 	send({ t: 'note', message: `Instalando herramientas: ${installs.map((i) => i.name ?? i.spec).join(', ')}…` });
 	rmSync(TOOLS, { recursive: true, force: true });
 	mkdirSync(join(TOOLS, 'bin'), { recursive: true });
 	const npm = installs.filter((i) => i.kind === 'npm').map((i) => i.spec);
-	if (npm.length) await run('npm', ['install', '--prefix', join(TOOLS, 'npm'), '--no-audit', '--no-fund', '--loglevel=error', ...npm], env);
+	if (npm.length)
+		await run(
+			'npm',
+			['install', '--prefix', join(TOOLS, 'npm'), '--no-audit', '--no-fund', '--loglevel=error', ...npm],
+			env,
+		);
 	for (const i of installs.filter((x) => x.kind === 'uv')) {
-		await run('uv', ['tool', 'install', i.spec], { ...env, UV_TOOL_DIR: join(TOOLS, 'uv'), UV_TOOL_BIN_DIR: join(TOOLS, 'bin'), UV_CACHE_DIR: '/tmp/uv-cache', UV_PYTHON_PREFERENCE: 'only-system' });
+		await run('uv', ['tool', 'install', i.spec], {
+			...env,
+			UV_TOOL_DIR: join(TOOLS, 'uv'),
+			UV_TOOL_BIN_DIR: join(TOOLS, 'bin'),
+			UV_CACHE_DIR: '/tmp/uv-cache',
+			UV_PYTHON_PREFERENCE: 'only-system',
+		});
 	}
 	for (const i of installs.filter((x) => x.kind === 'binary')) {
 		const res = await fetch(i.spec, { signal: AbortSignal.timeout(120_000) });
 		if (!res.ok) throw new Error(`${i.name}: la descarga respondió ${res.status}.`);
 		const data = Buffer.from(await res.arrayBuffer());
-		if (createHash('sha256').update(data).digest('hex') !== i.sha256) throw new Error(`${i.name}: el sha256 no coincide; no se instaló.`);
+		if (createHash('sha256').update(data).digest('hex') !== i.sha256)
+			throw new Error(`${i.name}: el sha256 no coincide; no se instaló.`);
 		writeFileSync(join(TOOLS, 'bin', i.name), data, { mode: 0o755 });
 	}
 	writeFileSync(marker, want);
@@ -426,19 +552,32 @@ async function installTools(installs, env) {
 
 /** pi signs the MCP server in: its authorization page opens in this browser for the owner. */
 function mcpLogin(server) {
-	send({ t: 'note', message: `Iniciar sesión en el servidor MCP «${server}»: completa la autorización en el navegador.` });
-	const child = spawn('pi', ['mcp', 'login', server, '--timeout', '600'], { cwd: WORK, env: { ...process.env, PI_CODING_AGENT_DIR: PI_DIR, BROWSER: 'agents-open' }, stdio: ['ignore', 'pipe', 'pipe'] });
-	let opened = false, tail = '';
+	send({
+		t: 'note',
+		message: `Iniciar sesión en el servidor MCP «${server}»: completa la autorización en el navegador.`,
+	});
+	const child = spawn('pi', ['mcp', 'login', server, '--timeout', '600'], {
+		cwd: WORK,
+		env: { ...process.env, PI_CODING_AGENT_DIR: PI_DIR, BROWSER: 'agents-open' },
+		stdio: ['ignore', 'pipe', 'pipe'],
+	});
+	let opened = false,
+		tail = '';
 	const watch = (chunk) => {
 		const text = chunk.toString();
 		tail = (tail + text).slice(-2000);
 		const url = text.match(/https?:\/\/[^\s"'<>]+/)?.[0];
 		// The authorization page, not pi's own callback on this machine.
-		if (url && !opened && !/^https?:\/\/(127\.0\.0\.1|localhost|\[::1\])/.test(url)) { opened = true; void ab('open', url); }
+		if (url && !opened && !/^https?:\/\/(127\.0\.0\.1|localhost|\[::1\])/.test(url)) {
+			opened = true;
+			void ab('open', url);
+		}
 	};
 	child.stdout.on('data', watch);
 	child.stderr.on('data', watch);
-	child.on('exit', (code) => send({ t: 'mcp_login', server, ok: code === 0, detail: code === 0 ? '' : tail.trim().slice(-400) }));
+	child.on('exit', (code) =>
+		send({ t: 'mcp_login', server, ok: code === 0, detail: code === 0 ? '' : tail.trim().slice(-400) }),
+	);
 }
 
 /** Strict JSONL: split on LF only (U+2028/9 are valid inside JSON strings). */
@@ -456,7 +595,14 @@ function readLines(stream, onLine) {
 	});
 }
 
-const FORWARD = new Set(['message_end', 'tool_execution_start', 'tool_execution_end', 'agent_settled', 'auto_retry_start', 'agent_start']);
+const FORWARD = new Set([
+	'message_end',
+	'tool_execution_start',
+	'tool_execution_end',
+	'agent_settled',
+	'auto_retry_start',
+	'agent_start',
+]);
 let lastUpdate = 0;
 
 function onPiLine(line) {
@@ -467,8 +613,16 @@ function onPiLine(line) {
 		return;
 	}
 	if (ev.type === 'agents_harness_ready') {
-		if (!expectedHarness || ev.digest !== expectedHarness.digest || JSON.stringify(ev.tools) !== JSON.stringify(runtimeToolNames(expectedHarness.harness))) harnessReady?.reject(new Error('Las herramientas efectivas no coinciden con el harness aprobado.'));
-		else { send({ t: 'harness', digest: ev.digest, tools: ev.tools, skills: ev.skills, plugins: ev.plugins }); harnessReady?.resolve(); }
+		if (
+			!expectedHarness ||
+			ev.digest !== expectedHarness.digest ||
+			JSON.stringify(ev.tools) !== JSON.stringify(runtimeToolNames(expectedHarness.harness))
+		)
+			harnessReady?.reject(new Error('Las herramientas efectivas no coinciden con el harness aprobado.'));
+		else {
+			send({ t: 'harness', digest: ev.digest, tools: ev.tools, skills: ev.skills, plugins: ev.plugins });
+			harnessReady?.resolve();
+		}
 		return;
 	}
 	if (ev.type === 'response') {
@@ -499,7 +653,7 @@ function releaseBlocked(steered) {
 	b.res.end(
 		steered
 			? 'El humano respondió. Sus instrucciones te llegan en cuanto termine este comando: síguelas.\n'
-			: `Nadie respondió en ${Math.round(blockedWaitMs / 60000)} minutos. Salta este sitio y continúa con otros.\n`
+			: `Nadie respondió en ${Math.round(blockedWaitMs / 60000)} minutos. Salta este sitio y continúa con otros.\n`,
 	);
 }
 
@@ -540,30 +694,57 @@ createServer((req, res) => {
 
 // ---------- results ----------
 
-const MIME = { '.png': 'image/png', '.jpg': 'image/jpeg', '.jpeg': 'image/jpeg', '.webp': 'image/webp', '.json': 'application/json', '.csv': 'text/csv', '.md': 'text/markdown', '.txt': 'text/plain', '.pdf': 'application/pdf' };
+const MIME = {
+	'.png': 'image/png',
+	'.jpg': 'image/jpeg',
+	'.jpeg': 'image/jpeg',
+	'.webp': 'image/webp',
+	'.json': 'application/json',
+	'.csv': 'text/csv',
+	'.md': 'text/markdown',
+	'.txt': 'text/plain',
+	'.pdf': 'application/pdf',
+};
 
 async function collect() {
 	let files = [];
 	try {
-		files = readdirSync(OUT).filter((f) => statSync(join(OUT, f)).isFile()).slice(0, 40);
+		files = readdirSync(OUT)
+			.filter((f) => statSync(join(OUT, f)).isFile())
+			.slice(0, 40);
 	} catch {}
 	for (const name of files) {
 		const path = join(OUT, name);
 		if (statSync(path).size > 10 * 1024 * 1024) continue;
-		send({ t: 'file', name, mime: MIME[extname(name).toLowerCase()] ?? 'application/octet-stream', data: readFileSync(path).toString('base64') });
+		send({
+			t: 'file',
+			name,
+			mime: MIME[extname(name).toLowerCase()] ?? 'application/octet-stream',
+			data: readFileSync(path).toString('base64'),
+		});
 	}
 	// A quick initialization can finish before the stream's first frame. Capture the already
 	// opened browser in that case (5 s bound), without manufacturing an image or agent output.
 	if (!lastBrowserFrame && browserReady) {
-		const temp = mkdtempSync('/tmp/agents-final-browser-'), path = join(temp, 'screen.jpg');
+		const temp = mkdtempSync('/tmp/agents-final-browser-'),
+			path = join(temp, 'screen.jpg');
 		try {
 			const [shot, url] = await Promise.all([
 				browserCommand(['screenshot', '--screenshot-format', 'jpeg', '--screenshot-quality', '70', path], 5000),
-				browserCommand(['get', 'url'], 1500)
+				browserCommand(['get', 'url'], 1500),
 			]);
-			if (!shot.err && statSync(path).size <= 3 * 1024 * 1024) lastBrowserFrame = { t: 'snapshot', jpeg: readFileSync(path).toString('base64'), meta: { url: url.err ? lastUrl : url.stdout.trim() }, at: Date.now() };
-		} catch (err) { log(`No final browser capture: ${err.message}`); }
-		finally { rmSync(temp, { recursive: true, force: true }); }
+			if (!shot.err && statSync(path).size <= 3 * 1024 * 1024)
+				lastBrowserFrame = {
+					t: 'snapshot',
+					jpeg: readFileSync(path).toString('base64'),
+					meta: { url: url.err ? lastUrl : url.stdout.trim() },
+					at: Date.now(),
+				};
+		} catch (err) {
+			log(`No final browser capture: ${err.message}`);
+		} finally {
+			rmSync(temp, { recursive: true, force: true });
+		}
 	}
 	// Preserve the last observed image even with no web viewer. It is not an agent output file.
 	if (lastBrowserFrame) send(lastBrowserFrame);

@@ -13,7 +13,7 @@ import { prefixOf, proxyCredentials } from './providers';
 const CLIPROXY = process.env.AGENTS_CLIPROXY_URL ?? 'http://cliproxy:8317';
 
 const ROUTES: Record<string, { upstream: string }> = {
-	'/llm/openai/v1/responses': { upstream: '/v1/responses' }
+	'/llm/openai/v1/responses': { upstream: '/v1/responses' },
 };
 
 const PASS = ['content-type', 'accept', 'openai-beta'];
@@ -51,10 +51,15 @@ export async function gateway(c: Context) {
 		method: 'POST',
 		headers,
 		body: JSON.stringify(body),
-		signal: c.req.raw.signal
+		signal: c.req.raw.signal,
 	}).catch((err: Error) => err);
 	if (upstream instanceof Error) {
-		return c.json({ error: { type: 'api_error', message: `${own ? 'your CLIProxyAPI' : 'proxy'} unreachable: ${upstream.message}` } }, 502);
+		return c.json(
+			{
+				error: { type: 'api_error', message: `${own ? 'your CLIProxyAPI' : 'proxy'} unreachable: ${upstream.message}` },
+			},
+			502,
+		);
 	}
 	const out = new Headers();
 	for (const h of ['content-type', 'cache-control', 'request-id', 'x-request-id']) {

@@ -16,7 +16,7 @@ async function call(method: string, path: string, body?: unknown, ok: number[] =
 		signal: timeout ? AbortSignal.timeout(timeout) : undefined,
 		unix: SOCKET,
 		headers: body ? { 'content-type': 'application/json' } : undefined,
-		body: body ? JSON.stringify(body) : undefined
+		body: body ? JSON.stringify(body) : undefined,
 	} as RequestInit);
 	if (!res.ok && !ok.includes(res.status)) {
 		throw new Error(`docker ${method} ${path}: ${res.status} ${await res.text()}`);
@@ -32,29 +32,53 @@ export class DockerSandbox implements SandboxProvider {
 
 	/** Only platform-owned code, fresh tmpfs, no volumes/secrets/network/model requests. */
 	async probeHarness(imageId: string, harness: unknown, instance: string) {
-		const created = await call('POST', '/containers/create', {
-			Image: imageId, Entrypoint: ['node', '/opt/agents/harness-probe.mjs'], Cmd: [], User: 'agent', Tty: true,
-			Env: [`AGENTS_HARNESS=${JSON.stringify(harness)}`],
-			Labels: { 'agents.instance': instance, 'agents.harness-validation': 'true' },
-			HostConfig: { NetworkMode: 'none', ReadonlyRootfs: true, CapDrop: ['ALL'], SecurityOpt: ['no-new-privileges'],
-				Memory: 512 * 1024 * 1024, MemorySwap: 512 * 1024 * 1024, NanoCpus: 1e9, PidsLimit: 64,
-				Tmpfs: { '/tmp': 'rw,nosuid,nodev,size=64m,mode=1777' }, LogConfig: { Type: 'json-file', Config: { 'max-size': '1m', 'max-file': '1' } } }
-		}, [], 10000);
+		const created = await call(
+			'POST',
+			'/containers/create',
+			{
+				Image: imageId,
+				Entrypoint: ['node', '/opt/agents/harness-probe.mjs'],
+				Cmd: [],
+				User: 'agent',
+				Tty: true,
+				Env: [`AGENTS_HARNESS=${JSON.stringify(harness)}`],
+				Labels: { 'agents.instance': instance, 'agents.harness-validation': 'true' },
+				HostConfig: {
+					NetworkMode: 'none',
+					ReadonlyRootfs: true,
+					CapDrop: ['ALL'],
+					SecurityOpt: ['no-new-privileges'],
+					Memory: 512 * 1024 * 1024,
+					MemorySwap: 512 * 1024 * 1024,
+					NanoCpus: 1e9,
+					PidsLimit: 64,
+					Tmpfs: { '/tmp': 'rw,nosuid,nodev,size=64m,mode=1777' },
+					LogConfig: { Type: 'json-file', Config: { 'max-size': '1m', 'max-file': '1' } },
+				},
+			},
+			[],
+			10000,
+		);
 		try {
 			await call('POST', `/containers/${created.Id}/start`, undefined, [], 10000);
 			const deadline = Date.now() + 35000;
 			while ((await call('GET', `/containers/${created.Id}/json`, undefined, [], 5000)).State.Running) {
 				if (Date.now() > deadline) throw new Error('La prueba aislada agotó 35 segundos.');
-				await new Promise(r => setTimeout(r, 200));
+				await new Promise((r) => setTimeout(r, 200));
 			}
-			const response = await fetch(`${API}/containers/${created.Id}/logs?stdout=true&stderr=true&tail=100`, { unix: SOCKET, signal: AbortSignal.timeout(10000) } as RequestInit);
+			const response = await fetch(`${API}/containers/${created.Id}/logs?stdout=true&stderr=true&tail=100`, {
+				unix: SOCKET,
+				signal: AbortSignal.timeout(10000),
+			} as RequestInit);
 			const logs = await response.text();
-			const marker = logs.split(/\r?\n/).find(line => line.startsWith('AGENTS_HARNESS_PROBE '));
+			const marker = logs.split(/\r?\n/).find((line) => line.startsWith('AGENTS_HARNESS_PROBE '));
 			if (!marker) throw new Error(`La imagen no confirmó la prueba del harness: ${logs.slice(-1000)}`);
 			const report = JSON.parse(marker.slice('AGENTS_HARNESS_PROBE '.length));
 			if (!report.ok) throw new Error(String(report.error ?? 'pi no cargó el harness.').slice(0, 1000));
 			return report.runtime as { digest: string; tools: string[]; skills: string[]; plugins: unknown[] };
-		} finally { await call('DELETE', `/containers/${created.Id}?force=true&v=true`, undefined, [404,409], 10000); }
+		} finally {
+			await call('DELETE', `/containers/${created.Id}?force=true&v=true`, undefined, [404, 409], 10000);
+		}
 	}
 
 	async start(spec: SandboxSpec) {
@@ -77,11 +101,11 @@ export class DockerSandbox implements SandboxProvider {
 					Type: 'volume',
 					Source: v.name,
 					Target: v.target,
-					VolumeOptions: { Labels: v.labels ?? {} }
+					VolumeOptions: { Labels: v.labels ?? {} },
 				})),
 				AutoRemove: false,
-				LogConfig: { Type: 'json-file', Config: { 'max-size': '5m', 'max-file': '1' } }
-			}
+				LogConfig: { Type: 'json-file', Config: { 'max-size': '5m', 'max-file': '1' } },
+			},
 		});
 		const id = created.Id as string;
 		await call('POST', `/containers/${id}/start`, undefined, [304]);
@@ -95,9 +119,19 @@ export class DockerSandbox implements SandboxProvider {
 	async list(label: string): Promise<SandboxInfo[]> {
 		const filters = encodeURIComponent(JSON.stringify({ label: [label] }));
 		const rows = (await call('GET', `/containers/json?all=true&filters=${filters}`)) as {
-			Id: string; Names: string[]; Labels: Record<string, string> | null; State: string; Created: number;
+			Id: string;
+			Names: string[];
+			Labels: Record<string, string> | null;
+			State: string;
+			Created: number;
 		}[];
-		return rows.map((r) => ({ id: r.Id, name: (r.Names?.[0] ?? '').replace(/^\//, ''), labels: r.Labels ?? {}, state: r.State, created: r.Created * 1000 }));
+		return rows.map((r) => ({
+			id: r.Id,
+			name: (r.Names?.[0] ?? '').replace(/^\//, ''),
+			labels: r.Labels ?? {},
+			state: r.State,
+			created: r.Created * 1000,
+		}));
 	}
 
 	/** One sample (Docker waits ~1 s to compute the CPU delta). */
@@ -114,7 +148,7 @@ export class DockerSandbox implements SandboxProvider {
 			memoryBytes: Math.max(0, usage - (s.memory_stats?.stats?.inactive_file ?? 0)),
 			memoryLimit: s.memory_stats?.limit ?? 0,
 			netRx: nets.reduce((n, x) => n + (x.rx_bytes ?? 0), 0),
-			netTx: nets.reduce((n, x) => n + (x.tx_bytes ?? 0), 0)
+			netTx: nets.reduce((n, x) => n + (x.tx_bytes ?? 0), 0),
 		};
 	}
 

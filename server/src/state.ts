@@ -12,6 +12,6 @@ export function stateMount(agent: { id: number; state_ref: string }, instance: s
 	return {
 		name: agent.state_ref,
 		target: STATE_DIR,
-		labels: { 'agents.instance': instance, 'agents.agent': String(agent.id) }
+		labels: { 'agents.instance': instance, 'agents.agent': String(agent.id) },
 	};
 }

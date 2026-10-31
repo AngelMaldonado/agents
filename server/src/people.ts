@@ -32,7 +32,7 @@ export async function join(rawName: string): Promise<{ person: Person; token: st
 	if (!key) return null;
 	const p = await row<{ id: number }>(
 		'insert into people (name, key, avatar_seed) values ($1, $2, $3) on conflict (key) do nothing returning id',
-		[name, key, randomBytes(8).toString('hex')]
+		[name, key, randomBytes(8).toString('hex')],
 	);
 	if (!p) return null;
 	const token = await session(p.id);
@@ -49,7 +49,7 @@ export async function invite(personId: number) {
 	const code = randomBytes(12).toString('base64url');
 	await exec(
 		`insert into invites (code_hash, person_id, expires_at) values ($1, $2, now() + make_interval(hours => $3))`,
-		[hash(code), personId, INVITE_HOURS]
+		[hash(code), personId, INVITE_HOURS],
 	);
 	return code;
 }
@@ -59,7 +59,7 @@ export function invited(code: string) {
 	return row<{ id: number; name: string }>(
 		`select p.id, p.name from invites i join people p on p.id = i.person_id
 		 where i.code_hash = $1 and i.used_at is null and i.expires_at > now()`,
-		[hash(code)]
+		[hash(code)],
 	);
 }
 
@@ -67,22 +67,32 @@ export function invited(code: string) {
 export async function redeem(code: string) {
 	const used = await row<{ person_id: number }>(
 		`update invites set used_at = now() where code_hash = $1 and used_at is null and expires_at > now() returning person_id`,
-		[hash(code)]
+		[hash(code)],
 	);
 	return used ? session(used.person_id) : null;
 }
 
 /** Who can be picked to share an agent with: names only. */
 export function directory() {
-	return rows<{ id: number; name: string; avatar_seed: string }>('select id, name, avatar_seed from people order by lower(name)');
+	return rows<{ id: number; name: string; avatar_seed: string }>(
+		'select id, name, avatar_seed from people order by lower(name)',
+	);
 }
 
 export function everyone() {
-	return rows<{ id: number; name: string; avatar_seed: string; created_at: number; run_quota: number; agents: number; tasks: number }>(
+	return rows<{
+		id: number;
+		name: string;
+		avatar_seed: string;
+		created_at: number;
+		run_quota: number;
+		agents: number;
+		tasks: number;
+	}>(
 		`select p.id, p.name, p.avatar_seed, p.created_at, p.run_quota,
 		        (select count(*) from agents a where a.person_id = p.id and a.deleted_at is null) as agents,
 		        (select count(*) from runs r where r.person_id = p.id) as tasks
-		 from people p order by lower(p.name)`
+		 from people p order by lower(p.name)`,
 	);
 }
 
@@ -105,7 +115,7 @@ export async function whoIs(token: string | undefined): Promise<Person | null> {
 		`update sessions s set last_seen_at = now() from people p
 		 where s.token_hash = $1 and p.id = s.person_id
 		 returning p.id, p.name, p.avatar_seed, s.admin_until`,
-		[hash(token)]
+		[hash(token)],
 	);
 	if (!r) return null;
 	const { admin_until, ...person } = r;
@@ -123,7 +133,10 @@ export async function unlock(token: string, pin: string) {
 	if (!expected.length || expected.length !== given.length || !timingSafeEqual(expected, given)) {
 		return false;
 	}
-	await exec(`update sessions set admin_until = now() + make_interval(days => $2) where token_hash = $1`, [hash(token), ADMIN_DAYS]);
+	await exec(`update sessions set admin_until = now() + make_interval(days => $2) where token_hash = $1`, [
+		hash(token),
+		ADMIN_DAYS,
+	]);
 	return true;
 }
 

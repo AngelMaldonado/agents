@@ -1,0 +1,40 @@
+{
+	"version": "0.0.1-beta",
+	"sha": "2c3c15865d2ba5d505eadffb3fa0ff7907e1a218",
+	"platform": "linux/amd64",
+	"schema": {
+		"files": [
+			"001_init.sql",
+			"002_general_agents.sql",
+			"003_agent_designs.sql",
+			"004_agent_harness.sql",
+			"005_agent_interviews.sql",
+			"006_conversation_tabs.sql",
+			"007_browser_runs.sql",
+			"008_design_schedules.sql",
+			"009_whatsapp.sql",
+			"010_message_queue.sql",
+			"011_agent_secrets.sql",
+			"012_agent_shares.sql"
+		],
+		"sha256": "aa3fb58c1ca4fe83626b99384fe03943e6c8683d16cf7472bb4e303fceccab30"
+	},
+	"images": {
+		"agents-app": {
+			"digest": "sha256:e2583f458f97dd55ceb06742cc8d3b2b8dad79d3e8ce4e4c55ba4c3d6b72d422",
+			"ref": "registry.cubytest.space/cuby/agents-release-probe@sha256:e2583f458f97dd55ceb06742cc8d3b2b8dad79d3e8ce4e4c55ba4c3d6b72d422",
+			"verified": true
+		},
+		"agents-sandbox": {
+			"digest": "sha256:eb8fcec664ca91fc6991fe26d20bfcbe904f1aa22fafc56966a296f1cdcf232e",
+			"ref": "registry.cubytest.space/cuby/agents-release-probe-sandbox@sha256:eb8fcec664ca91fc6991fe26d20bfcbe904f1aa22fafc56966a296f1cdcf232e",
+			"verified": true
+		}
+	},
+	"executions": {
+		"agents-app": "6ae52d0d5c3077fa6f9da2fe",
+		"agents-sandbox": "6ae52d185c3077fa6f9da300"
+	},
+	"cosignPublicKeySha256": "306102f7485320db8a37e90babb847b7f99e5910775d292d6a44801736475859",
+	"transparencyLog": false
+}

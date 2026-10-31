@@ -11,7 +11,11 @@ function apply(mode: ThemeMode) {
 }
 
 export function setTheme(mode: ThemeMode) {
-	try { localStorage.setItem(KEY, mode); } catch { /* The in-memory preference still works. */ }
+	try {
+		localStorage.setItem(KEY, mode);
+	} catch {
+		/* The in-memory preference still works. */
+	}
 	apply(mode);
 	window.dispatchEvent(new Event(EVENT));
 }
@@ -20,15 +24,26 @@ function subscribe(changed: () => void) {
 	const storage = (event: StorageEvent) => {
 		if (event.key !== KEY && event.key !== null) return;
 		const mode = event.newValue;
-		apply(mode === 'light' || mode === 'dark' ? mode : matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light');
+		apply(
+			mode === 'light' || mode === 'dark'
+				? mode
+				: matchMedia('(prefers-color-scheme: dark)').matches
+					? 'dark'
+					: 'light',
+		);
 		changed();
 	};
 	window.addEventListener(EVENT, changed);
 	window.addEventListener('storage', storage);
-	return () => { window.removeEventListener(EVENT, changed); window.removeEventListener('storage', storage); };
+	return () => {
+		window.removeEventListener(EVENT, changed);
+		window.removeEventListener('storage', storage);
+	};
 }
 
 export function useTheme() {
-	const mode = useSyncExternalStore(subscribe, () => document.documentElement.dataset.theme === 'dark' ? 'dark' as const : 'light' as const);
+	const mode = useSyncExternalStore(subscribe, () =>
+		document.documentElement.dataset.theme === 'dark' ? ('dark' as const) : ('light' as const),
+	);
 	return { mode, set: setTheme, toggle: () => setTheme(mode === 'dark' ? 'light' : 'dark') };
 }

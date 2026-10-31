@@ -16,7 +16,9 @@ export function seal(plain: string) {
 	const iv = randomBytes(12);
 	const cipher = createCipheriv('aes-256-gcm', masterKey(), iv);
 	const body = Buffer.concat([cipher.update(plain, 'utf8'), cipher.final()]);
-	return ['v1', iv, cipher.getAuthTag(), body].map((p) => (typeof p === 'string' ? p : p.toString('base64url'))).join('.');
+	return ['v1', iv, cipher.getAuthTag(), body]
+		.map((p) => (typeof p === 'string' ? p : p.toString('base64url')))
+		.join('.');
 }
 
 export function open(sealed: string) {

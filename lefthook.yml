@@ -1,0 +1,16 @@
+# Check only: never stage another hunk or silently rewrite a partially staged file.
+pre-commit:
+  parallel: false
+  commands:
+    sanitize:
+      priority: 1
+      run: just sanitize staged
+    format:
+      priority: 2
+      run: just format check
+    lint:
+      priority: 3
+      run: just lint
+    check:
+      priority: 4
+      run: just check

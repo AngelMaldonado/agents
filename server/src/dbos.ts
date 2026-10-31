@@ -10,7 +10,7 @@ export async function startDbos() {
 		applicationVersion: process.env.AGENTS_APP_VERSION ?? 'v2',
 		systemDatabaseUrl: DATABASE_URL,
 		systemDatabaseSchemaName: 'dbos',
-		logLevel: process.env.AGENTS_DBOS_LOG ?? 'warn'
+		logLevel: process.env.AGENTS_DBOS_LOG ?? 'warn',
 	});
 	await DBOS.launch();
 }

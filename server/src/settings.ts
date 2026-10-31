@@ -20,8 +20,8 @@ const DEFAULTS: Settings = {
 	sandboxImage: process.env.AGENTS_SANDBOX_IMAGE ?? 'agents-sandbox:dev',
 	models: [
 		{ id: 'openai/gpt-6.1-sol', label: 'GPT-6.1 Sol' },
-		{ id: 'openai/gpt-6-sol', label: 'GPT-6 Sol' }
-	]
+		{ id: 'openai/gpt-6-sol', label: 'GPT-6 Sol' },
+	],
 };
 
 let cached: Settings = DEFAULTS;
@@ -44,7 +44,7 @@ export async function saveSettings(patch: Partial<Settings>) {
 	await exec(
 		`insert into settings (key, value) values ('settings', $1)
 		 on conflict (key) do update set value = excluded.value, updated_at = now()`,
-		[JSON.stringify(next)]
+		[JSON.stringify(next)],
 	);
 	cached = next;
 	return next;
