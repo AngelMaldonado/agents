@@ -34,6 +34,14 @@ def approved(p):
             and p.get('deploymentEnabled') is True)
 
 
+def same_stack_config(actual, expected):
+    # Komodo agrega LF final al guardar. No normalizar otros campos/caracteres.
+    a,b=dict(actual),dict(expected)
+    for x in (a,b):
+        if isinstance(x.get('file_contents'),str): x['file_contents']=x['file_contents'].rstrip('\n')
+    return a==b
+
+
 class Transfer:
     def __init__(self, p):
         self.p = p
@@ -291,9 +299,10 @@ class Transfer:
         latest = self.api('read','GetStack',{'stack':'agents'})
         if latest['config'] != original: raise ValueError('Stack cambió durante ventana')
         sid = self.stack['_id']['$oid'] if isinstance(self.stack['_id'],dict) else self.stack['_id']
-        self.api('write','UpdateStack',{'id':sid,'config':{'file_contents':self.effective_candidate}})
+        if not self.state.get('normalizedManagedUpdateAdopted'):
+            self.api('write','UpdateStack',{'id':sid,'config':{'file_contents':self.effective_candidate}})
         after = self.api('read','GetStack',{'stack':'agents'})['config']
-        if after != {**original, 'file_contents':self.effective_candidate}: raise ValueError('Cambio gestionado no acotado')
+        if not same_stack_config(after,{**original, 'file_contents':self.effective_candidate}): raise ValueError('Cambio gestionado no acotado')
         self.state['managedStackChanged'] = True
         self.helper(['type=bind,src=/etc/komodo/stacks/agents,dst=/stack'], 'node','-e',
             "const fs=require('fs');const b=fs.readFileSync(0);fs.writeFileSync('/stack/compose.transfer.tmp',b,{mode:0o600,flag:'wx'});fs.renameSync('/stack/compose.transfer.tmp','/stack/compose.yaml')",caps=True,data=self.effective_candidate.encode())
@@ -359,7 +368,7 @@ class Transfer:
             original=json.loads((self.backup/'original-komodo-stack.json').read_text())
             current=self.api('read','GetStack',{'stack':'agents'})
             candidate=(self.directory/'candidate.compose.yaml').read_text()
-            if current['config'] not in (original['config'],{**original['config'],'file_contents':candidate}):
+            if not any(same_stack_config(current['config'],v) for v in (original['config'],{**original['config'],'file_contents':candidate})):
                 raise ValueError('Stack ajeno al cambio esperado; reconciliar')
             sid=original['_id']['$oid']
             if current['config'] != original['config']:
@@ -378,9 +387,57 @@ class Transfer:
         self.remove_maintenance()
         self.save('recovered-original', recoveredOriginal=True)
 
+    def resume_preboot(self):
+        if self.state.get('phase')!='failed' or self.state.get('recoveredOriginal') or self.state.get('bootAttempted') or self.state.get('failedPhase')!='managed-stack-update-attempt' or self.state.get('profilesCopied')!=9 or not self.state.get('tablesIdenticalBeforeBoot'):
+            raise ValueError('Continuación sólo tras actualización conocida, destino verificado y SIN intento de boot')
+        self.login()
+        self.core.assert_frozen()
+        for name,old in self.state['writers'].items():
+            current=self.inspect(name)
+            snapshot_time=time.strftime('%Y-%m-%dT%H:%M:%S',time.strptime(self.state['snapshotRun'].split('-')[0],'%Y%m%dT%H%M%SZ'))
+            if current['Id']!=old['id'] or current['State']['Running'] or current['State']['StartedAt'][:19]>=snapshot_time:
+                raise ValueError('Origen cambió/rearrancó; no continuar')
+        if self.infrastructure()!=self.state['infra']: raise ValueError('Infraestructura cambió; no continuar')
+        prep=json.loads((self.backup/'transfer-preparation.json').read_text())
+        if not prep['ok'] or prep['cleanupFailures'] or not prep['frozenSourcesVerified']: raise ValueError('Snapshot final sin verificación')
+        expected=json.loads((self.backup/'prepared/fingerprints.json').read_text())
+        actual=json.loads(self.query_target(FINGERPRINT_SQL))
+        other=lambda rows:[r for r in rows if r['table']!='dbos.workflow_schedules']
+        if other(actual)!=other(expected): raise ValueError('Cambió DB preparada antes de continuar')
+        # La única transformación posterior al fingerprint fue pausar agendas. Validar TODAS sus columnas contra origen congelado.
+        schedules=json.loads(self.query_target("select coalesce(json_agg(to_jsonb(s) order by schedule_name),'[]') from dbos.workflow_schedules s"))
+        names=[s['name'] for s in json.loads((self.backup/'prepared/original-schedule-statuses.json').read_text())]
+        if [s['schedule_name'] for s in schedules]!=names: raise ValueError('Cambió conjunto de agendas')
+        literal=json.dumps(names).replace("'","''")
+        source=json.loads(self.core.sql('agents-dev-postgres-1',"select coalesce(json_agg(to_jsonb(s) order by schedule_name),'[]') from dbos.workflow_schedules s where schedule_name in (select jsonb_array_elements_text('"+literal+"'::jsonb))"))
+        if schedules!=[{**s,'status':'PAUSED'} for s in source]: raise ValueError('Cambió agenda preparada')
+        for i in range(10,19):
+            name=f'agents-prod-beta1-agent-{i}'
+            if self.docker('volume','inspect',name,'--format','{{index .Labels "agents.transfer"}}').decode().strip()!=self.run:
+                raise ValueError('Perfil destino ajeno')
+            self.helper([f'type=bind,src={self.backup},dst=/backup,readonly',f'type=volume,src={name},dst=/copy,readonly,volume-nocopy'],
+                'tar','--acls','--xattrs','-df',f'/backup/agent-{i}.tar','-C','/copy',caps=True)
+        self.old_text=self.private_file(self.backup/'production.compose.yaml').decode()
+        names=['AGENTS_ADMIN_PIN','AGENTS_MASTER_KEY','AGENTS_PROXY_KEY','AGENTS_DB_PASSWORD']
+        code="const fs=require('fs'),out={};const text=fs.readFileSync('/input','utf8');for(const n of "+json.dumps(names)+"){const l=text.split('\\n').filter(x=>x.startsWith(n+'='));if(l.length!==1)throw Error('env');let v=l[0].slice(n.length+1).trim();if((v.startsWith('\\\"')&&v.endsWith('\\\"'))||(v.startsWith(\"'\")&&v.endsWith(\"'\")))v=v.slice(1,-1);out[n]=v;}console.log(JSON.stringify(out))"
+        self.env=json.loads(self.helper(['type=bind,src=/etc/komodo/stacks/agents/.env,dst=/input,readonly'],'node','-e',code,caps=True))
+        original=json.loads((self.backup/'original-komodo-stack.json').read_text())
+        self.effective_candidate=(self.directory/'candidate.compose.yaml').read_text()
+        current=self.api('read','GetStack',{'stack':'agents'})
+        if not same_stack_config(current['config'],{**original['config'],'file_contents':self.effective_candidate}):
+            raise ValueError('Actualización gestionada distinta del único LF conocido')
+        self.stack=current
+        self.state['storageWritersBeforeResume']=self.external_writers()
+        prior={k:self.state.pop(k) for k in ('failedPhase','errorType','reason') if k in self.state}
+        self.save('preboot-resume-verified',normalizedManagedUpdateAdopted=True,resumeOperatorSha=self.p['operatorSha'],
+            resolvedPrebootFailure=prior,targetDatabaseReverified=True,targetProfilesReverified=9)
+        # Adoptar resultado YA observado, no repetir UpdateStack/restauraciones ni una acción incierta.
+        self.activate()
+
     def execute(self):
         self.start=time.monotonic()
         if self.p['action']=='recover': self.recover();return
+        if self.p['action']=='resume': self.resume_preboot();return
         if self.state['phase']!='created': raise ValueError('Operación ya iniciada; no se reintenta')
         self.audit()
         if self.p['action']=='audit': self.save('audit-complete',ok=True);return

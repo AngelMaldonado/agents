@@ -21,7 +21,7 @@ root=pathlib.Path.home()/'.local/state/agents-transfer'
 root.mkdir(parents=True,exist_ok=True,mode=0o700)
 if root.is_symlink() or root.stat().st_mode & 0o077: raise ValueError('private-root')
 d=root/p['transferRun']
-if p['action']=='recover':
+if p['action'] in ('recover','resume'):
  if not (d/'status.json').is_file(): raise ValueError('missing-journal')
 else:d.mkdir(mode=0o700)
 fifo=d/'private.input';os.mkfifo(fifo,0o600)
@@ -53,7 +53,7 @@ def payload(action, run):
     config = json.loads((ROOT/'release/config.json').read_text())
     authorization = json.loads((ROOT/'deploy/transfer-authorization.json').read_text())
     head = command(['git','rev-parse','HEAD'],cwd=ROOT).decode().strip()
-    if action == 'apply':
+    if action in ('apply','resume'):
         if command(['git','status','--porcelain'],cwd=ROOT).strip(): raise ValueError('Checkout sucio; no se ejecuta corte')
         pr = json.loads(command(['gh','pr','view','4','--json','headRefOid,statusCheckRollup'],cwd=ROOT,timeout=30))
         if not exact_ci(head,pr): raise ValueError('Faltan checks exact-head; no se abre ventana')
@@ -119,10 +119,10 @@ def main():
     os.umask(0o077)
     args=[a for a in sys.argv[1:] if a != '--visible']
     action=args[0] if args else ''
-    if action not in ('audit','apply','recover'):raise ValueError('Uso: just transfer audit|apply|recover [run]')
+    if action not in ('audit','apply','recover','resume'):raise ValueError('Uso: just transfer audit|apply|recover|resume [run]')
     run=args[1] if len(args)>1 else datetime.datetime.now(datetime.timezone.utc).strftime('%Y%m%dT%H%M%SZ')+'-'+uuid.uuid4().hex[:8]
     if not re.fullmatch(r'\d{8}T\d{6}Z-[a-f0-9]{8}',run):raise ValueError('Run inválido')
-    if action=='recover' and len(args)!=2:raise ValueError('Recover exige el run anterior')
+    if action in ('recover','resume') and len(args)!=2:raise ValueError('Recover/resume exige el run anterior')
     if '--visible' in sys.argv[1:]:return visible(action,run)
     session='cuby-agents-prod';window='transfer-'+action+'-'+str(os.getpid())
     exists=subprocess.run(['tmux','has-session','-t',session],capture_output=True).returncode==0

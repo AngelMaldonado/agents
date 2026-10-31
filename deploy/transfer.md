@@ -8,6 +8,7 @@ Angel retomó el traslado y autorizó expresamente la **copia local previa en re
 just transfer audit             # preflight remoto; sin interrupción ni dump/tar
 just transfer apply             # exige checkout limpio y los 3 checks del SHA exacto en PR #4
 just transfer recover <run>     # sólo recuperación explícita ANTES de intentar arrancar el destino
+just transfer resume <run>      # sólo continuar el preboot verificado tras el LF final añadido por Komodo
 ```
 
 `just cutover plan|rehearse` conserva su papel de modelo local histórico; su `apply` no es este ejecutor. `just deploy` continúa siendo preparación. No invocar `just release` para trasladar datos.
@@ -28,6 +29,10 @@ La credencial de `1Password → Cuby → Komodo Admin` se lee por sus dos campos
 8. Verificar imagen/DB/llave/PIN/proxy efectivos, health SHA, decrypt de todos los campos conservados, visibilidad de las 7 personas con sesiones sintéticas eliminadas después, Test ausente, estado independiente, retirado16, web200/WhatsApp404 y egress real. No iniciar navegador/GPT ni afirmar login real o continuidad externa probada.
 9. Comprobar IDs/fechas de PostgreSQL/CLIProxyAPI/backup intactos y dev detenido; restaurar estados de agendas sin backfill en producción, retirar mantenimiento y comprobar health público. Desarrollo queda detenido, con bases/config/datos/volúmenes intactos, evitando dos schedulers/escritores.
 
+### Continuación preboot conocida
+
+Komodo añade un LF final al contenido guardado: la comparación sólo ignora esos LF terminales, no otros caracteres/campos. `resume` exige CI exact-head y un fallo de actualización gestionada con destino ya verificado y **ningún intento de arranque ni recuperación del origen**. Revalida IDs/orígenes detenidos y sin rearranque desde el snapshot, infraestructura, filas del destino, todas las columnas de las agendas pausadas contra el origen congelado y los 9 perfiles contra sus tar. Sólo adopta el UpdateStack ya observado e idéntico salvo ese LF; no repite UpdateStack, dumps, restores ni un arranque incierto. Después del primer intento de boot, `resume` y `recover` rechazan y se requiere reconciliación.
+
 ## Respaldos y acceso
 
 - La copia local final y el dump preparado quedan privados en `~/.local/state/agents-migration/<snapshot-run>/`. Se retienen también al fallar; no borrar ni exportar. No equivalen a backup offsite.
@@ -36,4 +41,4 @@ La credencial de `1Password → Cuby → Komodo Admin` se lee por sus dos campos
 - Angelk conserva accesos prod remapeados. Los 6 usuarios trasladados necesitan login nuevo con el PIN prod o invitación nueva para **sus mismas identidades**; no promover sesiones/admin de dev. No escribir tokens/invitaciones en logs/Bubble. Los enlaces firmados/URLs de hooks dev requieren atender el cambio de dominio; no se alteran payloads históricos.
 - Recuperación prearranque: comando explícito, confirmar IDs de origen y ausencia de intento de boot. Si se intentó cambiar el stack, comparar/restaurar sólo el cambio propio conocido; cambios ajenos abortan. Después del intento de boot, `recover` rechaza: inspeccionar DBOS, nuevas escrituras, tareas/efectos y reconciliar antes de cualquier retorno al origen. Los pins históricos ausentes siguen limitando rollback ejecutable.
 
-El presupuesto previo de 15 minutos no es una duración medida ni garantía de cero pérdida. El registro de ejecución real debe distinguirse de los ensayos y de las diez regresiones locales sin infraestructura.
+El presupuesto previo de 15 minutos no es una duración medida ni garantía de cero pérdida. El registro de ejecución real debe distinguirse de los ensayos y de las doce regresiones locales sin infraestructura.

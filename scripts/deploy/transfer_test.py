@@ -17,6 +17,21 @@ def load(name):
 engine=load('transfer_remote');client=load('transfer');snapshot=load('remote')
 
 class TransferTests(unittest.TestCase):
+    def test_komodo_terminal_lf_only_does_not_weaken_other_guards(self):
+        base={'file_contents':'{"services":{}}','environment':'private-placeholder','auto_pull':False}
+        self.assertTrue(engine.same_stack_config({**base,'file_contents':base['file_contents']+'\n'},base))
+        self.assertFalse(engine.same_stack_config({**base,'auto_pull':True},base))
+        self.assertFalse(engine.same_stack_config({**base,'file_contents':'{"services":{"unexpected":{}}}\n'},base))
+        self.assertFalse(engine.same_stack_config({**base,'environment':'different'},base))
+
+    def test_resume_refuses_any_boot_attempt_or_original_recovery(self):
+        t=engine.Transfer.__new__(engine.Transfer);t.login=Mock()
+        base={'phase':'failed','bootAttempted':False,'failedPhase':'managed-stack-update-attempt','profilesCopied':9,'tablesIdenticalBeforeBoot':True}
+        for change in ({'bootAttempted':True},{'recoveredOriginal':True},{'phase':'complete'},{'failedPhase':'stage-target-attempt'}):
+            t.state={**base,**change}
+            with self.assertRaises(ValueError):t.resume_preboot()
+        t.login.assert_not_called()
+
     def test_specific_authorization(self):
         p={'transferAuthorization':json.loads((HERE.parents[1]/'deploy/transfer-authorization.json').read_text()),'deploymentEnabled':True}
         self.assertTrue(engine.approved(p))
