@@ -1,4 +1,4 @@
-import { config } from './config.mjs';
+import { config, assertToolsImage } from './config.mjs';
 import { assertSha, assertVersion } from './version.mjs';
 export const components = ['agents-app', 'agents-sandbox'];
 export function sourceConfig(value = config) {
@@ -18,7 +18,7 @@ export function executorEnvironment(version, sha, component, value = config, reh
 		`AGENTS_RELEASE_VERSION=${version}`,
 		`AGENTS_RELEASE_COMPONENT=${component}`,
 		`AGENTS_RELEASE_REHEARSAL=${rehearsal}`,
-		`AGENTS_RELEASE_TOOLS_IMAGE=${value.toolsImage}`,
+		`AGENTS_RELEASE_TOOLS_IMAGE=${assertToolsImage(value)}`,
 		'REGISTRY_USERNAME=[[REGISTRY_USERNAME]]',
 		'REGISTRY_PASSWORD=[[REGISTRY_PASSWORD]]',
 		'COSIGN_PRIVATE_KEY_B64=[[COSIGN_PRIVATE_KEY_B64]]',
