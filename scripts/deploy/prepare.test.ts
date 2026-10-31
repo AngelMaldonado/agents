@@ -1,9 +1,78 @@
 import { expect, test } from 'bun:test';
-import { randomBytes } from 'node:crypto';
+import { randomBytes, generateKeyPairSync, sign } from 'node:crypto';
 import { spawnSync } from 'node:child_process';
 import { readFileSync } from 'node:fs';
 import { decrypt, encrypt, parseMasterKey, imageRevisionPlan, inputHash, checkSourceSnapshot } from './restore.mjs';
 import { defaultHarness } from '../../sandbox/harness';
+import { classifyWorkflow } from './dbos.mjs';
+import { safeRelative } from './data-copy.mjs';
+import { verifyPayload } from './signatures.mjs';
+
+test('Cosign payload signature binds digest, repository, release SHA and version', () => {
+	const { publicKey, privateKey } = generateKeyPairSync('ec', { namedCurve: 'prime256v1' });
+	const key = publicKey.export({ type: 'spki', format: 'pem' });
+	const expected = {
+		digest: 'sha256:' + 'a'.repeat(64),
+		repository: 'registry.example/app',
+		sha: 'abc123',
+		version: '0.0.1-beta',
+	};
+	const body = Buffer.from(
+		JSON.stringify({
+			critical: {
+				type: 'cosign container image signature',
+				image: { 'docker-manifest-digest': expected.digest },
+				identity: { 'docker-reference': expected.repository },
+			},
+			optional: { git_sha: expected.sha, version: expected.version },
+		}),
+	);
+	const signature = sign('sha256', body, privateKey).toString('base64');
+	expect(verifyPayload(key, body, signature, expected)).toBe(true);
+	expect(() => verifyPayload(key, Buffer.concat([body, Buffer.from(' ')]), signature, expected)).toThrow();
+	for (const field of ['digest', 'repository', 'sha', 'version'])
+		expect(() => verifyPayload(key, body, signature, { ...expected, [field]: 'wrong' })).toThrow();
+});
+
+test('DBOS retains only terminal workflows owned by retained records; unknown/pending fail closed', () => {
+	const refs = {
+		agents: [{ id: '17' }],
+		runs: [{ workflow_id: 'run-uuid' }],
+		deliveries: [{ workflow_id: 'delivery-7' }],
+	};
+	const classify = (
+		name: string,
+		workflow_uuid: string,
+		status = 'SUCCESS',
+		ctx = { agentId: 17, name: 'agent:17:abc' },
+	) => classifyWorkflow({ name, workflow_uuid, status, inputs: '', serialization: null }, refs, () => [null, ctx]);
+	expect(classify('sandboxRun', 'run-uuid')).toBe(true);
+	expect(classify('sandboxRun', 'run-old-fixture')).toBe(false);
+	expect(classify('admit', 'admit-uuid')).toBe(true);
+	expect(classify('deliver', 'delivery-7')).toBe(true);
+	expect(classify('deliver', 'delivery-8')).toBe(false);
+	expect(classify('cronTick', 'cron-1')).toBe(true);
+	expect(classify('cronTick', 'cron-1', 'SUCCESS', { agentId: 1, name: 'agent:1:abc' })).toBe(false);
+	for (const status of ['PENDING', 'ENQUEUED', 'DELAYED', 'unknown'])
+		expect(() => classify('sandboxRun', 'run-uuid', status)).toThrow();
+	expect(() => classify('newFunction', 'x')).toThrow();
+	expect(() => classify('cronTick', 'x', 'SUCCESS', { agentId: 17, name: 'agent:1:abc' })).toThrow();
+});
+
+test('data filtering rejects absolute, parent, escaped and ambiguous paths', () => {
+	for (const p of ['runs/10/result.txt', 'designs/abc/def', 'snapshots/10.json']) expect(safeRelative(p)).toBe(p);
+	for (const p of [
+		'../secret',
+		'/srv/data',
+		'runs/../secret',
+		'runs//a',
+		'runs/./a',
+		'runs/a\\\\b',
+		'runs/a\u0000b',
+		'',
+	])
+		expect(() => safeRelative(p)).toThrow();
+});
 
 const decision = JSON.parse(readFileSync(new URL('../../deploy/image-transition.json', import.meta.url), 'utf8'));
 const imageId = `sha256:${'a'.repeat(64)}`;
@@ -144,7 +213,7 @@ assert not r['ok'] and not seen and not r['cleanupFailures']
 	expect(result.status).toBe(0);
 });
 
-test('no application launch or cutover, isolated socket and pinned tools only', () => {
+test('no live writes or cutover; published app boot is networkless and business work is fenced', () => {
 	const remote = readFileSync(new URL('./remote.py', import.meta.url), 'utf8');
 	const worker = readFileSync(new URL('./restore.mjs', import.meta.url), 'utf8');
 	expect(remote).toContain('"readyForCutover": False');
@@ -155,6 +224,12 @@ test('no application launch or cutover, isolated socket and pinned tools only', 
 		remote.indexOf('"isolated-database-transform"'),
 	);
 	expect(remote).toContain('where person_id<>1');
+	const boot = readFileSync(new URL('./boot.mjs', import.meta.url), 'utf8');
+	expect(boot).toContain("database: 'agents_migration_recovery'");
+	expect(boot).toContain("update dbos.workflow_schedules set status='PAUSED'");
+	expect(boot).toContain('where routed_at is null');
+	expect(remote).toContain('AGENTS_INSTANCE=' + '" + run_id');
+	expect(remote).toContain('preparedRecovery');
 	expect(worker.indexOf("phase = 'new-image-revisions'")).toBeLessThan(worker.indexOf("db.query('COMMIT')"));
 	expect(worker).toContain('historicalRevisionsUnchanged: true');
 	expect(worker).toContain('retiredAgentsUnchanged: true');

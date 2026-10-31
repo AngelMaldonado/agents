@@ -1,4 +1,5 @@
 """Executed over SSH on reko-3. Emits metadata only; backups never leave the host."""
+import base64
 import hashlib
 import json
 import os
@@ -93,6 +94,13 @@ def metadata():
       'people',(select count(*) from people),
       'test',(select json_agg(id) from people where key='test'),
       'liveRuns',(select count(*) from runs where status in ('queued','starting','running','blocked')),
+      'pendingMessages',(select count(*) from messages where routed_at is null),
+      'pendingDeliveries',(select count(*) from webhook_deliveries where status='pending'),
+      'dbosColumns',(select json_agg(json_build_object('table',table_name,'column',column_name,'type',data_type) order by table_name,ordinal_position)
+         from information_schema.columns where table_schema='dbos'),
+      'dbosStatuses',(select json_agg(x) from (select status,count(*) as count from dbos.workflow_status group by status order by status) x),
+      'dbosSchedules',(select coalesce(json_agg(json_build_object('name',schedule_name,'status',status,'workflow',workflow_name,'backfill',automatic_backfill,'timezone',cron_timezone) order by schedule_name),'[]') from dbos.workflow_schedules),
+      'dbosVersions',(select json_agg(version_name order by version_name) from dbos.application_versions),
       'agents',(select coalesce(json_agg(json_build_object('id',a.id,'volume',a.state_ref,'image',a.harness_image)
         order by a.id),'[]') from agents a join people p on p.id=a.person_id where p.key<>'test'));
     """
@@ -125,14 +133,14 @@ def main(payload):
     run_id = time.strftime("%Y%m%dT%H%M%SZ", time.gmtime()) + "-" + uuid.uuid4().hex[:8]
     report = {"run": run_id, "ok": False, "readyForCutover": False, "sourceChangedByPreparation": False,
               "snapshotConsistency": "online-rehearsal-only-not-a-coordinated-cutover-backup",
-              "operatorSourceSha256": hashlib.sha256((payload["program"] + payload["worker"]).encode()).hexdigest()}
+              "operatorSourceSha256": hashlib.sha256(''.join(payload.get(k, '') for k in ('program', 'worker', 'dbosWorker', 'copyWorker', 'signatureWorker', 'bootWorker', 'networkWorker', 'egressWorker')).encode()).hexdigest()}
     resources = []
     backup = None
     verified_daemon = False
     try:
         if payload["app"] != EXPECTED_APP or payload["tools"] != EXPECTED_TOOLS or payload["sandbox"] != EXPECTED_SANDBOX:
             raise ValueError("Referencias distintas de los artefactos auditados")
-        if docker("info", "--format", "{{.Name}}").decode().strip() != "reko-3":
+        if docker("info", "--format", "{{.Name}}|{{.ID}}").decode().strip() != "reko-3|13ec1fd9-550a-447e-9d33-6a834d309d3f":
             raise ValueError("Daemon distinto de reko-3")
         verified_daemon = True
         for image in (EXPECTED_TOOLS, EXPECTED_APP, EXPECTED_SANDBOX):
@@ -166,6 +174,9 @@ def main(payload):
         report["registryCandidates"] = [c for c in candidates if
                                         c["manifest"] in report["missingImages"] or c["config"] in report["missingImages"]]
         report["registryManifestsExamined"] = len(candidates)
+        report["phase"] = "published-signature-verification"
+        signature_script = "process.env.AGENTS_SIGNATURE_CHECK='true';process.env.AGENTS_PUBLIC_KEY=" + json.dumps(payload["publicKey"]) + ";import('data:text/javascript;base64," + base64.b64encode(payload["signatureWorker"].encode()).decode() + "')"
+        report["publishedSignatures"] = json.loads(helper(EXPECTED_TOOLS, run_id, [mount_arg(registry, "/registry")], "node", "-e", signature_script, caps=True))
         if payload["mode"] == "inspect":
             report["ok"] = True
             return report
@@ -181,6 +192,7 @@ def main(payload):
         backup.mkdir(mode=0o700)
         report["backupDirectory"] = str(backup)
         (backup / "status.json").write_text(json.dumps({"state": "running", "run": run_id}))
+        (backup / "prepared").mkdir(mode=0o700)
         for label, container in (("development", "agents-dev-postgres-1"), ("production", "agents-postgres-1")):
             report["phase"] = "dump-" + label
             path = backup / (label + ".dump")
@@ -196,6 +208,15 @@ def main(payload):
             report["phase"] = "backup-config-" + name
             helper(EXPECTED_TOOLS, run_id, [f"type=bind,src={source},dst=/input,readonly", dest],
                    "sh", "-c", f"umask 077; cp /input /backup/{name}; chmod 600 /backup/{name}", caps=True)
+        report["phase"] = "effective-production-key-custody"
+        custody_script = "process.env.AGENTS_BOOT_PROBE='custody';import('data:text/javascript;base64," + base64.b64encode(payload["bootWorker"].encode()).decode() + "')"
+        effective_env = docker("inspect", "agents-server-1", "--format", "{{json .Config.Env}}")
+        report["keyCustody"] = json.loads(helper(EXPECTED_APP, run_id,
+            [f"type=bind,src={backup / 'production.env'},dst=/run/production.env,readonly"], "bun", "-e", custody_script, data=effective_env))
+        del effective_env
+        existing_volumes = set(docker("volume", "ls", "-q").decode().split())
+        if any(f"agents-prod-beta1-agent-{a['id']}" in existing_volumes for a in agents):
+            raise ValueError("Ya existe un destino reservado; no se sobrescribe")
         archives = []
         for a in agents:
             archives.append((f"agent-{a['id']}", {"Type": "volume", "Name": a["volume"]}))
@@ -240,11 +261,13 @@ def main(payload):
                 if result.returncode:
                     raise RuntimeError("Falló restauración aislada; no se muestran datos privados")
         worker_args = ["run", "--rm", "--pull=never", "--network", "none", "--read-only", "--cap-drop", "ALL",
-                       "--security-opt", "no-new-privileges", "--cap-add", "DAC_READ_SEARCH", "--memory", "256m", "--memory-swap", "256m",
+                       "--security-opt", "no-new-privileges", "--cap-add", "DAC_READ_SEARCH", "--cap-add", "DAC_OVERRIDE", "--memory", "256m", "--memory-swap", "256m",
                        "--ulimit", "core=0", "--cpus", "1", "--pids-limit", "64",
                        "--label", "agents.migration=" + run_id,
                        "--mount", f"type=bind,src={backup},dst=/backup,readonly",
+                       "--mount", f"type=bind,src={backup / 'prepared'},dst=/plan",
                        "--mount", f"type=volume,src={socket_volume},dst=/socket,readonly,volume-nocopy",
+                       "-e", "AGENTS_MIGRATION_DBOS_MODULE=" + base64.b64encode(payload["dbosWorker"].encode()).decode(),
                        "-e", "AGENTS_MIGRATION_WORKER=true", "--entrypoint", "bun", EXPECTED_APP, "-e", payload["worker"]]
         report["phase"] = "probe-release-sandbox-before-image-transition"
         harness_rows = json.loads(docker("exec", container, "psql", "-X", "-U", "agents", "-d", "agents_migration_rehearsal", "-Atqc",
@@ -276,6 +299,29 @@ def main(payload):
         report["databaseRehearsal"] = json.loads(docker(*worker_args, timeout=120))
         if not report["databaseRehearsal"].get("ok"):
             raise RuntimeError("Falló transformación aislada")
+        report["phase"] = "recovery-from-prepared-dump"
+        with (backup / "prepared.dump").open("xb") as f:
+            docker("exec", "-e", "PGOPTIONS=" + RO, container, "pg_dump", "-U", "agents", "-d", "agents_migration_rehearsal", "-Fc", output=f, timeout=120)
+        docker("exec", container, "createdb", "-U", "agents", "-T", "template0", "agents_migration_recovery")
+        with (backup / "prepared.dump").open("rb") as f:
+            result = subprocess.run(DOCKER + ["exec", "-i", container, "pg_restore", "-U", "agents", "-d", "agents_migration_recovery",
+                "--exit-on-error", "--no-owner", "--no-privileges"], stdin=f, stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=120)
+            if result.returncode:
+                raise RuntimeError("Falló recuperación del destino preparado")
+        fingerprint_sql = r"""do $$ declare t record; h text; begin
+          create temporary table migration_hashes(name text, hash text);
+          for t in select schemaname,tablename from pg_tables where schemaname not in ('pg_catalog','information_schema') and schemaname not like 'pg_%' order by 1,2 loop
+            execute format('select md5(coalesce(string_agg(to_jsonb(x)::text,''|'' order by to_jsonb(x)::text),'''')) from %I.%I x',t.schemaname,t.tablename) into h;
+            insert into migration_hashes values(t.schemaname||'.'||t.tablename,h);
+          end loop; end $$;
+          select json_agg(json_build_object('table',name,'hash',hash) order by name) from migration_hashes;"""
+        fingerprints = []
+        for database in ("agents_migration_rehearsal", "agents_migration_recovery"):
+            raw = docker("exec", "-i", container, "psql", "-X", "-qAt", "-U", "agents", "-d", database, "-v", "ON_ERROR_STOP=1", data=fingerprint_sql.encode())
+            fingerprints.append(json.loads(raw))
+        if fingerprints[0] != fingerprints[1]:
+            raise RuntimeError("Recuperación de datos no idéntica")
+        report["preparedRecovery"] = {"ok": True, "tablesCompared": len(fingerprints[0]), "allRowsIdentical": True}
         # Restore every archive into its OWN disposable volume and compare content+metadata.
         report["archivesVerified"] = []
         for index, name in enumerate(report["archives"]):
@@ -287,10 +333,78 @@ def main(payload):
                    [f"type=bind,src={backup},dst=/backup,readonly", f"type=volume,src={volume},dst=/copy,volume-nocopy"],
                    "sh", "-c", f"tar --acls --xattrs -xpf /backup/{name}.tar -C /copy && tar --acls --xattrs -df /backup/{name}.tar -C /copy", caps=True)
             report["archivesVerified"].append(name)
+            if name == "development-data":
+                filtered = "agents-migration-" + run_id + "-filtered-data"
+                docker("volume", "create", "--label", "agents.migration=" + run_id, filtered)
+                resources.append(("volume", filtered))
+                report["phase"] = "filtered-application-data"
+                script = "process.env.AGENTS_FILTERED_COPY='true';import('data:text/javascript;base64," + base64.b64encode(payload["copyWorker"].encode()).decode() + "')"
+                report["filteredData"] = json.loads(helper(EXPECTED_TOOLS, run_id,
+                    [f"type=volume,src={volume},dst=/source,readonly,volume-nocopy", f"type=volume,src={filtered},dst=/destination,volume-nocopy",
+                     f"type=bind,src={backup / 'prepared'},dst=/plan,readonly"], "node", "-e", script, caps=True))
+                report["phase"] = "published-app-isolated-boot"
+                probe = "agents-migration-" + run_id + "-app"
+                app_script = "import('data:text/javascript;base64," + base64.b64encode(payload["bootWorker"].encode()).decode() + "')"
+                app_args = ["run", "-d", "--pull=never", "--name", probe, "--label", "agents.migration=" + run_id,
+                    "--network", "none", "--read-only", "--cap-drop", "ALL", "--cap-add", "DAC_READ_SEARCH", "--cap-add", "DAC_OVERRIDE", "--security-opt", "no-new-privileges", "--memory", "512m", "--memory-swap", "512m", "--cpus", "1", "--pids-limit", "128",
+                    "--tmpfs", "/tmp:rw,nosuid,nodev,size=64m", "--tmpfs", "/cliproxy:rw,nosuid,nodev,size=4m",
+                    "--mount", f"type=volume,src={socket_volume},dst=/socket,readonly,volume-nocopy",
+                    "--mount", f"type=volume,src={filtered},dst=/data,volume-nocopy",
+                    "--mount", f"type=bind,src={backup / 'production.env'},dst=/run/production.env,readonly",
+                    "-e", "AGENTS_BOOT_PROBE=server", "-e", "AGENTS_INSTANCE=" + run_id,
+                    "-e", "AGENTS_DATABASE_URL=postgres://agents@localhost/agents_migration_recovery?host=/socket",
+                    "-e", "AGENTS_CLIPROXY_CONFIG=/cliproxy/config.yaml", "-e", "AGENTS_CLIPROXY_URL=http://127.0.0.1:8317",
+                    "-e", "AGENTS_PUBLIC_URL=https://agents.cubytest.space", "-e", "AGENTS_APP_VERSION=v2",
+                    "-e", "AGENTS_RELEASE_VERSION=0.0.1-beta", "-e", "AGENTS_RELEASE_SHA=f21d03be79c550e2fc77f42a3d1f3a6bb478f5a3",
+                    "--entrypoint", "bun", EXPECTED_APP, "-e", app_script]
+                docker(*app_args)
+                resources.append(("container", probe))
+                try:
+                    for attempt in range(40):
+                        try:
+                            docker("exec", probe, "bun", "-e", "if(!(await fetch('http://127.0.0.1:8787/healthz')).ok)process.exit(1)", timeout=5)
+                            break
+                        except RuntimeError:
+                            if docker("inspect", probe, "--format", "{{.State.Running}}").decode().strip() != "true":
+                                raise RuntimeError("App de ensayo terminó antes de salud")
+                            time.sleep(1)
+                    else:
+                        raise RuntimeError("App no saludable dentro del límite")
+                    report["phase"] = "published-app-private-access"
+                    report["applicationBoot"] = json.loads(docker("exec", "-e", "AGENTS_BOOT_PROBE=verify", probe, "bun", "-e", app_script))
+                finally:
+                    with (backup / "prepared/app.log").open("xb") as log:
+                        # Potentially private app logs stay only on reko-3.
+                        subprocess.run(DOCKER + ["logs", probe], stdout=log, stderr=log, timeout=10)
+                    docker("container", "rm", "-f", probe)
+                    resources.remove(("container", probe))
+                docker("volume", "rm", filtered)
+                resources.remove(("volume", filtered))
             docker("volume", "rm", volume)
             resources.remove(("volume", volume))
+        report["phase"] = "production-backend-readonly-proxy-check"
+        network_script = "import('data:text/javascript;base64," + base64.b64encode(payload["networkWorker"].encode()).decode() + "')"
+        report["proxyNetwork"] = json.loads(docker("run", "--rm", "--pull=never", "--network", "container:agents-server-1",
+            "--label", "agents.migration=" + run_id, "--read-only", "--cap-drop", "ALL", "--security-opt", "no-new-privileges",
+            "--memory", "256m", "--memory-swap", "256m", "--cpus", "0.5", "--pids-limit", "64",
+            "--mount", f"type=volume,src={socket_volume},dst=/socket,readonly,volume-nocopy",
+            "--mount", f"type=bind,src={backup / 'production.env'},dst=/run/production.env,readonly",
+            "-e", "AGENTS_BOOT_MODULE=" + base64.b64encode(payload["bootWorker"].encode()).decode(),
+            "-e", "AGENTS_RESTORE_MODULE=" + base64.b64encode(payload["worker"].encode()).decode(),
+            "--entrypoint", "bun", EXPECTED_APP, "-e", network_script, timeout=90))
+        if not report["proxyNetwork"]["ok"]:
+            raise RuntimeError("Proxies/modelos requieren atención; no se modifica configuración")
+        report["phase"] = "production-sandbox-egress-check"
+        egress = docker("run", "--rm", "--pull=never", "--network", "agents-prod-sandbox", "--dns", "1.1.1.1",
+            "--label", "agents.migration=" + run_id, "--read-only", "--cap-drop", "ALL", "--security-opt", "no-new-privileges",
+            "--user", "agent", "--memory", "128m", "--memory-swap", "128m", "--cpus", "0.5", "--pids-limit", "32",
+            "-e", "SERVER=agents-prod-server", "--entrypoint", "bash", EXPECTED_SANDBOX, "-c", payload["egressWorker"], timeout=60)
+        report["sandboxEgress"] = {"ok": True, "checks": egress.decode().splitlines(), "secretsMounted": False}
         report["after"] = metadata()
-        report["liveMetadataUnchanged"] = report["before"] == report["after"]
+        activity = ("liveRuns", "pendingMessages", "pendingDeliveries", "dbosStatuses")
+        stable = lambda snapshots: {env: {k: v for k, v in values.items() if k not in activity} for env, values in snapshots.items()}
+        report["liveMetadataUnchanged"] = stable(report["before"]) == stable(report["after"])
+        report["liveActivityMayContinue"] = True
         checksum_code = """const fs=require('fs'),crypto=require('crypto'),out={};
 for(const n of fs.readdirSync('/backup').filter(n=>/^[a-z0-9-]+\\.(tar|dump)$/.test(n))){
  const h=crypto.createHash('sha256'),fd=fs.openSync('/backup/'+n,'r'),b=Buffer.alloc(1048576);let len;

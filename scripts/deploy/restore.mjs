@@ -1,5 +1,5 @@
 // Offline rehearsal ONLY. No server, DBOS worker, Docker socket or network is started here.
-import { readFileSync } from 'node:fs';
+import { readFileSync, writeFileSync } from 'node:fs';
 import { createRequire } from 'node:module';
 import { createCipheriv, createDecipheriv, randomBytes, createHash } from 'node:crypto';
 
@@ -299,6 +299,47 @@ async function rehearsal() {
 			revisionsAfter.length !== revisionsBefore.length + changes.length
 		)
 			throw new Error('Se alteraron definiciones o revisiones históricas');
+		phase = 'dbos-exclusion';
+		const { prepareDbos } = await import('data:text/javascript;base64,' + process.env.AGENTS_MIGRATION_DBOS_MODULE);
+		const dbos = await prepareDbos(db);
+		phase = 'production-state-mapping';
+		const stateMapping = [];
+		for (const agent of expectedAgents) {
+			if (agent.state_ref !== `agents-dev-agent-${agent.id}`) throw new Error('Estado de origen desconocido');
+			const destination = `agents-prod-beta1-agent-${agent.id}`;
+			await db.query('update agents set state_ref=$1 where id=$2', [destination, agent.id]);
+			stateMapping.push({ agent: Number(agent.id), source: agent.state_ref, destination });
+		}
+		phase = 'default-sandbox-and-sessions';
+		const savedSettings = (await db.query("select value from settings where key='settings'")).rows[0]?.value ?? {};
+		await db.query(
+			`insert into settings(key,value) values('settings',$1)
+			on conflict(key) do update set value=excluded.value`,
+			[JSON.stringify({ ...savedSettings, sandboxImage: context.decision.sandboxImage })],
+		);
+		// Los hosts son distintos: no trasplantar cookies ni privilegios de admin de desarrollo.
+		// Se conservan accesos de producción con su identidad remapeada; el resto usa invitación nueva.
+		const productionIds = identityMap.map((p) => p.toRehearsal);
+		const devSessionsExcluded = (
+			await db.query('delete from sessions where person_id<>all($1::bigint[])', [productionIds])
+		).rowCount;
+		const devInvitesExcluded = (
+			await db.query('delete from invites where person_id<>all($1::bigint[])', [productionIds])
+		).rowCount;
+		phase = 'private-data-plan';
+		const dataPaths = (await db.query('select path from files order by path')).rows.map((r) => r.path);
+		const designFiles = (await db.query('select id,messages from agent_designs')).rows.flatMap((d) =>
+			d.messages.flatMap((m) => (m.attachments ?? []).map((a) => `designs/${d.id}/${a.id}`)),
+		);
+		const runIds = (await db.query('select id from runs order by id')).rows.map((r) => Number(r.id));
+		writeFileSync(
+			'/plan/data-plan.json',
+			JSON.stringify({ dataPaths: [...new Set([...dataPaths, ...designFiles])], runIds }),
+			{ mode: 0o600 },
+		);
+		phase = 'final-history-conservation';
+		if (inputHash(await counts()) !== inputHash({ ...expected, people: expected.people + identityMap.length }))
+			throw new Error('Cambió historia real');
 		await db.query('COMMIT');
 		sourceKey.fill(0);
 		destinationKey.fill(0);
@@ -311,6 +352,16 @@ async function rehearsal() {
 			secretsReencrypted: rekeyed,
 			existingProductionIdentityMap: identityMap,
 			agentDefinitionsPreservedExceptAuthorizedImageRevision: true,
+			dbos,
+			stateMapping,
+			sessions: {
+				policy: 'production-preserved-development-reinvite',
+				devSessionsExcluded,
+				devInvitesExcluded,
+				productionSessionsPreserved: true,
+				developmentAdminPrivilegesTransferred: false,
+			},
+			defaultSandboxUpdatedInCopy: true,
 			imageTransition: {
 				decision: context.decision.id,
 				authorizedBy: context.decision.authorizedBy,
@@ -321,10 +372,9 @@ async function rehearsal() {
 				retiredAgentsUnchanged: true,
 			},
 			pendingBeforeCutover: [
-				'DBOS schedules and historical references',
-				'new state_ref mapping for production copies',
-				'web session policy and URL/proxy/network validation',
-				'cryptographic verification and final image availability',
+				'new production logins by invitation and integration acceptance',
+				'final runtime URL/proxy/network checks',
+				'repeat signature/image availability checks at the authorized cutover',
 				'coordinated final backup and approval',
 			],
 		};
@@ -337,9 +387,14 @@ async function rehearsal() {
 if (process.env.AGENTS_MIGRATION_WORKER === 'true') {
 	rehearsal()
 		.then((report) => console.log(JSON.stringify(report)))
-		.catch(() => {
+		.catch((error) => {
 			console.log(
-				JSON.stringify({ ok: false, phase, error: 'Fallo aislado; se omiten datos privados y detalles SQL.' }),
+				JSON.stringify({
+					ok: false,
+					phase,
+					error: 'Fallo aislado; se omiten datos privados y detalles SQL.',
+					failureCode: /^(?:[0-9A-Z]{5}|EACCES|ENOENT|ENOSPC)$/.test(error.code ?? '') ? error.code : undefined,
+				}),
 			);
 		});
 }

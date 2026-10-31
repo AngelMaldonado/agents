@@ -28,7 +28,7 @@ def main():
     visible = "--visible" in sys.argv[2:]
     if not visible:
         exists = subprocess.run(["tmux", "has-session", "-t", SESSION], capture_output=True).returncode == 0
-        window = f"migration-{mode}"
+        window = f"migration-{mode}-{os.getpid()}"
         command = f"cd {shlex.quote(str(ROOT))} && python3 scripts/deploy/prepare.py {mode} --visible; exec zsh"
         if exists:
             subprocess.run(["tmux", "new-window", "-d", "-t", SESSION, "-n", window, "-c", str(ROOT), command], check=True)
@@ -68,6 +68,13 @@ def main():
         "sandbox": manifest["images"]["agents-sandbox"]["ref"],
         "decision": json.loads((ROOT / "deploy/image-transition.json").read_text()),
         "worker": (ROOT / "scripts/deploy/restore.mjs").read_text(),
+        "dbosWorker": (ROOT / "scripts/deploy/dbos.mjs").read_text(),
+        "copyWorker": (ROOT / "scripts/deploy/data-copy.mjs").read_text(),
+        "publicKey": (ROOT / "release/cosign.pub").read_text(),
+        "signatureWorker": (ROOT / "scripts/deploy/signatures.mjs").read_text(),
+        "bootWorker": (ROOT / "scripts/deploy/boot.mjs").read_text(),
+        "networkWorker": (ROOT / "scripts/deploy/network.mjs").read_text(),
+        "egressWorker": (ROOT / "scripts/egress-check.sh").read_text(),
         "program": (ROOT / "scripts/deploy/remote.py").read_text(),
     }
     command = "import json,sys; payload=json.load(sys.stdin); exec(compile(payload['program'], 'agents-migration-remote', 'exec'))"

@@ -1,0 +1,107 @@
+# Candidato completo para el corte AUTORIZADO de v0.0.1-beta; NO aplicar durante preparación.
+# Requiere: DB agents_beta1 restaurada, datos filtrados y volúmenes de agentes ya verificados.
+# Mantener el .env efectivo de producción; NO promover la llave/PIN/proxy key de desarrollo.
+# Conserva PostgreSQL/CLIProxyAPI. El backup pasa a la nueva DB y cambia de prefijo.
+services:
+  server:
+    image: registry.cubytest.space/cuby/agents-app@sha256:8a8d92f6ad22e024e3defba54261e903e60b24e43a18f5efd0d1e13a534916a8
+    restart: unless-stopped
+    environment:
+      AGENTS_INSTANCE: prod
+      AGENTS_ADMIN_PIN: ${AGENTS_ADMIN_PIN:?conservar PIN de producción}
+      AGENTS_MASTER_KEY: ${AGENTS_MASTER_KEY:?conservar llave de producción}
+      AGENTS_PROXY_KEY: ${AGENTS_PROXY_KEY:?conservar proxy key de producción}
+      AGENTS_DATABASE_URL: postgres://agents:${AGENTS_DB_PASSWORD:?conservar contraseña de producción}@postgres:5432/agents_beta1
+      AGENTS_CLIPROXY_CONFIG: /cliproxy/config.yaml
+      AGENTS_CLIPROXY_URL: http://cliproxy:8317
+      AGENTS_SANDBOX_NETWORK: agents-prod-sandbox
+      AGENTS_SANDBOX_SERVER_URL: http://agents-prod-server:8787
+      AGENTS_SANDBOX_IMAGE: registry.cubytest.space/cuby/agents-sandbox@sha256:04771072a9d1064e52c034b1f59a1db7c46f695c760568cc9af76d20d5bebd40
+      AGENTS_PUBLIC_URL: https://agents.cubytest.space
+      AGENTS_COOKIE_SECURE: '1'
+      # Identidad durable existente, distinta del SHA de release: no forzar replay/versionado nuevo.
+      AGENTS_APP_VERSION: v2
+      AGENTS_RELEASE_VERSION: 0.0.1-beta
+      AGENTS_RELEASE_SHA: f21d03be79c550e2fc77f42a3d1f3a6bb478f5a3
+    depends_on:
+      postgres:
+        condition: service_healthy
+    volumes:
+      - /srv/agents/releases/beta1/data:/data
+      - /srv/agents/cliproxy:/cliproxy
+      - /var/run/docker.sock:/var/run/docker.sock
+    networks:
+      internal: {}
+      sandbox:
+        aliases: [agents-prod-server]
+      proxy: {}
+    labels:
+      - traefik.enable=true
+      - traefik.docker.network=proxy
+      - traefik.http.routers.agents.rule=Host(`agents.cubytest.space`)
+      - traefik.http.routers.agents.entrypoints=websecure
+      - traefik.http.routers.agents.service=agents
+      - traefik.http.services.agents.loadbalancer.server.port=8787
+
+  postgres:
+    image: postgres:18.6-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: agents
+      POSTGRES_PASSWORD: ${AGENTS_DB_PASSWORD:?conservar contraseña de producción}
+      # La DB original y PGDATA se conservan; agents_beta1 se provisiona/restaura aparte.
+      POSTGRES_DB: agents
+    volumes:
+      - /srv/agents/postgres:/var/lib/postgresql
+    healthcheck:
+      test: ['CMD', 'pg_isready', '-U', 'agents', '-d', 'agents']
+      interval: 5s
+      timeout: 3s
+      retries: 30
+    networks: [internal]
+
+  backup:
+    image: postgres:18.6-alpine
+    restart: unless-stopped
+    environment:
+      PGHOST: postgres
+      PGUSER: agents
+      PGDATABASE: agents_beta1
+      PGPASSWORD: ${AGENTS_DB_PASSWORD:?conservar contraseña de producción}
+    entrypoint:
+      - sh
+      - -c
+      - |
+        until pg_isready -q; do sleep 5; done
+        until psql -Atqc "SELECT to_regclass('public.runs') IS NOT NULL AND to_regclass('dbos.workflow_status') IS NOT NULL" | grep -qx t; do sleep 5; done
+        while true; do
+          f=/backups/agents-beta1-$$(date +%F).dump
+          if pg_dump -Fc -f "$$f.tmp"; then mv "$$f.tmp" "$$f"; echo "backup $$f"; else rm -f "$$f.tmp"; echo "backup FAILED"; fi
+          find /backups -name 'agents-beta1-*.dump' -mtime +13 -delete
+          sleep 86400
+        done
+    volumes:
+      - /srv/agents/backups:/backups
+    depends_on:
+      postgres:
+        condition: service_healthy
+    networks: [internal]
+
+  cliproxy:
+    image: eceasy/cli-proxy-api:v8.0.40
+    restart: unless-stopped
+    entrypoint:
+      ['sh', '-c', 'until [ -f /cfg/config.yaml ]; do sleep 1; done; exec ./CLIProxyAPI -config /cfg/config.yaml']
+    volumes:
+      - /srv/agents/cliproxy:/cfg
+    networks: [internal]
+
+networks:
+  proxy:
+    external: true
+  internal:
+    name: agents-prod-internal
+  sandbox:
+    name: agents-prod-sandbox
+    driver_opts:
+      com.docker.network.bridge.name: agents-prd-sbx
