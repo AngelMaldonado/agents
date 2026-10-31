@@ -32,6 +32,19 @@ class TransferTests(unittest.TestCase):
             with self.assertRaises(ValueError):t.resume_preboot()
         t.login.assert_not_called()
 
+    def test_old_terminal_status_does_not_finish_new_invocation(self):
+        old={'phase':'failed','invocation':'previous'}
+        self.assertFalse(client.current_attempt(old,'current'))
+        self.assertFalse(client.current_attempt({'phase':'complete'},'current'))
+        self.assertTrue(client.current_attempt({**old,'invocation':'current'},'current'))
+
+    def test_public_get_timeout_retries_observation_not_boot(self):
+        import io
+        response=io.BytesIO(json.dumps({'sha':'expected','ready':True}).encode())
+        with patch.object(engine.urllib.request,'urlopen',side_effect=[TimeoutError(),response]) as get,patch.object(engine.time,'sleep') as pause:
+            self.assertTrue(engine.wait_public_health('expected')['ready'])
+        self.assertEqual(get.call_count,2);pause.assert_called_once_with(1)
+
     def test_specific_authorization(self):
         p={'transferAuthorization':json.loads((HERE.parents[1]/'deploy/transfer-authorization.json').read_text()),'deploymentEnabled':True}
         self.assertTrue(engine.approved(p))

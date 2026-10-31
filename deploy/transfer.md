@@ -33,6 +33,16 @@ La credencial de `1Password → Cuby → Komodo Admin` se lee por sus dos campos
 
 Komodo añade un LF final al contenido guardado: la comparación sólo ignora esos LF terminales, no otros caracteres/campos. `resume` exige CI exact-head y un fallo de actualización gestionada con destino ya verificado y **ningún intento de arranque ni recuperación del origen**. Revalida IDs/orígenes detenidos y sin rearranque desde el snapshot, infraestructura, filas del destino, todas las columnas de las agendas pausadas contra el origen congelado y los 9 perfiles contra sus tar. Sólo adopta el UpdateStack ya observado e idéntico salvo ese LF; no repite UpdateStack, dumps, restores ni un arranque incierto. Después del primer intento de boot, `resume` y `recover` rechazan y se requiere reconciliación.
 
+## Traslado realizado — 31-oct-2026
+
+[Recibo de la operación real](transfer-receipt.json): run `20261031T200729Z-5d82749e`, snapshot final `20261031T200852Z-927376a2`, confirmado a las 20:54 UTC. Producción sirve la beta publicada `f21d03b`, sin rebuild ni otra release: 7 personas incluyendo Angelk separado, 9 agentes (8 activos/16 retirado), 272 corridas y 13 conversaciones preservadas; 19 campos recifrados, 9 perfiles comparados y 97 archivos con hash. Las 55 tablas se compararon antes del primer boot/pausa del cron. Fuentes intactas y desarrollo detenido; la agenda real vuelve a ACTIVE sólo en producción.
+
+El primer guard de Komodo rechazó su LF final adicional antes del boot; se corrigió y se continuó con revalidación completa y CI exacto `41d50ae`. El primer GET público agotó timeout después de abrir tráfico; la comprobación posterior de sólo lectura verificó SHA exacto, health/web 200, API sin sesión 401 y WhatsApp 404, sin reinicio/rollback ni nuevo intento de boot. Se reconciliaron sólo evidencia y journal; el programa privado de confirmación queda junto a éste. Al confirmar había 273 corridas totales (frente a 272 del snapshot), 0 reinicios del nuevo servidor y PostgreSQL/CLIProxyAPI/backup sin recreación. No atribuir la actividad normal posterior a una prueba GPT: la aceptación hizo 0 inferencias. El mantenimiento se extendió por la corrección y su CI; no se afirma duración de 15 minutos.
+
+Pendientes deliberados: invitaciones nuevas para las 6 cuentas trasladadas, cambios de host en integraciones y aceptación de personas/navegadores reales. No se copiaron sesiones/admin dev. S3 y backup automático de `agents_beta1` siguen pendientes; el servicio diario existente conserva su DB anterior. La copia local coordinada verificada no es respaldo offsite.
+
+Cada invocación de `resume`/`recover` tiene un ID propio: el coordinador no debe interpretar un estado terminal de una invocación anterior como resultado nuevo. El retry acotado de un GET que agota timeout es sólo observación; no vuelve a iniciar servidor, restauración ni UpdateStack.
+
 ## Respaldos y acceso
 
 - La copia local final y el dump preparado quedan privados en `~/.local/state/agents-migration/<snapshot-run>/`. Se retienen también al fallar; no borrar ni exportar. No equivalen a backup offsite.
@@ -41,4 +51,4 @@ Komodo añade un LF final al contenido guardado: la comparación sólo ignora es
 - Angelk conserva accesos prod remapeados. Los 6 usuarios trasladados necesitan login nuevo con el PIN prod o invitación nueva para **sus mismas identidades**; no promover sesiones/admin de dev. No escribir tokens/invitaciones en logs/Bubble. Los enlaces firmados/URLs de hooks dev requieren atender el cambio de dominio; no se alteran payloads históricos.
 - Recuperación prearranque: comando explícito, confirmar IDs de origen y ausencia de intento de boot. Si se intentó cambiar el stack, comparar/restaurar sólo el cambio propio conocido; cambios ajenos abortan. Después del intento de boot, `recover` rechaza: inspeccionar DBOS, nuevas escrituras, tareas/efectos y reconciliar antes de cualquier retorno al origen. Los pins históricos ausentes siguen limitando rollback ejecutable.
 
-El presupuesto previo de 15 minutos no es una duración medida ni garantía de cero pérdida. El registro de ejecución real debe distinguirse de los ensayos y de las doce regresiones locales sin infraestructura.
+El presupuesto previo de 15 minutos no es una duración medida ni garantía de cero pérdida. El registro de ejecución real debe distinguirse de los ensayos y de las catorce regresiones locales sin infraestructura.

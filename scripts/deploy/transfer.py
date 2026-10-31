@@ -49,6 +49,10 @@ def exact_ci(head, pr):
     return pr.get('headRefOid') == head and all(checks.get(n) == 'SUCCESS' for n in ('Quality', 'Sandbox E2E', 'Required checks'))
 
 
+def current_attempt(status, invocation):
+    return bool(status.get('invocation')) and status.get('invocation') == invocation
+
+
 def payload(action, run):
     config = json.loads((ROOT/'release/config.json').read_text())
     authorization = json.loads((ROOT/'deploy/transfer-authorization.json').read_text())
@@ -66,7 +70,7 @@ def payload(action, run):
     order = ['remote.py','restore.mjs','dbos.mjs','data-copy.mjs','signatures.mjs','boot.mjs','network.mjs']
     files = [(ROOT/'scripts/deploy'/name).read_text() for name in order]
     egress = (ROOT/'scripts/egress-check.sh').read_text()
-    p = {'action':action,'mode':'frozen-snapshot','run':run,'transferRun':run,'operatorSha':head,
+    p = {'action':action,'mode':'frozen-snapshot','run':run,'transferRun':run,'operatorSha':head,'invocation':uuid.uuid4().hex,
          'manifest':manifest,'tools':config['toolsImage'],'deploymentEnabled':True,'transferAuthorization':authorization,
          'program':files[0],'worker':files[1],'dbosWorker':files[2],'copyWorker':files[3],
          'signatureWorker':files[4],'bootWorker':files[5],'networkWorker':files[6],'egressWorker':egress,
@@ -105,6 +109,8 @@ def visible(action, run):
         try: status=json.loads(command(['ssh','-o','ConnectTimeout=5','reko-3','python3','-c',shlex.quote(poll)],timeout=15))
         except Exception:
             print('Resultado remoto incierto; revisar journal, no reintentar operación.',flush=True);return 2
+        if not current_attempt(status,p['invocation']):
+            time.sleep(2);continue  # Un terminal de la invocación anterior NO termina resume/recover.
         if status['phase']!=last:
             print(json.dumps(status),flush=True);last=status['phase']
             report.parent.mkdir(parents=True,exist_ok=True)

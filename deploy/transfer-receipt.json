@@ -1,0 +1,90 @@
+{
+	"schema": 1,
+	"kind": "live-transfer-receipt",
+	"status": "complete",
+	"run": "20261031T200729Z-5d82749e",
+	"snapshotRun": "20261031T200852Z-927376a2",
+	"confirmedAt": "2026-10-31T20:54:33.879141+00:00",
+	"authorization": "angel-transfer-beta1-2026-10-31",
+	"operatorSha": "d3b9fe64e3db1cb924cf141fd893b7dab6fc3c44",
+	"resumeOperatorSha": "41d50aee466cf11c3b7da3ec95ab702df15b8d20",
+	"release": {
+		"version": "0.0.1-beta",
+		"sha": "f21d03be79c550e2fc77f42a3d1f3a6bb478f5a3",
+		"app": "registry.cubytest.space/cuby/agents-app@sha256:8a8d92f6ad22e024e3defba54261e903e60b24e43a18f5efd0d1e13a534916a8",
+		"sandbox": "registry.cubytest.space/cuby/agents-sandbox@sha256:04771072a9d1064e52c034b1f59a1db7c46f695c760568cc9af76d20d5bebd40",
+		"rebuiltOrRepublished": false
+	},
+	"preservedSnapshot": {
+		"developmentPeopleRetained": 6,
+		"peopleIncludingSeparateAngelk": 7,
+		"agents": 9,
+		"activeAgents": 8,
+		"retiredAgent": 16,
+		"runs": 272,
+		"conversations": 13,
+		"secretFieldsRecipheredAndDecrypted": 19,
+		"terminalWorkflowsRetained": 739,
+		"terminalTestOrUnreferencedWorkflowsExcludedOnlyInCopy": 213,
+		"realSchedulesRetained": 1,
+		"profilesCopiedAndCompared": 9,
+		"dataFilesCopiedAndHashVerified": 97,
+		"orphanedOrExcludedDataFilesNotPromoted": 120,
+		"tablesAllRowsIdenticalBeforeBootAndSchedulePause": 55
+	},
+	"destination": {
+		"database": "agents_beta1",
+		"data": "/srv/agents/releases/beta1/data",
+		"statePrefix": "agents-prod-beta1-agent-",
+		"testPeople": 0,
+		"originalDatabasesAndVolumesPreserved": true,
+		"developmentWritersRemainStopped": true,
+		"originalScheduleStatusesRestored": 1,
+		"serverRestartCountAtConfirmation": 0
+	},
+	"acceptance": {
+		"publicHealth": {
+			"ready": true,
+			"sha": "f21d03be79c550e2fc77f42a3d1f3a6bb478f5a3",
+			"version": "0.0.1-beta"
+		},
+		"publicHttp": {
+			"/healthz": 200,
+			"/": 200,
+			"/api/agents": 401,
+			"/api/admin/whatsapp": 404
+		},
+		"syntheticPersonVisibilityChecks": 7,
+		"syntheticSessionsRemoved": true,
+		"sandboxEgressChecks": 8,
+		"inferenceRequestsAsAcceptance": 0,
+		"realBrowserLoginTested": false,
+		"totalRunsAtConfirmation": 273,
+		"totalConversationsAtConfirmation": 13
+	},
+	"backup": {
+		"localCoordinatedCopyVerified": true,
+		"privateDirectoryOnReko3": "/home/woz/.local/state/agents-migration/20261031T200852Z-927376a2",
+		"sourceArchivesRestoredAndCompared": 13,
+		"preparedDumpRecoveredAndCompared": true,
+		"s3BackupEnabled": false,
+		"newBackupScheduleCreated": false,
+		"existingBackupServiceRestartedOrRetargeted": false,
+		"existingDailyBackupStillTargetsOriginalDatabase": true,
+		"newDatabaseCoveredByExistingSchedule": false,
+		"offsiteDataBackupVerified": false
+	},
+	"reconciliation": {
+		"managedStackFailure": "Komodo appended a terminal LF; only that normalization was adopted after full preboot revalidation and exact-head CI.",
+		"admissionObservationFailure": "First public-health read raised TimeoutError after startup and maintenance removal; later readonly evidence verified the exact public release and HTTP guards.",
+		"completionReconciledWithoutRestart": true,
+		"noAutomaticRollbackOrRepeatBoot": true,
+		"privateConfirmationProgram": "/home/woz/.local/state/agents-transfer/20261031T200729Z-5d82749e/completion-reconciliation.py"
+	},
+	"pending": [
+		"Fresh production invitations for transferred people; development sessions/admin privileges were not promoted.",
+		"External integration host changes and real-person/browser acceptance remain unperformed.",
+		"S3 configuration/verification and automated backup coverage of agents_beta1 remain deferred.",
+		"Missing historical image pins still limit executable old-image recovery."
+	]
+}

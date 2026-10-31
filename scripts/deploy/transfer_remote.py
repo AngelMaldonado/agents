@@ -42,6 +42,17 @@ def same_stack_config(actual, expected):
     return a==b
 
 
+def wait_public_health(release_sha):
+    for _ in range(15):
+        try:
+            with urllib.request.urlopen('https://agents.cubytest.space/healthz',timeout=5) as response:
+                health=json.load(response)
+            if health.get('sha')==release_sha and health.get('ready'): return health
+        except (urllib.error.HTTPError,urllib.error.URLError,TimeoutError): pass
+        time.sleep(1)
+    raise ValueError('Salud pública diferente')
+
+
 class Transfer:
     def __init__(self, p):
         self.p = p
@@ -54,6 +65,7 @@ class Transfer:
                       'operatorSha': p['operatorSha'], 'authorization': p['transferAuthorization']['id']}
         if (self.directory / 'status.json').exists():
             self.state = json.loads((self.directory / 'status.json').read_text())
+        self.state['invocation']=p.get('invocation')
         self.core = types.ModuleType('agents_snapshot')
         exec(compile(p['program'], 'agents_snapshot', 'exec'), self.core.__dict__)
         self.docker = self.core.docker
@@ -341,14 +353,7 @@ class Transfer:
         self.query_target("update dbos.workflow_schedules s set status=x.status from jsonb_to_recordset('"+literal+"'::jsonb) as x(name text,status text) where s.schedule_name=x.name")
         self.save('admission-attempt', schedulesRestored=len(schedules), realBrowserLoginTested=False, acceptanceInferenceRequests=0)
         self.remove_maintenance()
-        health={}
-        for _ in range(15):
-            try:
-                with urllib.request.urlopen('https://agents.cubytest.space/healthz',timeout=5) as r: health=json.load(r)
-                if health.get('sha') == self.p['transferAuthorization']['releaseSha'] and health.get('ready'): break
-            except (urllib.error.HTTPError,urllib.error.URLError): pass
-            time.sleep(1)
-        else: raise ValueError('Salud pública diferente')
+        health=wait_public_health(self.p['transferAuthorization']['releaseSha'])
         self.save('complete', ok=True, publicHealth=health, sourceApplicationStopped=True,
                   originalDatabasesAndVolumesPreserved=True, localCoordinatedBackupVerified=True)
 
