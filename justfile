@@ -126,6 +126,7 @@ check:
     bun test scripts/deploy
     python3 -B scripts/backup/s3_test.py
     python3 -B scripts/deploy/cutover_test.py
+    python3 -B scripts/deploy/transfer_test.py
 
 # ---- quality and release (never sync the checkout serving users) ----
 
@@ -161,6 +162,10 @@ release mode="run":
 # Preparation ONLY. No apply/cutover exists; publication stays in `just release`.
 deploy verb="plan":
     python3 scripts/deploy/prepare.py {{verb}}
+
+# Operación beta1 explícitamente autorizada; no reutilizar como deploy genérico.
+transfer action="audit" run="":
+    python3 -B scripts/deploy/transfer.py {{quote(action)}} {{if run != "" { quote(run) } else { "" }}}
 
 # Catálogo y ensayo LOCAL de control; no usa SSH ni implementa apply.
 cutover action="plan":

@@ -48,7 +48,7 @@ try {
 			proxies: result,
 			inferenceRequests: 0,
 			secretsExported: false,
-			networkNamespace: 'production-server',
+			networkNamespace: process.env.AGENTS_NETWORK_PROBE_NAMESPACE ?? 'production-server',
 		}),
 	);
 } finally {

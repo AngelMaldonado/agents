@@ -1,6 +1,6 @@
 # Corte propuesto: desarrollo → producción, primera beta
 
-**Plan para aprobación, no autorización ni operación ejecutada.** `deploymentEnabled=false`; `just deploy` sólo prepara. No repetir `just release`: la beta publicada es el artefacto que se usará. El candidato completo es [`beta.compose.yaml`](beta.compose.yaml); no aplicar el overlay antiguo por separado.
+**Plan original de preparación, no recibo de ejecución.** Posteriormente Angel retomó el traslado y autorizó copia local previa, dejando S3/automatización pendientes: ver [ejecutor puntual `just transfer`, guardas y política vigente](transfer.md). Los bloqueos y pendientes descritos abajo corresponden al modelo original. `just deploy` sólo prepara. No repetir `just release`: la beta publicada es el artefacto que se usará. El candidato completo es [`beta.compose.yaml`](beta.compose.yaml); no aplicar el overlay antiguo por separado.
 
 ## Resultado y límites
 

@@ -128,6 +128,27 @@ console.log(JSON.stringify(out));
 """
 
 
+def assert_frozen():
+    """El modo de snapshot final exige escritores detenidos, no una afirmación del cliente."""
+    for name in ('agents-dev-server-1', 'agents-dev-web-1', 'agents-dev-whatsapp-1', 'agents-server-1'):
+        if docker('inspect', name, '--format', '{{.State.Running}}').decode().strip() != 'false':
+            raise ValueError('Escritor de origen todavía activo')
+    for instance in ('dev', 'prod'):
+        if docker('ps', '-q', '--filter', 'label=agents.instance=' + instance).strip():
+            raise ValueError('Sandbox todavía activo')
+    query = """select (select count(*) from runs where status in ('queued','starting','running','blocked'))+
+        (select count(*) from messages where routed_at is null)+
+        (select count(*) from webhook_deliveries where status='pending')+
+        (select count(*) from agent_designs where busy_token is not null or validation_pending)+
+        (select count(*) from dbos.workflow_status where status is null or status not in
+         ('SUCCESS','ERROR','CANCELLED','MAX_RECOVERY_ATTEMPTS_EXCEEDED'))+
+        (select count(*) from pg_stat_activity where datname='agents' and backend_type='client backend'
+          and pid<>pg_backend_pid());"""
+    for container in ('agents-dev-postgres-1', 'agents-postgres-1'):
+        if sql(container, query) != '0':
+            raise ValueError('Trabajo pendiente en origen detenido; requiere recuperación')
+
+
 def main(payload):
     os.umask(0o077)
     run_id = time.strftime("%Y%m%dT%H%M%SZ", time.gmtime()) + "-" + uuid.uuid4().hex[:8]
@@ -180,8 +201,16 @@ def main(payload):
         if payload["mode"] == "inspect":
             report["ok"] = True
             return report
-        if payload["mode"] != "rehearse":
-            raise ValueError("Operación no autorizada")
+        frozen = payload['mode'] == 'frozen-snapshot'
+        if payload['mode'] not in ('rehearse', 'frozen-snapshot'):
+            raise ValueError('Operación no autorizada')
+        if frozen:
+            approval = payload.get('transferAuthorization', {})
+            if approval.get('id') != 'angel-transfer-beta1-2026-10-31' or approval.get('cutoverAuthorized') is not True or approval.get('localCoordinatedBackupAuthorized') is not True:
+                raise ValueError('Snapshot final no autorizado')
+            assert_frozen()
+            report['snapshotConsistency'] = 'application-writers-stopped-coordinated-cutover-copy'
+            report['frozenSourcesVerified'] = True
         parent = Path.home() / ".local/state/agents-migration"
         parent.mkdir(mode=0o700, parents=True, exist_ok=True)
         if parent.is_symlink() or parent.stat().st_mode & 0o077:
@@ -229,6 +258,9 @@ def main(payload):
             report["phase"] = "archive-" + name
             helper(EXPECTED_TOOLS, run_id, [mount_arg(m, "/input"), dest],
                    "sh", "-c", f"umask 077; tar --numeric-owner --acls --xattrs -cpf /backup/{name}.tar -C /input .", caps=True)
+            if frozen:
+                helper(EXPECTED_TOOLS, run_id, [mount_arg(m, '/input'), dest],
+                       'tar', '--acls', '--xattrs', '-df', '/backup/' + name + '.tar', '-C', '/input', caps=True)
             report["archives"].append(name)
         report["phase"] = "isolated-postgres"
         pg_image = docker("inspect", "agents-dev-postgres-1", "--format", "{{.Image}}").decode().strip()
@@ -322,6 +354,9 @@ def main(payload):
         if fingerprints[0] != fingerprints[1]:
             raise RuntimeError("Recuperación de datos no idéntica")
         report["preparedRecovery"] = {"ok": True, "tablesCompared": len(fingerprints[0]), "allRowsIdentical": True}
+        if frozen:
+            # Datos derivados privados, sólo en reko-3 para comparar el destino ANTES de arrancarlo.
+            (backup / 'prepared/fingerprints.json').write_text(json.dumps(fingerprints[0]))
         # Restore every archive into its OWN disposable volume and compare content+metadata.
         report["archivesVerified"] = []
         for index, name in enumerate(report["archives"]):
@@ -384,27 +419,32 @@ def main(payload):
             resources.remove(("volume", volume))
         report["phase"] = "production-backend-readonly-proxy-check"
         network_script = "import('data:text/javascript;base64," + base64.b64encode(payload["networkWorker"].encode()).decode() + "')"
-        report["proxyNetwork"] = json.loads(docker("run", "--rm", "--pull=never", "--network", "container:agents-server-1",
+        report["proxyNetwork"] = json.loads(docker("run", "--rm", "--pull=never", "--network", "agents-prod-internal" if frozen else "container:agents-server-1",
             "--label", "agents.migration=" + run_id, "--read-only", "--cap-drop", "ALL", "--security-opt", "no-new-privileges",
             "--memory", "256m", "--memory-swap", "256m", "--cpus", "0.5", "--pids-limit", "64",
             "--mount", f"type=volume,src={socket_volume},dst=/socket,readonly,volume-nocopy",
             "--mount", f"type=bind,src={backup / 'production.env'},dst=/run/production.env,readonly",
+            "-e", "AGENTS_NETWORK_PROBE_NAMESPACE=" + ('production-internal-before-cutover' if frozen else 'production-server'),
             "-e", "AGENTS_BOOT_MODULE=" + base64.b64encode(payload["bootWorker"].encode()).decode(),
             "-e", "AGENTS_RESTORE_MODULE=" + base64.b64encode(payload["worker"].encode()).decode(),
             "--entrypoint", "bun", EXPECTED_APP, "-e", network_script, timeout=90))
         if not report["proxyNetwork"]["ok"]:
             raise RuntimeError("Proxies/modelos requieren atención; no se modifica configuración")
-        report["phase"] = "production-sandbox-egress-check"
-        egress = docker("run", "--rm", "--pull=never", "--network", "agents-prod-sandbox", "--dns", "1.1.1.1",
-            "--label", "agents.migration=" + run_id, "--read-only", "--cap-drop", "ALL", "--security-opt", "no-new-privileges",
-            "--user", "agent", "--memory", "128m", "--memory-swap", "128m", "--cpus", "0.5", "--pids-limit", "32",
-            "-e", "SERVER=agents-prod-server", "--entrypoint", "bash", EXPECTED_SANDBOX, "-c", payload["egressWorker"], timeout=60)
-        report["sandboxEgress"] = {"ok": True, "checks": egress.decode().splitlines(), "secretsMounted": False}
+        if frozen:
+            report['sandboxEgress'] = {'deferredUntilTargetStarted': True, 'tested': False}
+            assert_frozen()
+        else:
+            report["phase"] = "production-sandbox-egress-check"
+            egress = docker("run", "--rm", "--pull=never", "--network", "agents-prod-sandbox", "--dns", "1.1.1.1",
+                "--label", "agents.migration=" + run_id, "--read-only", "--cap-drop", "ALL", "--security-opt", "no-new-privileges",
+                "--user", "agent", "--memory", "128m", "--memory-swap", "128m", "--cpus", "0.5", "--pids-limit", "32",
+                "-e", "SERVER=agents-prod-server", "--entrypoint", "bash", EXPECTED_SANDBOX, "-c", payload["egressWorker"], timeout=60)
+            report["sandboxEgress"] = {"ok": True, "checks": egress.decode().splitlines(), "secretsMounted": False}
         report["after"] = metadata()
         activity = ("liveRuns", "pendingMessages", "pendingDeliveries", "dbosStatuses")
         stable = lambda snapshots: {env: {k: v for k, v in values.items() if k not in activity} for env, values in snapshots.items()}
         report["liveMetadataUnchanged"] = stable(report["before"]) == stable(report["after"])
-        report["liveActivityMayContinue"] = True
+        report["liveActivityMayContinue"] = not frozen
         checksum_code = """const fs=require('fs'),crypto=require('crypto'),out={};
 for(const n of fs.readdirSync('/backup').filter(n=>/^[a-z0-9-]+\\.(tar|dump)$/.test(n))){
  const h=crypto.createHash('sha256'),fd=fs.openSync('/backup/'+n,'r'),b=Buffer.alloc(1048576);let len;

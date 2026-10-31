@@ -1,6 +1,8 @@
 # Preparación del traslado a v0.0.1-beta
 
-**Preparación, no despliegue.** Desarrollo contiene 6 personas reales y 9 agentes ajenos a Test. Producción contiene Angelk, otra identidad, sin agentes. El encargo es desarrollo → producción, excluyendo Test y sus 9 agentes sólo del destino, conservando el origen. No fusionar Angel y Angelk por tener ID 2 en bases distintas.
+**La preparación histórica se describe abajo.** Angel retomó el traslado y autorizó copia local previa: [ejecutor puntual, guardas y límites de respaldo](transfer.md), `just transfer audit|apply|recover`. S3/automatización siguen pendientes; no se modifica el backup diario existente. El corte no se considera ejecutado hasta tener su recibo real.
+
+Desarrollo contiene 6 personas reales y 9 agentes ajenos a Test. Producción contiene Angelk, otra identidad, sin agentes. El encargo es desarrollo → producción, excluyendo Test y sus 9 agentes sólo del destino, conservando el origen. No fusionar Angel y Angelk por tener ID 2 en bases distintas.
 
 - [Plan de corte, catálogo de operación, drenado, accesos y recuperación](cutover.md). `just cutover plan|rehearse` sólo trabaja localmente; no es un executor remoto ni habilita apply.
 - [Candidato Compose completo para esta beta](beta.compose.yaml): no aplicar durante preparación. El overlay antiguo `release.compose.yaml` no es un stack independiente.
@@ -31,14 +33,14 @@ just deploy inspect
 just deploy rehearse
 ```
 
-**Instrucción vigente de Angel: dejar los respaldos pendientes.** No ejecutar ahora `just deploy rehearse`, porque toma nuevas copias; tampoco activar S3 ni usar `just backup init|push|verify`. El ensayo nuevo `just cutover rehearse` es distinto: sólo comprueba el modelo de control con fixtures en memoria, sin SSH/DB/Docker/respaldos. No equivale a ejecutar el corte ni acredita los hechos de las fixtures.
+**Autorización vigente:** Angel permite la copia local previa al traslado en reko-3; S3 y automatización siguen pendientes. La operación real toma su propio snapshot final con escritores detenidos: no promover un ensayo online anterior. No activar S3 ni usar `just backup init|push|verify`, ni cambiar el backup diario existente. `just cutover rehearse` continúa siendo un modelo con fixtures, no evidencia de un corte real.
 
 - `plan` no hace operaciones remotas. `inspect` consulta metadatos, busca pins históricos en Zot y verifica las firmas publicadas.
 - Los modos remotos abren ventanas propias en `cuby-agents-prod`; ver con `tmux attach -t cuby-agents-prod`. SSH/contexto Docker explícitos y daemon ID verificado, sólo reko-3. No reinician servicios existentes.
 - Helpers/base/app de ensayo usan referencias fijas, `--pull=never`, límites y etiquetas de pertenencia. Las transformaciones/restauraciones y el arranque de app tienen `--network none`, sin socket Docker. La app sólo accede a una tercera copia, sin trabajo pendiente y con cron pausado antes de arrancarla.
 - Hay dos probes de red explícitos: GET `/v1/models` desde el namespace del backend prod, con claves descifradas sólo en reko-3; y checks TCP desde la red sandbox prod, sin secretos ni perfiles. No hay inferencia ni mutaciones de configuración. Los resultados no incluyen claves, URLs privadas de proxies ni catálogos completos.
 - Manifiesto: asset publicado de GitHub, SHA-256 `52c9dbd1124134774806312a53e3aff81766af6da440654db6d56d2fae383b3c`. Se usa `.release/verify-first-release/release-manifest.json` o autenticación habitual `gh` para descargarlo; se valida su hash antes de usarlo.
-- No existe `apply`; `deploymentEnabled=false`. No cambia bases vivas, pins, rutas, llaves ni stacks. No usar `just release` para trasladar datos.
+- El entrypoint de preparación no tiene `apply` y no cambia bases vivas, pins, rutas, llaves ni stacks. El traslado autorizado utiliza `just transfer`, con su autorización específica y gate de despliegue. No usar `just release` para trasladar datos.
 
 ## Lo que verifica el ensayo
 

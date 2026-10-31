@@ -21,7 +21,7 @@ def main():
         print("Imágenes: reutilizar app/sandbox publicados de v0.0.1-beta por digest; sin rebuild.")
         print("Angel autoriza nuevas revisiones sólo de agentes activos en la copia; retirados intactos.")
         print("Las copias online NO son el respaldo definitivo de un corte coordinado.")
-        print("No existe apply; deploymentEnabled sigue false.")
+        print("Este comando no implementa apply; traslado puntual autorizado: just transfer.")
         return
     if mode not in ("inspect", "rehearse"):
         raise SystemExit("Sólo plan | inspect | rehearse. Corte y publicación no autorizados aquí.")

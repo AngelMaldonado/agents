@@ -33,7 +33,9 @@ function update(component: string, rehearsal = false) {
 test('publication stays gated independently of deployment', () => {
 	expect(() => assertPublicationAllowed({ ...config, publicationEnabled: false })).toThrow();
 	expect(() => assertPublicationAllowed(enabled)).not.toThrow();
-	expect(() => assertDeploymentAllowed(enabled)).toThrow();
+	expect(() => assertDeploymentAllowed({ ...enabled, deploymentEnabled: false })).toThrow();
+	expect(() => assertDeploymentAllowed({ ...enabled, deploymentEnabled: true })).not.toThrow();
+	expect(() => assertDeploymentAllowed({ ...config, publicationEnabled: false, deploymentEnabled: true })).toThrow();
 });
 test('strict version, full SHA and immutable digest inputs', () => {
 	expect(assertVersion(version)).toBe(version);
