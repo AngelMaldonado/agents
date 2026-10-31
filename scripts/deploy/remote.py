@@ -137,6 +137,8 @@ def main(payload):
         verified_daemon = True
         for image in (EXPECTED_TOOLS, EXPECTED_APP, EXPECTED_SANDBOX):
             docker("image", "inspect", image, "--format", "{{.Id}}")
+        sandbox_id = docker("image", "inspect", EXPECTED_SANDBOX, "--format", "{{.Id}}").decode().strip()
+        report["imageTransitionDecisionSha256"] = hashlib.sha256(json.dumps(payload["decision"], sort_keys=True, separators=(",", ":"), ensure_ascii=False).encode()).hexdigest()
         report["phase"] = "read-only-inventory"
         report["before"] = metadata()
         dev = report["before"]["development"]
@@ -244,13 +246,9 @@ def main(payload):
                        "--mount", f"type=bind,src={backup},dst=/backup,readonly",
                        "--mount", f"type=volume,src={socket_volume},dst=/socket,readonly,volume-nocopy",
                        "-e", "AGENTS_MIGRATION_WORKER=true", "--entrypoint", "bun", EXPECTED_APP, "-e", payload["worker"]]
-        report["phase"] = "isolated-database-transform"
-        report["databaseRehearsal"] = json.loads(docker(*worker_args, timeout=120))
-        if not report["databaseRehearsal"].get("ok"):
-            raise RuntimeError("Falló transformación aislada")
-        report["phase"] = "propose-new-sandbox-probes-not-approval"
+        report["phase"] = "probe-release-sandbox-before-image-transition"
         harness_rows = json.loads(docker("exec", container, "psql", "-X", "-U", "agents", "-d", "agents_migration_rehearsal", "-Atqc",
-            "select json_agg(json_build_object('id',id,'harness',harness) order by id) from agents"))
+            "select json_agg(json_build_object('id',id,'harness',harness) order by id) from agents where person_id<>1"))
         report["proposedSandboxProbes"] = []
         for row in harness_rows:
             wrapper = "process.env.AGENTS_HARNESS=require('fs').readFileSync(0,'utf8');import('/opt/agents/harness-probe.mjs').catch(()=>process.exit(1));"
@@ -267,7 +265,17 @@ def main(payload):
                 raise RuntimeError("Falló prueba aislada del harness")
             runtime = probe["runtime"]
             report["proposedSandboxProbes"].append({"agent": row["id"], "ok": True, "approved": False,
+                "image": EXPECTED_SANDBOX, "imageId": sandbox_id,
+                "inputSha256": hashlib.sha256(json.dumps(row["harness"], sort_keys=True, separators=(",", ":"), ensure_ascii=False).encode()).hexdigest(),
                 "runtimeDigest": runtime["digest"], "toolCount": len(runtime["tools"])})
+        transition = {"decision": payload["decision"], "probes": report["proposedSandboxProbes"], "imageId": sandbox_id}
+        # Public decision/probe metadata only; no agent secret enters argv/environment.
+        worker_args[worker_args.index("--entrypoint"):worker_args.index("--entrypoint")] = [
+            "-e", "AGENTS_MIGRATION_TRANSITION=" + json.dumps(transition, separators=(",", ":"))]
+        report["phase"] = "isolated-database-transform"
+        report["databaseRehearsal"] = json.loads(docker(*worker_args, timeout=120))
+        if not report["databaseRehearsal"].get("ok"):
+            raise RuntimeError("Falló transformación aislada")
         # Restore every archive into its OWN disposable volume and compare content+metadata.
         report["archivesVerified"] = []
         for index, name in enumerate(report["archives"]):

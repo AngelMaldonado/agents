@@ -1,9 +1,10 @@
 {
-	"schemaVersion": 1,
+	"schemaVersion": 2,
 	"release": "v0.0.1-beta",
 	"releaseSha": "f21d03be79c550e2fc77f42a3d1f3a6bb478f5a3",
-	"run": "20261031T033019Z-441bc0f9",
-	"operatorSourceSha256": "5d1d0e2ec4f65c1b003c5f45cea14552507ca865573ed1e90c865079cc4b286d",
+	"run": "20261031T130556Z-88d57d2b",
+	"operatorSourceSha256": "384b4d783f15c2a20e78f33e0c6eba380b41d35665c1b1a1494c72416b85d4cf",
+	"imageTransitionDecisionSha256": "8efedc69ddc75f0e9c92dcd95ee35a6bb2ad8cd6fc9659c117c483a45f1c1d79",
 	"rehearsalOnly": true,
 	"readyForCutover": false,
 	"sourceChangedByPreparation": false,
@@ -14,7 +15,7 @@
 			"people": 6,
 			"agents": 9,
 			"activeAgents": 8,
-			"runs": 206,
+			"runs": 244,
 			"conversations": 13
 		},
 		"totalPeopleIncludingExistingProduction": 7,
@@ -27,12 +28,111 @@
 				"toRehearsal": 9
 			}
 		],
-		"agentDefinitionsUnchanged": true,
+		"agentDefinitionsPreservedExceptAuthorizedImageRevision": true,
+		"imageTransition": {
+			"decision": "angel-beta-existing-images-2026-10-31",
+			"authorizedBy": "Angel (operador)",
+			"ownerApprovalsFabricated": false,
+			"sourceImageDifferences": [
+				{
+					"agent": 10,
+					"revision": 4,
+					"historicalImage": "sha256:b90578f77f8e2cb6c2b39b9515629348248404505d952f78fad467c8e812ad8e",
+					"effectiveSourceImage": "sha256:ea53467b01328e245e1fa00b04f9f1ff1bd88e12f27df7b6ad57a2b7931fab08"
+				},
+				{
+					"agent": 11,
+					"revision": 1,
+					"historicalImage": "sha256:b90578f77f8e2cb6c2b39b9515629348248404505d952f78fad467c8e812ad8e",
+					"effectiveSourceImage": "sha256:ea53467b01328e245e1fa00b04f9f1ff1bd88e12f27df7b6ad57a2b7931fab08"
+				},
+				{
+					"agent": 12,
+					"revision": 1,
+					"historicalImage": "sha256:b90578f77f8e2cb6c2b39b9515629348248404505d952f78fad467c8e812ad8e",
+					"effectiveSourceImage": "sha256:ea53467b01328e245e1fa00b04f9f1ff1bd88e12f27df7b6ad57a2b7931fab08"
+				},
+				{
+					"agent": 13,
+					"revision": 1,
+					"historicalImage": "sha256:b90578f77f8e2cb6c2b39b9515629348248404505d952f78fad467c8e812ad8e",
+					"effectiveSourceImage": "sha256:ea53467b01328e245e1fa00b04f9f1ff1bd88e12f27df7b6ad57a2b7931fab08"
+				}
+			],
+			"changes": [
+				{
+					"agent": 10,
+					"fromRevision": 4,
+					"toRevision": 5,
+					"fromImage": "sha256:ea53467b01328e245e1fa00b04f9f1ff1bd88e12f27df7b6ad57a2b7931fab08",
+					"image": "sha256:04771072a9d1064e52c034b1f59a1db7c46f695c760568cc9af76d20d5bebd40",
+					"imageRef": "registry.cubytest.space/cuby/agents-sandbox@sha256:04771072a9d1064e52c034b1f59a1db7c46f695c760568cc9af76d20d5bebd40"
+				},
+				{
+					"agent": 11,
+					"fromRevision": 1,
+					"toRevision": 2,
+					"fromImage": "sha256:ea53467b01328e245e1fa00b04f9f1ff1bd88e12f27df7b6ad57a2b7931fab08",
+					"image": "sha256:04771072a9d1064e52c034b1f59a1db7c46f695c760568cc9af76d20d5bebd40",
+					"imageRef": "registry.cubytest.space/cuby/agents-sandbox@sha256:04771072a9d1064e52c034b1f59a1db7c46f695c760568cc9af76d20d5bebd40"
+				},
+				{
+					"agent": 12,
+					"fromRevision": 1,
+					"toRevision": 2,
+					"fromImage": "sha256:ea53467b01328e245e1fa00b04f9f1ff1bd88e12f27df7b6ad57a2b7931fab08",
+					"image": "sha256:04771072a9d1064e52c034b1f59a1db7c46f695c760568cc9af76d20d5bebd40",
+					"imageRef": "registry.cubytest.space/cuby/agents-sandbox@sha256:04771072a9d1064e52c034b1f59a1db7c46f695c760568cc9af76d20d5bebd40"
+				},
+				{
+					"agent": 13,
+					"fromRevision": 1,
+					"toRevision": 2,
+					"fromImage": "sha256:ea53467b01328e245e1fa00b04f9f1ff1bd88e12f27df7b6ad57a2b7931fab08",
+					"image": "sha256:04771072a9d1064e52c034b1f59a1db7c46f695c760568cc9af76d20d5bebd40",
+					"imageRef": "registry.cubytest.space/cuby/agents-sandbox@sha256:04771072a9d1064e52c034b1f59a1db7c46f695c760568cc9af76d20d5bebd40"
+				},
+				{
+					"agent": 14,
+					"fromRevision": 1,
+					"toRevision": 2,
+					"fromImage": "sha256:ea53467b01328e245e1fa00b04f9f1ff1bd88e12f27df7b6ad57a2b7931fab08",
+					"image": "sha256:04771072a9d1064e52c034b1f59a1db7c46f695c760568cc9af76d20d5bebd40",
+					"imageRef": "registry.cubytest.space/cuby/agents-sandbox@sha256:04771072a9d1064e52c034b1f59a1db7c46f695c760568cc9af76d20d5bebd40"
+				},
+				{
+					"agent": 15,
+					"fromRevision": 4,
+					"toRevision": 5,
+					"fromImage": "sha256:9794748a91d75ded5099de20c2a359b787e4cee8b33eb98c2b1650675ba553b4",
+					"image": "sha256:04771072a9d1064e52c034b1f59a1db7c46f695c760568cc9af76d20d5bebd40",
+					"imageRef": "registry.cubytest.space/cuby/agents-sandbox@sha256:04771072a9d1064e52c034b1f59a1db7c46f695c760568cc9af76d20d5bebd40"
+				},
+				{
+					"agent": 17,
+					"fromRevision": 4,
+					"toRevision": 5,
+					"fromImage": "sha256:ea53467b01328e245e1fa00b04f9f1ff1bd88e12f27df7b6ad57a2b7931fab08",
+					"image": "sha256:04771072a9d1064e52c034b1f59a1db7c46f695c760568cc9af76d20d5bebd40",
+					"imageRef": "registry.cubytest.space/cuby/agents-sandbox@sha256:04771072a9d1064e52c034b1f59a1db7c46f695c760568cc9af76d20d5bebd40"
+				},
+				{
+					"agent": 18,
+					"fromRevision": 2,
+					"toRevision": 3,
+					"fromImage": "sha256:9794748a91d75ded5099de20c2a359b787e4cee8b33eb98c2b1650675ba553b4",
+					"image": "sha256:04771072a9d1064e52c034b1f59a1db7c46f695c760568cc9af76d20d5bebd40",
+					"imageRef": "registry.cubytest.space/cuby/agents-sandbox@sha256:04771072a9d1064e52c034b1f59a1db7c46f695c760568cc9af76d20d5bebd40"
+				}
+			],
+			"historicalRevisionsUnchanged": true,
+			"retiredAgentsUnchanged": true
+		},
 		"pendingBeforeCutover": [
 			"DBOS schedules and historical references",
 			"new state_ref mapping for production copies",
 			"web session policy and URL/proxy/network validation",
-			"recover approved images",
+			"cryptographic verification and final image availability",
 			"coordinated final backup and approval"
 		]
 	},
@@ -56,6 +156,9 @@
 			"agent": 10,
 			"ok": true,
 			"approved": false,
+			"image": "registry.cubytest.space/cuby/agents-sandbox@sha256:04771072a9d1064e52c034b1f59a1db7c46f695c760568cc9af76d20d5bebd40",
+			"imageId": "sha256:04771072a9d1064e52c034b1f59a1db7c46f695c760568cc9af76d20d5bebd40",
+			"inputSha256": "bffdc33c9930b6c8a8fe6760089800a69082b7245c75389fdc8ae2d54ce10893",
 			"runtimeDigest": "a2c7743dae5b5d6286446cc333119c9a6e19ea48a61a57fe7515b2fc1d61740d",
 			"toolCount": 6
 		},
@@ -63,6 +166,9 @@
 			"agent": 11,
 			"ok": true,
 			"approved": false,
+			"image": "registry.cubytest.space/cuby/agents-sandbox@sha256:04771072a9d1064e52c034b1f59a1db7c46f695c760568cc9af76d20d5bebd40",
+			"imageId": "sha256:04771072a9d1064e52c034b1f59a1db7c46f695c760568cc9af76d20d5bebd40",
+			"inputSha256": "537d02b9288a6c3edc88c2eb459f596b75ce0e217441308d6103c6b8d8a24d35",
 			"runtimeDigest": "3220f07a9825e990a76b13410e7cb7f0c714f1bd429d91518a33ee9d075e489c",
 			"toolCount": 5
 		},
@@ -70,6 +176,9 @@
 			"agent": 12,
 			"ok": true,
 			"approved": false,
+			"image": "registry.cubytest.space/cuby/agents-sandbox@sha256:04771072a9d1064e52c034b1f59a1db7c46f695c760568cc9af76d20d5bebd40",
+			"imageId": "sha256:04771072a9d1064e52c034b1f59a1db7c46f695c760568cc9af76d20d5bebd40",
+			"inputSha256": "dd54e5d20ac960acd8b0acbfc3b56f6f64793cbefbdc722996deac247a2956ce",
 			"runtimeDigest": "7c35e853991768d8e2e8950502f0eb79f3ade040b0637e9778474d059bfbe6d4",
 			"toolCount": 10
 		},
@@ -77,6 +186,9 @@
 			"agent": 13,
 			"ok": true,
 			"approved": false,
+			"image": "registry.cubytest.space/cuby/agents-sandbox@sha256:04771072a9d1064e52c034b1f59a1db7c46f695c760568cc9af76d20d5bebd40",
+			"imageId": "sha256:04771072a9d1064e52c034b1f59a1db7c46f695c760568cc9af76d20d5bebd40",
+			"inputSha256": "dd430cce4e17975d50ad9bf66d0f572e90046f5622c962978544723e35b3c139",
 			"runtimeDigest": "4e90bf9979c8c5068e7e475275b5ffde8f2f483be95b00887bd4b9c71300c8f9",
 			"toolCount": 6
 		},
@@ -84,6 +196,9 @@
 			"agent": 14,
 			"ok": true,
 			"approved": false,
+			"image": "registry.cubytest.space/cuby/agents-sandbox@sha256:04771072a9d1064e52c034b1f59a1db7c46f695c760568cc9af76d20d5bebd40",
+			"imageId": "sha256:04771072a9d1064e52c034b1f59a1db7c46f695c760568cc9af76d20d5bebd40",
+			"inputSha256": "5cf9115644b628d87e30158ec088156cb0c9615387be3aeb9721cc334c9152ef",
 			"runtimeDigest": "1b4bf99329d8ce4a52756bf7423532d45e9c84cdcfebe45d8167873ea8e095e1",
 			"toolCount": 6
 		},
@@ -91,6 +206,9 @@
 			"agent": 15,
 			"ok": true,
 			"approved": false,
+			"image": "registry.cubytest.space/cuby/agents-sandbox@sha256:04771072a9d1064e52c034b1f59a1db7c46f695c760568cc9af76d20d5bebd40",
+			"imageId": "sha256:04771072a9d1064e52c034b1f59a1db7c46f695c760568cc9af76d20d5bebd40",
+			"inputSha256": "dd9736ecc9057090eb7d9695cdd960fdd8e2d6c39567a92d694aa11d3d15a0d2",
 			"runtimeDigest": "1d80e5afde62c306f4de7842ee775eb965ed3fc3bb299c04d8ce9932d67c9415",
 			"toolCount": 6
 		},
@@ -98,6 +216,9 @@
 			"agent": 16,
 			"ok": true,
 			"approved": false,
+			"image": "registry.cubytest.space/cuby/agents-sandbox@sha256:04771072a9d1064e52c034b1f59a1db7c46f695c760568cc9af76d20d5bebd40",
+			"imageId": "sha256:04771072a9d1064e52c034b1f59a1db7c46f695c760568cc9af76d20d5bebd40",
+			"inputSha256": "68e9460c8017f44d029cd6ab82b9a42fe815ef05e9409930cb829957cc3ece3e",
 			"runtimeDigest": "a13c5af1ea2111519e4f7affe3cbb28bc43827e48f52a57842bd61a31d0c35e4",
 			"toolCount": 6
 		},
@@ -105,6 +226,9 @@
 			"agent": 17,
 			"ok": true,
 			"approved": false,
+			"image": "registry.cubytest.space/cuby/agents-sandbox@sha256:04771072a9d1064e52c034b1f59a1db7c46f695c760568cc9af76d20d5bebd40",
+			"imageId": "sha256:04771072a9d1064e52c034b1f59a1db7c46f695c760568cc9af76d20d5bebd40",
+			"inputSha256": "553c244988020c0ebfea933f29f74bfc29f29e7ac040fe1dbcada0ebb4e8c2ff",
 			"runtimeDigest": "e604cedde80fafaa81acd2f28c0325b703a8752ca22b7d3146b671ee213a92ac",
 			"toolCount": 6
 		},
@@ -112,6 +236,9 @@
 			"agent": 18,
 			"ok": true,
 			"approved": false,
+			"image": "registry.cubytest.space/cuby/agents-sandbox@sha256:04771072a9d1064e52c034b1f59a1db7c46f695c760568cc9af76d20d5bebd40",
+			"imageId": "sha256:04771072a9d1064e52c034b1f59a1db7c46f695c760568cc9af76d20d5bebd40",
+			"inputSha256": "2addad79da9e23614d76a2ea4488ba70f1bec8f7a55bd139af4c81b58fd7be6f",
 			"runtimeDigest": "5185904c82e09ec5e41b6c0990223111fe4e80afac8ccd859a97fb43a3a6d702",
 			"toolCount": 5
 		}
@@ -126,6 +253,6 @@
 	"limitations": [
 		"No running server, real model, browser login acceptance or actual deployment.",
 		"DBOS schedules/history, state_ref mapping, auth/URLs/proxy/network and coordinated cutover remain pending.",
-		"Probes are not approval; historical image pins are unchanged."
+		"New image revisions exist in the disposable copy only; no owner approvals or historical validations rewritten."
 	]
 }

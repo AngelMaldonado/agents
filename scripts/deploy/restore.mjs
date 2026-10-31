@@ -39,6 +39,80 @@ const sealedTables = [
 	['agent_secrets', ['agent_id', 'name'], ['value_enc']],
 ];
 
+// Orden canónico compartido con Python: vincula el probe al manifiesto exacto, no sólo al ID.
+const canonical = (value) =>
+	Array.isArray(value)
+		? value.map(canonical)
+		: value && typeof value === 'object'
+			? Object.fromEntries(
+					Object.keys(value)
+						.sort()
+						.map((key) => [key, canonical(value[key])]),
+				)
+			: value;
+export const inputHash = (value) =>
+	createHash('sha256')
+		.update(JSON.stringify(canonical(value)))
+		.digest('hex');
+
+export function imageRevisionPlan(agents, { decision, probes, imageId }) {
+	const sandbox =
+		'registry.cubytest.space/cuby/agents-sandbox@sha256:04771072a9d1064e52c034b1f59a1db7c46f695c760568cc9af76d20d5bebd40';
+	if (
+		decision?.id !== 'angel-beta-existing-images-2026-10-31' ||
+		decision.release !== '0.0.1-beta' ||
+		decision.releaseSha !== 'f21d03be79c550e2fc77f42a3d1f3a6bb478f5a3' ||
+		decision.sandboxImage !== sandbox ||
+		decision.scope !== 'active-non-test-agents' ||
+		decision.authorizedBy !== 'Angel (operador)' ||
+		decision.execution !== 'rehearsal-only' ||
+		decision.cutoverAuthorized !== false ||
+		!/^sha256:[a-f0-9]{64}$/.test(imageId ?? '')
+	)
+		throw new Error('Transición de imagen no autorizada para este ensayo');
+	if (!Array.isArray(probes) || new Set(probes.map((p) => p.agent)).size !== probes.length)
+		throw new Error('Probes ausentes o ambiguos');
+	return agents
+		.filter((a) => a.deleted_at === null)
+		.map((a) => {
+			const probe = probes.find((p) => p.agent === Number(a.id));
+			if (
+				Number(a.person_id) === 1 ||
+				!Number.isSafeInteger(a.config_revision) ||
+				a.config_revision < 1 ||
+				a.config_revision >= 2147483647 ||
+				probe?.ok !== true ||
+				probe.image !== sandbox ||
+				probe.imageId !== imageId ||
+				probe.inputSha256 !== inputHash(a.harness)
+			)
+				throw new Error('Agente sin probe satisfactorio de la misma imagen y manifiesto');
+			return {
+				agent: Number(a.id),
+				fromRevision: a.config_revision,
+				toRevision: a.config_revision + 1,
+				fromImage: a.harness_image,
+				image: imageId,
+				imageRef: sandbox,
+			};
+		});
+}
+
+export function checkSourceSnapshot(agent, snapshot) {
+	if (!snapshot) throw new Error('Revisión histórica ausente; no se inventa');
+	if (['name', 'role', 'model', 'harness'].some((key) => inputHash(snapshot[key]) !== inputHash(agent[key])))
+		throw new Error('Definición histórica divergente fuera de la transición autorizada');
+	// La autorización cambia la imagen efectiva, NO repara ni reescribe el snapshot previo.
+	return snapshot.image === agent.harness_image
+		? null
+		: {
+				agent: Number(agent.id),
+				revision: agent.config_revision,
+				historicalImage: snapshot.image,
+				effectiveSourceImage: agent.harness_image,
+			};
+}
+
 let phase = 'connect';
 async function rehearsal() {
 	const { Client } = createRequire('/app/server/package.json')('pg');
@@ -174,6 +248,57 @@ async function rehearsal() {
 			(await scalar('select count(*) as n from agents where id=any($1::bigint[])', [ids]))
 		)
 			throw new Error('Test sigue presente');
+		phase = 'new-image-revisions';
+		const context = JSON.parse(process.env.AGENTS_MIGRATION_TRANSITION ?? 'null');
+		const agentRows = async () =>
+			(await db.query('select to_jsonb(a) as data from agents a order by id')).rows.map((r) => r.data);
+		const revisionRows = async () =>
+			(await db.query('select to_jsonb(r) as data from agent_revisions r order by agent_id,revision')).rows.map(
+				(r) => r.data,
+			);
+		const originals = await agentRows(),
+			revisionsBefore = await revisionRows();
+		phase = 'image-transition-probe-binding';
+		const changes = imageRevisionPlan(originals, context);
+		const historicalKeys = new Set(revisionsBefore.map((r) => `${r.agent_id}:${r.revision}`));
+		const sourceImageDifferences = [];
+		for (const change of changes) {
+			const original = originals.find((a) => Number(a.id) === change.agent);
+			const snapshot = revisionsBefore.find(
+				(r) => Number(r.agent_id) === change.agent && r.revision === change.fromRevision,
+			);
+			phase = 'image-transition-source-snapshot';
+			const difference = checkSourceSnapshot(original, snapshot);
+			if (difference) sourceImageDifferences.push(difference);
+			phase = 'image-transition-revision-conflict';
+			if (revisionsBefore.some((r) => Number(r.agent_id) === change.agent && r.revision >= change.toRevision))
+				throw new Error('Conflicto de revisión');
+			phase = 'image-transition-update';
+			const result = await db.query(
+				'update agents set harness_image=$1, config_revision=$2 where id=$3 and config_revision=$4 and deleted_at is null',
+				[change.image, change.toRevision, change.agent, change.fromRevision],
+			);
+			if (result.rowCount !== 1) throw new Error('Cambió revisión durante el ensayo');
+			phase = 'image-transition-insert';
+			await db.query(
+				`insert into agent_revisions(agent_id,revision,name,role,model,harness,image)
+				select id,config_revision,name,role,model,harness,harness_image from agents where id=$1`,
+				[change.agent],
+			);
+		}
+		const expectedAgents = originals.map((a) => {
+			const change = changes.find((c) => c.agent === Number(a.id));
+			return change ? { ...a, harness_image: change.image, config_revision: change.toRevision } : a;
+		});
+		phase = 'image-transition-invariants';
+		const revisionsAfter = await revisionRows();
+		if (
+			inputHash(expectedAgents) !== inputHash(await agentRows()) ||
+			inputHash(revisionsBefore) !==
+				inputHash(revisionsAfter.filter((r) => historicalKeys.has(`${r.agent_id}:${r.revision}`))) ||
+			revisionsAfter.length !== revisionsBefore.length + changes.length
+		)
+			throw new Error('Se alteraron definiciones o revisiones históricas');
 		await db.query('COMMIT');
 		sourceKey.fill(0);
 		destinationKey.fill(0);
@@ -185,12 +310,21 @@ async function rehearsal() {
 			secretsDecrypted: checked,
 			secretsReencrypted: rekeyed,
 			existingProductionIdentityMap: identityMap,
-			agentDefinitionsUnchanged: true,
+			agentDefinitionsPreservedExceptAuthorizedImageRevision: true,
+			imageTransition: {
+				decision: context.decision.id,
+				authorizedBy: context.decision.authorizedBy,
+				ownerApprovalsFabricated: false,
+				sourceImageDifferences,
+				changes,
+				historicalRevisionsUnchanged: true,
+				retiredAgentsUnchanged: true,
+			},
 			pendingBeforeCutover: [
 				'DBOS schedules and historical references',
 				'new state_ref mapping for production copies',
 				'web session policy and URL/proxy/network validation',
-				'recover approved images',
+				'cryptographic verification and final image availability',
 				'coordinated final backup and approval',
 			],
 		};

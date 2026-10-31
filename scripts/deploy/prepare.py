@@ -18,6 +18,8 @@ def main():
         print("Preparación solamente: desarrollo -> producción; excluir Test sólo del destino.")
         print("just deploy inspect: metadatos y búsqueda de imágenes; sin modificar stacks.")
         print("just deploy rehearse: respaldo privado en reko-3 y restauración aislada, sin corte.")
+        print("Imágenes: reutilizar app/sandbox publicados de v0.0.1-beta por digest; sin rebuild.")
+        print("Angel autoriza nuevas revisiones sólo de agentes activos en la copia; retirados intactos.")
         print("Las copias online NO son el respaldo definitivo de un corte coordinado.")
         print("No existe apply; deploymentEnabled sigue false.")
         return
@@ -64,6 +66,7 @@ def main():
         "tools": config["toolsImage"],
         "app": manifest["images"]["agents-app"]["ref"],
         "sandbox": manifest["images"]["agents-sandbox"]["ref"],
+        "decision": json.loads((ROOT / "deploy/image-transition.json").read_text()),
         "worker": (ROOT / "scripts/deploy/restore.mjs").read_text(),
         "program": (ROOT / "scripts/deploy/remote.py").read_text(),
     }

@@ -2,7 +2,88 @@ import { expect, test } from 'bun:test';
 import { randomBytes } from 'node:crypto';
 import { spawnSync } from 'node:child_process';
 import { readFileSync } from 'node:fs';
-import { decrypt, encrypt, parseMasterKey } from './restore.mjs';
+import { decrypt, encrypt, parseMasterKey, imageRevisionPlan, inputHash, checkSourceSnapshot } from './restore.mjs';
+import { defaultHarness } from '../../sandbox/harness';
+
+const decision = JSON.parse(readFileSync(new URL('../../deploy/image-transition.json', import.meta.url), 'utf8'));
+const imageId = `sha256:${'a'.repeat(64)}`;
+const active = {
+	id: '10',
+	person_id: '2',
+	deleted_at: null,
+	config_revision: 2,
+	harness_image: `sha256:${'b'.repeat(64)}`,
+	harness: defaultHarness(),
+};
+const probe = { agent: 10, ok: true, image: decision.sandboxImage, imageId, inputSha256: inputHash(active.harness) };
+const context = { decision, probes: [probe], imageId };
+
+test('operator authorizes existing beta image only in active-agent rehearsal; no owner approval is invented', () => {
+	const retired = { ...active, id: '16', deleted_at: '2026-10-30T12:00:00Z' };
+	const agents = [structuredClone(active), retired];
+	const before = structuredClone(agents);
+	expect(imageRevisionPlan(agents, context)).toEqual([
+		{
+			agent: 10,
+			fromRevision: 2,
+			toRevision: 3,
+			fromImage: active.harness_image,
+			image: imageId,
+			imageRef: decision.sandboxImage,
+		},
+	]);
+	expect(agents).toEqual(before);
+	for (const [field, value] of Object.entries({
+		id: 'other',
+		release: '0.0.2',
+		releaseSha: 'bad',
+		sandboxImage: 'agents-sandbox:latest',
+		scope: 'all-agents',
+		authorizedBy: 'owner',
+		execution: 'apply',
+		cutoverAuthorized: true,
+	}))
+		expect(() => imageRevisionPlan([active], { ...context, decision: { ...decision, [field]: value } })).toThrow();
+	for (const invalid of ['agents-sandbox:latest', `sha256:${'a'.repeat(63)}`, null])
+		expect(() => imageRevisionPlan([active], { ...context, imageId: invalid })).toThrow();
+});
+
+test('image revision requires a unique passing probe bound to this exact harness and immutable image', () => {
+	for (const probes of [
+		[],
+		[probe, probe],
+		[{ ...probe, ok: false }],
+		[{ ...probe, imageId: active.harness_image }],
+		[{ ...probe, image: 'agents-sandbox:dev' }],
+		[{ ...probe, inputSha256: 'bad' }],
+		[{ ...probe, agent: 11 }],
+	])
+		expect(() => imageRevisionPlan([active], { ...context, probes })).toThrow();
+	for (const a of [
+		{ ...active, person_id: '1' },
+		{ ...active, config_revision: 0 },
+		{ ...active, config_revision: 2147483647 },
+		{ ...active, harness: { ...active.harness, tools: ['bash'] } },
+	])
+		expect(() => imageRevisionPlan([a], context)).toThrow();
+	expect(inputHash({ a: 1, b: { d: true, c: ['é', 1] } })).toBe(inputHash({ b: { c: ['é', 1], d: true }, a: 1 }));
+});
+
+test('source image drift is recorded without rewriting history or accepting unrelated definition changes', () => {
+	const agent = { ...active, name: 'Fixture', role: 'Fixture role', model: 'fixture-model' };
+	const snapshot = { ...agent, image: agent.harness_image };
+	expect(checkSourceSnapshot(agent, snapshot)).toBe(null);
+	expect(checkSourceSnapshot(agent, { ...snapshot, image: null })).toEqual({
+		agent: 10,
+		revision: 2,
+		historicalImage: null,
+		effectiveSourceImage: agent.harness_image,
+	});
+	for (const field of ['name', 'role', 'model', 'harness'])
+		expect(() => checkSourceSnapshot(agent, { ...snapshot, [field]: 'changed' })).toThrow();
+	expect(() => checkSourceSnapshot(agent, undefined)).toThrow();
+	expect(snapshot.image).toBe(agent.harness_image);
+});
 
 test('master keys accept generated and quoted env values, reject ambiguity without echoing keys', () => {
 	const key = randomBytes(32),
@@ -70,6 +151,14 @@ test('no application launch or cutover, isolated socket and pinned tools only', 
 	expect(remote).toContain('"--network", "none"');
 	expect(remote).not.toContain('/var/run/docker.sock');
 	expect(remote).not.toContain('compose", "up');
+	expect(remote.indexOf('"probe-release-sandbox-before-image-transition"')).toBeLessThan(
+		remote.indexOf('"isolated-database-transform"'),
+	);
+	expect(remote).toContain('where person_id<>1');
+	expect(worker.indexOf("phase = 'new-image-revisions'")).toBeLessThan(worker.indexOf("db.query('COMMIT')"));
+	expect(worker).toContain('historicalRevisionsUnchanged: true');
+	expect(worker).toContain('retiredAgentsUnchanged: true');
+	expect(worker).toContain('ownerApprovalsFabricated: false');
 	expect(worker).toContain("host: '/socket'");
 	expect(worker).toContain('r.db !== expected || r.addr !== null');
 	expect(worker).not.toContain('DBOS.launch');
