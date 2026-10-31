@@ -9,7 +9,7 @@
 	"platform": "linux/amd64",
 	"registry": "registry.cubytest.space/cuby",
 	"executorHost": "reko-3",
-	"toolsImage": "sha256:d81e919a8c6ab1e43057f54226d60473d7d91cb0268bca6d06e19bd32800dc60",
+	"toolsImage": "registry.cubytest.space/cuby/agents-release-tools@sha256:9f3b8a9c4e4e8f16701aa60147f31b97b5da10eaea84b4087e7d80b6d64b2826",
 	"cosignVersion": "3.1.4",
 	"cosignPublicKeySha256": "306102f7485320db8a37e90babb847b7f99e5910775d292d6a44801736475859",
 	"transparencyLog": false,

@@ -1,9 +1,9 @@
 import { expect, test } from 'bun:test';
-import { readFileSync, mkdtempSync, mkdirSync, writeFileSync, rmSync } from 'node:fs';
+import { readFileSync, mkdtempSync, mkdirSync, writeFileSync, rmSync, existsSync } from 'node:fs';
 import { execFileSync } from 'node:child_process';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { config, assertPublicationAllowed, assertDeploymentAllowed } from './config.mjs';
+import { config, assertPublicationAllowed, assertDeploymentAllowed, assertToolsImage } from './config.mjs';
 import { sourceConfig, executorEnvironment, imageRepository } from './inputs.mjs';
 import { prepareArtifacts, imageFrom } from './artifacts.mjs';
 import { schemaInfo } from './schema.mjs';
@@ -43,6 +43,21 @@ test('strict version, full SHA and immutable digest inputs', () => {
 	expect(() => assertSha('abc1234')).toThrow();
 	expect(requireDigest(digest)).toBe(digest);
 	expect(() => requireDigest('latest')).toThrow();
+});
+test('tools image must be pullable by digest from the approved repository, never a local image ID or tag', () => {
+	expect(assertToolsImage()).toBe(config.toolsImage);
+	for (const toolsImage of [
+		digest,
+		`${config.registry}/agents-release-tools:latest`,
+		`other.example/tools@${digest}`,
+		`${config.registry}/agents-app@${digest}`,
+		`${config.registry}/agents-release-tools@sha256:bad`,
+	]) {
+		expect(() => assertToolsImage({ ...config, toolsImage })).toThrow();
+		expect(() =>
+			executorEnvironment(version, sha, 'agents-app', { ...config, publicationEnabled: false, toolsImage }, true),
+		).toThrow();
+	}
 });
 test('direct GitHub clone selects only approved existing account', () => {
 	expect(sourceConfig()).toEqual({
@@ -136,31 +151,51 @@ test('private values are forwarded only to the signing container; one job has th
 	expect(shell).toContain('for mode in build sign verify');
 	expect(shell).toContain('if [[ "$mode" == sign ]]');
 	expect(shell).toContain('phase_env+=(-e COSIGN_PRIVATE_KEY_B64 -e COSIGN_PASSWORD)');
-	expect(shell).toContain("trap 'rm -f .git/agents-release.env' EXIT");
+	expect(shell).toContain('trap cleanup EXIT');
+	expect(shell).toContain('pull --platform linux/amd64');
+	expect(shell).toContain('run --pull=never');
 	const main = readFileSync(new URL('./main.mjs', import.meta.url), 'utf8');
 	expect(main).not.toContain('readline');
 	expect(main).not.toContain('startRunner');
 	expect(main).not.toContain('workflow_dispatch');
 	expect(main).toContain('--match-head-commit');
 });
-test('real shell wrapper forwards secrets only to sign and always deletes its envfile', () => {
-	for (const fail of [false, true]) {
+test('real shell pulls the pinned tools image before phases and cleans registry auth on success or failure', () => {
+	const sequence = ['login', 'pull', 'build', 'sign', 'verify'];
+	for (const fail of [null, ...sequence]) {
 		const directory = mkdtempSync(join(tmpdir(), 'agents-wrapper-'));
+		const authPath = join(directory, 'auth-path');
 		try {
 			mkdirSync(join(directory, '.git'));
 			writeFileSync(
 				join(directory, '.git/agents-release.env'),
-				'AGENTS_RELEASE_COMPONENT=agents-app\nAGENTS_RELEASE_TOOLS_IMAGE=sha256:fixture\nCOSIGN_PRIVATE_KEY_B64=synthetic\nCOSIGN_PASSWORD=synthetic\n',
+				`AGENTS_RELEASE_COMPONENT=agents-app\nAGENTS_RELEASE_TOOLS_IMAGE=${config.toolsImage}\nREGISTRY_USERNAME=synthetic-user\nREGISTRY_PASSWORD=synthetic-password\nCOSIGN_PRIVATE_KEY_B64=synthetic-private-key\nCOSIGN_PASSWORD=synthetic-signing-password\n`,
 			);
 			writeFileSync(
 				join(directory, 'docker'),
-				`#!/usr/bin/env node\nconst fs=require('node:fs');if(fs.existsSync('.git/agents-release.env'))process.exit(23);const args=process.argv.slice(2);fs.appendFileSync(${JSON.stringify(join(directory, 'calls'))},JSON.stringify(args)+'\\n');if(${fail}&&args.at(-1)==='sign')process.exit(1);`,
+				`#!/usr/bin/env node
+const fs=require('node:fs');
+if(fs.existsSync('.git/agents-release.env'))process.exit(23);
+const args=process.argv.slice(2), action=args.includes('login')?'login':args.includes('pull')?'pull':args.at(-1);
+if(action==='login') {
+ const config=args[args.indexOf('--config')+1];
+ if(fs.readFileSync(0,'utf8')!=='synthetic-password')process.exit(24);
+ fs.writeFileSync(config+'/config.json','synthetic-registry-auth');
+ fs.writeFileSync(${JSON.stringify(authPath)},config);
+} else {
+ const config=fs.readFileSync(${JSON.stringify(authPath)},'utf8');
+ if(action==='pull'&&!fs.existsSync(config+'/config.json'))process.exit(25);
+ if(action!=='pull'&&fs.existsSync(config))process.exit(26);
+}
+fs.appendFileSync(${JSON.stringify(join(directory, 'calls'))},JSON.stringify({action,args})+'\\n');
+if(action===${JSON.stringify(fail)})process.exit(1);
+`,
 				{ mode: 0o755 },
 			);
 			const call = () =>
 				execFileSync('bash', [new URL('./komodo-job.sh', import.meta.url).pathname], {
 					cwd: directory,
-					env: { ...process.env, PATH: `${directory}:${process.env.PATH}` },
+					env: { PATH: `${directory}:${process.env.PATH}`, HOME: directory },
 					stdio: 'pipe',
 				});
 			if (fail) expect(call).toThrow();
@@ -169,14 +204,21 @@ test('real shell wrapper forwards secrets only to sign and always deletes its en
 				.trim()
 				.split('\n')
 				.map((line) => JSON.parse(line));
-			expect(calls.map((args) => args.at(-1))).toEqual(fail ? ['build', 'sign'] : ['build', 'sign', 'verify']);
-			for (const args of calls) expect(args.includes('COSIGN_PRIVATE_KEY_B64')).toBe(args.at(-1) === 'sign');
-			expect(() => readFileSync(join(directory, '.git/agents-release.env'))).toThrow();
+			expect(calls.map((call) => call.action)).toEqual(fail ? sequence.slice(0, sequence.indexOf(fail) + 1) : sequence);
+			for (const { action, args } of calls) {
+				expect(args.includes('COSIGN_PRIVATE_KEY_B64')).toBe(action === 'sign');
+				expect(args.includes('COSIGN_PASSWORD')).toBe(action === 'sign');
+				if (['build', 'sign', 'verify'].includes(action)) expect(args).toContain('--pull=never');
+			}
+			expect(JSON.stringify(calls)).not.toContain('synthetic-password');
+			expect(JSON.stringify(calls)).not.toContain('synthetic-private-key');
+			expect(existsSync(readFileSync(authPath, 'utf8'))).toBe(false);
+			expect(existsSync(join(directory, '.git/agents-release.env'))).toBe(false);
 		} finally {
 			rmSync(directory, { recursive: true, force: true });
 		}
 	}
-});
+}, 15000);
 test('failed input loading cannot leave a signing envfile behind', () => {
 	const directory = mkdtempSync(join(tmpdir(), 'agents-invalid-env-'));
 	try {

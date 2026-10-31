@@ -1,0 +1,51 @@
+{
+	"sha": "c2e2169e9360f475f1262c5c507c963272790f68",
+	"rehearsal": true,
+	"toolsImage": "registry.cubytest.space/cuby/agents-release-tools@sha256:9f3b8a9c4e4e8f16701aa60147f31b97b5da10eaea84b4087e7d80b6d64b2826",
+	"bootstrap": {
+		"sha": "06285f780bcde19c8b1754b9895f054be2033693",
+		"ref": "registry.cubytest.space/cuby/agents-release-tools@sha256:9f3b8a9c4e4e8f16701aa60147f31b97b5da10eaea84b4087e7d80b6d64b2826",
+		"update": {
+			"$oid": "6ae545085c3077fa6f9da7e4"
+		},
+		"platform": "linux/amd64"
+	},
+	"updates": {
+		"agents-app": "6ae5465a5c3077fa6f9da82b",
+		"agents-sandbox": "6ae546725c3077fa6f9da833"
+	},
+	"manifest": {
+		"version": "0.0.1-beta",
+		"sha": "c2e2169e9360f475f1262c5c507c963272790f68",
+		"platform": "linux/amd64",
+		"schema": {
+			"files": [
+				"001_init.sql",
+				"002_general_agents.sql",
+				"003_agent_designs.sql",
+				"004_agent_harness.sql",
+				"005_agent_interviews.sql",
+				"006_conversation_tabs.sql",
+				"007_browser_runs.sql",
+				"008_design_schedules.sql",
+				"009_whatsapp.sql",
+				"010_message_queue.sql",
+				"011_agent_secrets.sql",
+				"012_agent_shares.sql"
+			],
+			"sha256": "aa3fb58c1ca4fe83626b99384fe03943e6c8683d16cf7472bb4e303fceccab30"
+		},
+		"images": {
+			"agents-app": {
+				"digest": "sha256:6d639483af24394326822ef308a913712210608a8507dcc5ec666339d443a5d2",
+				"ref": "registry.cubytest.space/cuby/agents-release-probe@sha256:6d639483af24394326822ef308a913712210608a8507dcc5ec666339d443a5d2",
+				"verified": true
+			},
+			"agents-sandbox": {
+				"digest": "sha256:a501f917cb8439e6b54c07d68d75293988a6d68e77db6885f7616eb8e76a0c26",
+				"ref": "registry.cubytest.space/cuby/agents-release-probe-sandbox@sha256:a501f917cb8439e6b54c07d68d75293988a6d68e77db6885f7616eb8e76a0c26",
+				"verified": true
+			}
+		}
+	}
+}
