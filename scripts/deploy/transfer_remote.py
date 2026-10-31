@@ -91,7 +91,9 @@ class Transfer:
     def compose(self, file, *args):
         command = self.core.DOCKER + ['compose', '--project-name', 'agents', '--project-directory',
             '/etc/komodo/stacks/agents', '--env-file', '/dev/null', '-f', str(file), *args]
-        r = subprocess.run(command, env={**os.environ, **self.env}, capture_output=True, timeout=120)
+        # No heredar COMPOSE_REMOVE_ORPHANS/otros switches de la shell del operador.
+        environment={k:os.environ[k] for k in ('PATH','HOME','LANG') if k in os.environ}
+        r = subprocess.run(command, env={**environment, **self.env}, capture_output=True, timeout=120)
         if r.returncode: raise RuntimeError('compose-failed-private-details-omitted')
         return r.stdout
 
@@ -179,7 +181,7 @@ class Transfer:
     def external_writers(self, enforce=True):
         mounts=['type=bind,src=/proc,dst=/hostproc,readonly']
         for i in range(10,19):
-            mounts.append(f'type=volume,src=agents-dev-agent-{i},dst=/sources/agent-{i},readonly,volume-nocopy')
+            mounts.append(self.core.mount_arg({'Type':'volume','Name':f'agents-dev-agent-{i}'},f'/sources/agent-{i}'))
         for name in ('agents-dev-server-1','agents-server-1'):
             source=next(m for m in self.core.mounts(name) if m['Destination']=='/data')
             self.core.approved_data_mount(name,source)
@@ -235,6 +237,11 @@ class Transfer:
         self.state['backupChecksums'] = r['backupChecksums']
         self.save('coordinated-backup-verified')
 
+    def new_volume(self, name):
+        self.docker('volume','create','--label','agents.transfer='+self.run,name)
+        owner=self.docker('volume','inspect',name,'--format','{{index .Labels "agents.transfer"}}').decode().strip()
+        if owner != self.run: raise ValueError('Volumen destino ajeno; no se monta ni sobrescribe')
+
     def stage(self):
         self.core.assert_frozen()
         self.state['storageWritersBeforeStage']=self.external_writers()
@@ -243,11 +250,11 @@ class Transfer:
             "const fs=require('fs');if(fs.existsSync('/root/releases')&&fs.lstatSync('/root/releases').isSymbolicLink())throw Error('symlink');fs.mkdirSync('/root/releases',{recursive:true,mode:0o700});fs.mkdirSync('/root/releases/beta1',{mode:0o700});fs.mkdirSync('/root/releases/beta1/data',{mode:0o700})", caps=True)
         for i in range(10,19):
             name = f'agents-prod-beta1-agent-{i}'
-            self.docker('volume','create','--label','agents.transfer='+self.run,name)
+            self.new_volume(name)
             self.helper([f'type=bind,src={self.backup},dst=/backup,readonly',f'type=volume,src={name},dst=/copy,volume-nocopy'],
                 'sh','-c',f'tar --acls --xattrs -xpf /backup/agent-{i}.tar -C /copy && tar --acls --xattrs -df /backup/agent-{i}.tar -C /copy',caps=True)
         tmp = 'agents-transfer-' + self.run + '-data'
-        self.docker('volume','create','--label','agents.transfer='+self.run,tmp)
+        self.new_volume(tmp)
         try:
             self.helper([f'type=bind,src={self.backup},dst=/backup,readonly',f'type=volume,src={tmp},dst=/copy,volume-nocopy'],
                 'tar','--acls','--xattrs','-xpf','/backup/development-data.tar','-C','/copy',caps=True)

@@ -78,6 +78,14 @@ class TransferTests(unittest.TestCase):
             with self.assertRaises(ValueError):t.recover()
             self.assertEqual(t.compose.call_count,1)
 
+    def test_foreign_target_volume_is_never_mounted_or_removed(self):
+        t=engine.Transfer.__new__(engine.Transfer);t.run='fixture'
+        t.docker=Mock(side_effect=[b'name',b'foreign'])
+        with self.assertRaises(ValueError):t.new_volume('reserved-target')
+        self.assertEqual([c.args[0:2] for c in t.docker.call_args_list],[('volume','create'),('volume','inspect')])
+        t.docker=Mock(side_effect=[b'name',b'fixture']);t.new_volume('reserved-target')
+        self.assertEqual(t.docker.call_count,2)
+
     def writer_fixture(self,result):
         t=engine.Transfer.__new__(engine.Transfer);t.p={'tools':'pinned','writerWorker':'public-worker'};t.run='fixture'
         t.core=types.SimpleNamespace(mounts=lambda n:[{'Destination':'/data'}],approved_data_mount=Mock(),mount_arg=lambda *a:'type=bind,src=/fixture,dst=/sources/data,readonly')
