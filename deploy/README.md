@@ -2,7 +2,7 @@
 
 **Preparación, no despliegue.** Desarrollo contiene 6 personas reales y 9 agentes ajenos a Test. Producción contiene Angelk, otra identidad, sin agentes. El encargo es desarrollo → producción, excluyendo Test y sus 9 agentes sólo del destino, conservando el origen. No fusionar Angel y Angelk por tener ID 2 en bases distintas.
 
-- [Plan de corte, accesos, interrupción, abortar y recuperar](cutover.md).
+- [Plan de corte, catálogo de operación, drenado, accesos y recuperación](cutover.md). `just cutover plan|rehearse` sólo trabaja localmente; no es un executor remoto ni habilita apply.
 - [Candidato Compose completo para esta beta](beta.compose.yaml): no aplicar durante preparación. El overlay antiguo `release.compose.yaml` no es un stack independiente.
 - [Evidencia de ensayos](preparation-proof.json).
 - [Transporte cifrado S3 opt-in](backup-s3.md) y [variables de Komodo pendientes de configurar](backup-s3.env.example). Deshabilitado; sin subidas reales.
@@ -30,6 +30,8 @@ just deploy plan
 just deploy inspect
 just deploy rehearse
 ```
+
+**Instrucción vigente de Angel: dejar los respaldos pendientes.** No ejecutar ahora `just deploy rehearse`, porque toma nuevas copias; tampoco activar S3 ni usar `just backup init|push|verify`. El ensayo nuevo `just cutover rehearse` es distinto: sólo comprueba el modelo de control con fixtures en memoria, sin SSH/DB/Docker/respaldos. No equivale a ejecutar el corte ni acredita los hechos de las fixtures.
 
 - `plan` no hace operaciones remotas. `inspect` consulta metadatos, busca pins históricos en Zot y verifica las firmas publicadas.
 - Los modos remotos abren ventanas propias en `cuby-agents-prod`; ver con `tmux attach -t cuby-agents-prod`. SSH/contexto Docker explícitos y daemon ID verificado, sólo reko-3. No reinician servicios existentes.
