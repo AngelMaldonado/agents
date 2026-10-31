@@ -15,7 +15,8 @@ if (process.env.AGENTS_RELEASE_APPROVED_SHA !== sha || process.env.GITHUB_SHA !=
 	throw new Error('Publicación requiere el SHA integrado y validado por just release.');
 if (git('ls-remote', 'origin', `refs/heads/${config.releaseBranch}`).split(/\s/)[0] !== sha)
 	throw new Error('main avanzó antes de publicar; vuelve a validar el commit actual.');
-if (git('status', '--porcelain')) throw new Error('Checkout sucio: no se publica.');
+const status = git('status', '--porcelain');
+if (status) throw new Error(`Checkout sucio: no se publica.\n${status}`);
 if (!process.env.GITHUB_TOKEN) throw new Error('Falta GITHUB_TOKEN del workflow.');
 let publishedVersion = null;
 const tag = `v${config.baseline}`;
