@@ -123,6 +123,7 @@ check:
     cd server && bun test
     cd web && bun test
     bun test scripts/release
+    bun test scripts/deploy
 
 # ---- quality and release (never sync the checkout serving users) ----
 
@@ -155,10 +156,9 @@ release mode="run":
 
 # ---- production (Komodo stack `agents` on reko-3) ----
 
-# Legacy direct publication is intentionally blocked; `just release` is the only release interface.
-deploy verb="image":
-    @echo 'just deploy {{verb}} está retirado. Usa just release; publicación/corte requieren autorización.' >&2
-    @exit 1
+# Preparation ONLY. No apply/cutover exists; publication stays in `just release`.
+deploy verb="plan":
+    python3 scripts/deploy/prepare.py {{verb}}
 
 # prod: psql | tunnel | stop — the production database, in tmux `cuby-agents-prod` (read-only by default)
 prod action:

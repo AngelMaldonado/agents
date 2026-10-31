@@ -1,0 +1,131 @@
+{
+	"schemaVersion": 1,
+	"release": "v0.0.1-beta",
+	"releaseSha": "f21d03be79c550e2fc77f42a3d1f3a6bb478f5a3",
+	"run": "20261031T033019Z-441bc0f9",
+	"operatorSourceSha256": "5d1d0e2ec4f65c1b003c5f45cea14552507ca865573ed1e90c865079cc4b286d",
+	"rehearsalOnly": true,
+	"readyForCutover": false,
+	"sourceChangedByPreparation": false,
+	"snapshotConsistency": "online-rehearsal-only-not-a-coordinated-cutover-backup",
+	"databaseRehearsal": {
+		"ok": true,
+		"preserved": {
+			"people": 6,
+			"agents": 9,
+			"activeAgents": 8,
+			"runs": 206,
+			"conversations": 13
+		},
+		"totalPeopleIncludingExistingProduction": 7,
+		"removedTestAgents": 9,
+		"secretsDecrypted": 19,
+		"secretsReencrypted": 19,
+		"existingProductionIdentityMap": [
+			{
+				"fromProduction": 2,
+				"toRehearsal": 9
+			}
+		],
+		"agentDefinitionsUnchanged": true,
+		"pendingBeforeCutover": [
+			"DBOS schedules and historical references",
+			"new state_ref mapping for production copies",
+			"web session policy and URL/proxy/network validation",
+			"recover approved images",
+			"coordinated final backup and approval"
+		]
+	},
+	"archivesVerified": [
+		"agent-10",
+		"agent-11",
+		"agent-12",
+		"agent-13",
+		"agent-14",
+		"agent-15",
+		"agent-16",
+		"agent-17",
+		"agent-18",
+		"development-cliproxy",
+		"development-data",
+		"production-cliproxy",
+		"production-data"
+	],
+	"proposedSandboxProbes": [
+		{
+			"agent": 10,
+			"ok": true,
+			"approved": false,
+			"runtimeDigest": "a2c7743dae5b5d6286446cc333119c9a6e19ea48a61a57fe7515b2fc1d61740d",
+			"toolCount": 6
+		},
+		{
+			"agent": 11,
+			"ok": true,
+			"approved": false,
+			"runtimeDigest": "3220f07a9825e990a76b13410e7cb7f0c714f1bd429d91518a33ee9d075e489c",
+			"toolCount": 5
+		},
+		{
+			"agent": 12,
+			"ok": true,
+			"approved": false,
+			"runtimeDigest": "7c35e853991768d8e2e8950502f0eb79f3ade040b0637e9778474d059bfbe6d4",
+			"toolCount": 10
+		},
+		{
+			"agent": 13,
+			"ok": true,
+			"approved": false,
+			"runtimeDigest": "4e90bf9979c8c5068e7e475275b5ffde8f2f483be95b00887bd4b9c71300c8f9",
+			"toolCount": 6
+		},
+		{
+			"agent": 14,
+			"ok": true,
+			"approved": false,
+			"runtimeDigest": "1b4bf99329d8ce4a52756bf7423532d45e9c84cdcfebe45d8167873ea8e095e1",
+			"toolCount": 6
+		},
+		{
+			"agent": 15,
+			"ok": true,
+			"approved": false,
+			"runtimeDigest": "1d80e5afde62c306f4de7842ee775eb965ed3fc3bb299c04d8ce9932d67c9415",
+			"toolCount": 6
+		},
+		{
+			"agent": 16,
+			"ok": true,
+			"approved": false,
+			"runtimeDigest": "a13c5af1ea2111519e4f7affe3cbb28bc43827e48f52a57842bd61a31d0c35e4",
+			"toolCount": 6
+		},
+		{
+			"agent": 17,
+			"ok": true,
+			"approved": false,
+			"runtimeDigest": "e604cedde80fafaa81acd2f28c0325b703a8752ca22b7d3146b671ee213a92ac",
+			"toolCount": 6
+		},
+		{
+			"agent": 18,
+			"ok": true,
+			"approved": false,
+			"runtimeDigest": "5185904c82e09ec5e41b6c0990223111fe4e80afac8ccd859a97fb43a3a6d702",
+			"toolCount": 5
+		}
+	],
+	"missingImages": [
+		"sha256:9794748a91d75ded5099de20c2a359b787e4cee8b33eb98c2b1650675ba553b4",
+		"sha256:ea53467b01328e245e1fa00b04f9f1ff1bd88e12f27df7b6ad57a2b7931fab08"
+	],
+	"registryManifestsExamined": 26,
+	"registryMatches": 0,
+	"cleanupFailures": [],
+	"limitations": [
+		"No running server, real model, browser login acceptance or actual deployment.",
+		"DBOS schedules/history, state_ref mapping, auth/URLs/proxy/network and coordinated cutover remain pending.",
+		"Probes are not approval; historical image pins are unchanged."
+	]
+}

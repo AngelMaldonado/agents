@@ -1,0 +1,332 @@
+"""Executed over SSH on reko-3. Emits metadata only; backups never leave the host."""
+import hashlib
+import json
+import os
+from pathlib import Path
+import re
+import shutil
+import subprocess
+import time
+import uuid
+
+DOCKER = ["docker", "--context", "default"]
+RO = "-c default_transaction_read_only=on -c statement_timeout=30s -c lock_timeout=5s"
+EXPECTED_APP = "registry.cubytest.space/cuby/agents-app@sha256:8a8d92f6ad22e024e3defba54261e903e60b24e43a18f5efd0d1e13a534916a8"
+EXPECTED_SANDBOX = "registry.cubytest.space/cuby/agents-sandbox@sha256:04771072a9d1064e52c034b1f59a1db7c46f695c760568cc9af76d20d5bebd40"
+EXPECTED_TOOLS = "registry.cubytest.space/cuby/agents-release-tools@sha256:9f3b8a9c4e4e8f16701aa60147f31b97b5da10eaea84b4087e7d80b6d64b2826"
+
+
+def run(args, data=None, timeout=60, output=None):
+    result = subprocess.run(args, input=data, stdout=output or subprocess.PIPE,
+                            stderr=subprocess.PIPE, timeout=timeout)
+    if result.returncode:
+        # stderr can contain data paths or database values; never forward it to Mac.
+        text = result.stderr.decode(errors="replace").lower()
+        kind = next((k for k in ("permission denied", "operation not permitted", "no such file", "unknown flag") if k in text), "subprocess")
+        raise RuntimeError(f"{kind}: exit {result.returncode}")
+    return result.stdout
+
+
+def docker(*args, **kwargs):
+    return run(DOCKER + list(args), **kwargs)
+
+
+def sql(container, query):
+    if container not in ("agents-dev-postgres-1", "agents-postgres-1"):
+        raise ValueError("Contenedor de origen no autorizado")
+    return docker("exec", "-i", "-e", "PGOPTIONS=" + RO, container,
+                  "psql", "-X", "-U", "agents", "-d", "agents", "-At", "-v", "ON_ERROR_STOP=1",
+                  data=query.encode()).decode().strip()
+
+
+def mounts(container):
+    return json.loads(docker("inspect", container, "--format", "{{json .Mounts}}"))
+
+
+def mount_arg(mount, target, readonly=True):
+    kind = mount["Type"]
+    if kind == "volume":
+        name = mount["Name"]
+        docker("volume", "inspect", name)  # Don't auto-create an absent source volume.
+        spec = f"type=volume,src={name},dst={target},volume-nocopy"
+    elif kind == "bind":
+        name = mount["Source"]
+        if "," in name or not name.startswith("/"):
+            raise ValueError("Ruta de montaje inválida")
+        spec = f"type=bind,src={name},dst={target}"
+    else:
+        raise ValueError("Tipo de montaje no soportado")
+    return spec + (",readonly" if readonly else "")
+
+
+def approved_data_mount(container, mount):
+    suffix = mount["Destination"].lstrip("/")
+    if suffix not in ("data", "cliproxy"):
+        raise ValueError("Destino de datos desconocido")
+    if container == "agents-dev-server-1":
+        valid = mount["Type"] == "volume" and mount.get("Name") == "agents-dev_" + suffix
+    elif container == "agents-server-1":
+        valid = mount["Type"] == "bind" and mount.get("Source") == "/srv/agents/" + suffix
+    else:
+        valid = False
+    if not valid:
+        raise ValueError("Montaje inesperado; no se respalda una ruta más amplia")
+    return mount
+
+
+def helper(tools, run_id, extra_mounts, *command, timeout=300, caps=False, data=None):
+    args = ["run", "--rm", "--pull=never", "--network", "none", "--read-only", "--cap-drop", "ALL",
+            "--security-opt", "no-new-privileges", "--memory", "256m", "--memory-swap", "256m",
+            "--cpus", "0.5", "--pids-limit", "64", "--label", "agents.migration=" + run_id,
+            "--tmpfs", "/tmp:rw,nosuid,nodev,size=16m"]
+    if data is not None:
+        args += ["-i"]
+    if caps:
+        args += ["--cap-add", "DAC_READ_SEARCH", "--cap-add", "DAC_OVERRIDE", "--cap-add", "CHOWN", "--cap-add", "FOWNER"]
+    for mount in extra_mounts:
+        args += ["--mount", mount]
+    return docker(*args, "--entrypoint", "timeout", tools, str(timeout - 5), *command, timeout=timeout, data=data)
+
+
+def metadata():
+    query = """select json_build_object(
+      'people',(select count(*) from people),
+      'test',(select json_agg(id) from people where key='test'),
+      'liveRuns',(select count(*) from runs where status in ('queued','starting','running','blocked')),
+      'agents',(select coalesce(json_agg(json_build_object('id',a.id,'volume',a.state_ref,'image',a.harness_image)
+        order by a.id),'[]') from agents a join people p on p.id=a.person_id where p.key<>'test'));
+    """
+    return {"development": json.loads(sql("agents-dev-postgres-1", query)),
+            "production": json.loads(sql("agents-postgres-1", query))}
+
+
+REGISTRY_SCAN = r"""
+const fs=require('fs'),path=require('path'); const out=[];
+for(const repo of ['cuby/agents-sandbox','agents-sandbox','cuby/agents-release-probe-sandbox']) {
+ const root=path.join('/registry',repo),index=path.join(root,'index.json');
+ if(!fs.existsSync(index)) continue;
+ const seen=new Set();
+ function visit(desc,depth=0) {
+  if(depth>3||seen.size>300||!/^sha256:[a-f0-9]{64}$/.test(desc.digest)) throw Error('invalid OCI graph');
+  if(seen.has(desc.digest))return; seen.add(desc.digest);
+  const blob=path.join(root,'blobs','sha256',desc.digest.slice(7));
+  const d=JSON.parse(fs.readFileSync(blob));
+  if(d.manifests){for(const child of d.manifests)visit(child,depth+1);return;}
+  if(d.config)out.push({repository:repo,manifest:desc.digest,config:d.config.digest});
+ }
+ for(const d of JSON.parse(fs.readFileSync(index)).manifests)visit(d);
+}
+console.log(JSON.stringify(out));
+"""
+
+
+def main(payload):
+    os.umask(0o077)
+    run_id = time.strftime("%Y%m%dT%H%M%SZ", time.gmtime()) + "-" + uuid.uuid4().hex[:8]
+    report = {"run": run_id, "ok": False, "readyForCutover": False, "sourceChangedByPreparation": False,
+              "snapshotConsistency": "online-rehearsal-only-not-a-coordinated-cutover-backup",
+              "operatorSourceSha256": hashlib.sha256((payload["program"] + payload["worker"]).encode()).hexdigest()}
+    resources = []
+    backup = None
+    verified_daemon = False
+    try:
+        if payload["app"] != EXPECTED_APP or payload["tools"] != EXPECTED_TOOLS or payload["sandbox"] != EXPECTED_SANDBOX:
+            raise ValueError("Referencias distintas de los artefactos auditados")
+        if docker("info", "--format", "{{.Name}}").decode().strip() != "reko-3":
+            raise ValueError("Daemon distinto de reko-3")
+        verified_daemon = True
+        for image in (EXPECTED_TOOLS, EXPECTED_APP, EXPECTED_SANDBOX):
+            docker("image", "inspect", image, "--format", "{{.Id}}")
+        report["phase"] = "read-only-inventory"
+        report["before"] = metadata()
+        dev = report["before"]["development"]
+        if dev["test"] != [1]:
+            raise ValueError("Test cambió")
+        if payload["mode"] == "rehearse" and (dev["liveRuns"] or report["before"]["production"]["liveRuns"]):
+            raise ValueError("Hay corridas activas; no se pausa ningún entorno")
+        agents = dev["agents"]
+        if not agents or any(a["volume"] != f"agents-dev-agent-{a['id']}" for a in agents):
+            raise ValueError("Referencias de estado inesperadas")
+        report["missingImages"] = []
+        for image in sorted({a["image"] for a in agents if a["image"]}):
+            if not re.fullmatch(r"sha256:[a-f0-9]{64}", image):
+                raise ValueError("Pin no reconocido")
+            try:
+                docker("image", "inspect", image, "--format", "{{.Id}}")
+            except RuntimeError:
+                report["missingImages"].append(image)
+        report["phase"] = "registry-inspection"
+        registry = next(m for m in mounts("registry") if m["Destination"] == "/var/lib/registry")
+        if registry["Type"] != "bind" or registry["Source"] != "/opt/platform/registry/data":
+            raise ValueError("Montaje de registro inesperado")
+        candidates = json.loads(helper(EXPECTED_TOOLS, run_id, [mount_arg(registry, "/registry")],
+                                       "node", "-e", REGISTRY_SCAN, caps=True))
+        report["registryCandidates"] = [c for c in candidates if
+                                        c["manifest"] in report["missingImages"] or c["config"] in report["missingImages"]]
+        report["registryManifestsExamined"] = len(candidates)
+        if payload["mode"] == "inspect":
+            report["ok"] = True
+            return report
+        if payload["mode"] != "rehearse":
+            raise ValueError("Operación no autorizada")
+        parent = Path.home() / ".local/state/agents-migration"
+        parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+        if parent.is_symlink() or parent.stat().st_mode & 0o077:
+            raise ValueError("Directorio de respaldos no privado")
+        if shutil.disk_usage(parent).free < 5 * 1024**3:
+            raise ValueError("Menos de 5 GiB libres; se cancela")
+        backup = parent / run_id
+        backup.mkdir(mode=0o700)
+        report["backupDirectory"] = str(backup)
+        (backup / "status.json").write_text(json.dumps({"state": "running", "run": run_id}))
+        for label, container in (("development", "agents-dev-postgres-1"), ("production", "agents-postgres-1")):
+            report["phase"] = "dump-" + label
+            path = backup / (label + ".dump")
+            with path.open("xb") as f:
+                os.chmod(path, 0o600)
+                docker("exec", "-e", "PGOPTIONS=" + RO, container, "pg_dump", "-U", "agents", "-d", "agents",
+                       "-Fc", "--lock-wait-timeout=5s", output=f, timeout=180)
+        dest = f"type=bind,src={backup},dst=/backup"
+        files = [("/home/woz/dev/work/agents/.env.dev", "development.env"),
+                 ("/etc/komodo/stacks/agents/.env", "production.env"),
+                 ("/etc/komodo/stacks/agents/compose.yaml", "production.compose.yaml")]
+        for source, name in files:
+            report["phase"] = "backup-config-" + name
+            helper(EXPECTED_TOOLS, run_id, [f"type=bind,src={source},dst=/input,readonly", dest],
+                   "sh", "-c", f"umask 077; cp /input /backup/{name}; chmod 600 /backup/{name}", caps=True)
+        archives = []
+        for a in agents:
+            archives.append((f"agent-{a['id']}", {"Type": "volume", "Name": a["volume"]}))
+        for container, prefix in (("agents-dev-server-1", "development"), ("agents-server-1", "production")):
+            for m in mounts(container):
+                if m["Destination"] in ("/data", "/cliproxy"):
+                    archives.append((prefix + "-" + m["Destination"][1:], approved_data_mount(container, m)))
+        report["archives"] = []
+        for name, m in archives:
+            report["phase"] = "archive-" + name
+            helper(EXPECTED_TOOLS, run_id, [mount_arg(m, "/input"), dest],
+                   "sh", "-c", f"umask 077; tar --numeric-owner --acls --xattrs -cpf /backup/{name}.tar -C /input .", caps=True)
+            report["archives"].append(name)
+        report["phase"] = "isolated-postgres"
+        pg_image = docker("inspect", "agents-dev-postgres-1", "--format", "{{.Image}}").decode().strip()
+        socket_volume = "agents-migration-" + run_id + "-socket"
+        container = "agents-migration-" + run_id + "-postgres"
+        docker("volume", "create", "--label", "agents.migration=" + run_id, socket_volume)
+        resources.append(("volume", socket_volume))
+        docker("run", "-d", "--rm", "--pull=never", "--name", container, "--network", "none",
+               "--label", "agents.migration=" + run_id, "--memory", "512m", "--memory-swap", "512m", "--cpus", "1",
+               "--pids-limit", "128", "--tmpfs", "/var/lib/postgresql:rw,nosuid,size=512m",
+               "--mount", f"type=volume,src={socket_volume},dst=/var/run/postgresql,volume-nocopy",
+               "-e", "POSTGRES_USER=agents", "-e", "POSTGRES_DB=agents_migration_rehearsal",
+               "-e", "POSTGRES_HOST_AUTH_METHOD=trust", "--entrypoint", "timeout", pg_image,
+               "900", "/usr/local/bin/docker-entrypoint.sh", "postgres")
+        resources.append(("container", container))
+        for attempt in range(45):
+            try:
+                docker("exec", container, "pg_isready", "-U", "agents", "-d", "agents_migration_rehearsal", timeout=5)
+                break
+            except RuntimeError:
+                time.sleep(1)
+        else:
+            raise RuntimeError("Postgres aislado no inició")
+        docker("exec", container, "createdb", "-U", "agents", "-T", "template0", "agents_migration_existing")
+        for label, database in (("development", "agents_migration_rehearsal"), ("production", "agents_migration_existing")):
+            with (backup / (label + ".dump")).open("rb") as f:
+                result = subprocess.run(DOCKER + ["exec", "-i", container, "pg_restore", "-U", "agents", "-d", database,
+                                                 "--exit-on-error", "--no-owner", "--no-privileges"], stdin=f,
+                                        stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=120)
+                if result.returncode:
+                    raise RuntimeError("Falló restauración aislada; no se muestran datos privados")
+        worker_args = ["run", "--rm", "--pull=never", "--network", "none", "--read-only", "--cap-drop", "ALL",
+                       "--security-opt", "no-new-privileges", "--cap-add", "DAC_READ_SEARCH", "--memory", "256m", "--memory-swap", "256m",
+                       "--ulimit", "core=0", "--cpus", "1", "--pids-limit", "64",
+                       "--label", "agents.migration=" + run_id,
+                       "--mount", f"type=bind,src={backup},dst=/backup,readonly",
+                       "--mount", f"type=volume,src={socket_volume},dst=/socket,readonly,volume-nocopy",
+                       "-e", "AGENTS_MIGRATION_WORKER=true", "--entrypoint", "bun", EXPECTED_APP, "-e", payload["worker"]]
+        report["phase"] = "isolated-database-transform"
+        report["databaseRehearsal"] = json.loads(docker(*worker_args, timeout=120))
+        if not report["databaseRehearsal"].get("ok"):
+            raise RuntimeError("Falló transformación aislada")
+        report["phase"] = "propose-new-sandbox-probes-not-approval"
+        harness_rows = json.loads(docker("exec", container, "psql", "-X", "-U", "agents", "-d", "agents_migration_rehearsal", "-Atqc",
+            "select json_agg(json_build_object('id',id,'harness',harness) order by id) from agents"))
+        report["proposedSandboxProbes"] = []
+        for row in harness_rows:
+            wrapper = "process.env.AGENTS_HARNESS=require('fs').readFileSync(0,'utf8');import('/opt/agents/harness-probe.mjs').catch(()=>process.exit(1));"
+            raw = docker("run", "--rm", "-i", "--pull=never", "--network", "none", "--read-only", "--user", "agent",
+                "--cap-drop", "ALL", "--security-opt", "no-new-privileges", "--memory", "512m", "--memory-swap", "512m",
+                "--cpus", "1", "--pids-limit", "64", "--tmpfs", "/tmp:rw,nosuid,nodev,size=64m,mode=1777",
+                "--label", "agents.migration=" + run_id, "--entrypoint", "node", EXPECTED_SANDBOX, "-e", wrapper,
+                data=json.dumps(row["harness"]).encode(), timeout=40)
+            markers = [line[len("AGENTS_HARNESS_PROBE "):] for line in raw.decode().splitlines() if line.startswith("AGENTS_HARNESS_PROBE ")]
+            if len(markers) != 1:
+                raise RuntimeError("Prueba sin resultado único")
+            probe = json.loads(markers[0])
+            if not probe.get("ok"):
+                raise RuntimeError("Falló prueba aislada del harness")
+            runtime = probe["runtime"]
+            report["proposedSandboxProbes"].append({"agent": row["id"], "ok": True, "approved": False,
+                "runtimeDigest": runtime["digest"], "toolCount": len(runtime["tools"])})
+        # Restore every archive into its OWN disposable volume and compare content+metadata.
+        report["archivesVerified"] = []
+        for index, name in enumerate(report["archives"]):
+            report["phase"] = "restore-compare-" + name
+            volume = "agents-migration-" + run_id + f"-copy-{index}"
+            docker("volume", "create", "--label", "agents.migration=" + run_id, volume)
+            resources.append(("volume", volume))
+            helper(EXPECTED_TOOLS, run_id,
+                   [f"type=bind,src={backup},dst=/backup,readonly", f"type=volume,src={volume},dst=/copy,volume-nocopy"],
+                   "sh", "-c", f"tar --acls --xattrs -xpf /backup/{name}.tar -C /copy && tar --acls --xattrs -df /backup/{name}.tar -C /copy", caps=True)
+            report["archivesVerified"].append(name)
+            docker("volume", "rm", volume)
+            resources.remove(("volume", volume))
+        report["after"] = metadata()
+        report["liveMetadataUnchanged"] = report["before"] == report["after"]
+        checksum_code = """const fs=require('fs'),crypto=require('crypto'),out={};
+for(const n of fs.readdirSync('/backup').filter(n=>/^[a-z0-9-]+\\.(tar|dump)$/.test(n))){
+ const h=crypto.createHash('sha256'),fd=fs.openSync('/backup/'+n,'r'),b=Buffer.alloc(1048576);let len;
+ try{while((len=fs.readSync(fd,b,0,b.length,null))>0)h.update(b.subarray(0,len));}finally{fs.closeSync(fd);}
+ out[n]=h.digest('hex');} console.log(JSON.stringify(out));"""
+        report["backupChecksums"] = json.loads(helper(EXPECTED_TOOLS, run_id,
+            [f"type=bind,src={backup},dst=/backup,readonly"], "node", "-e", checksum_code, caps=True))
+        report["phase"] = "complete"
+        report["ok"] = report["liveMetadataUnchanged"]
+        return report
+    except Exception as error:
+        report["failureType"] = type(error).__name__
+        if isinstance(error, RuntimeError) and re.fullmatch(r"(?:permission denied|operation not permitted|no such file|unknown flag|subprocess): exit -?\d+", str(error)):
+            report["failureClass"] = str(error)
+        # Errors intentionally exclude values, full commands, paths within profiles and DB error details.
+        return report
+    finally:
+        report["cleanupFailures"] = []
+        for kind, name in reversed(resources):
+            try:
+                fmt = "{{index .Labels \"agents.migration\"}}" if kind == "volume" else "{{index .Config.Labels \"agents.migration\"}}"
+                owner = docker(kind, "inspect", name, "--format", fmt).decode().strip()
+                if owner != run_id:
+                    raise RuntimeError("Recurso ajeno; no se borra")
+                docker(kind, "rm", *( ["-f"] if kind == "container" else []), name)
+            except Exception:
+                report["cleanupFailures"].append(name)
+                report["ok"] = False
+        # Catch helper containers left behind if an attached Docker client timed out.
+        for kind in (("container", "volume") if verified_daemon else ()):
+            try:
+                command = ["ps", "-a"] if kind == "container" else ["volume", "ls"]
+                ids = docker(*command, "--filter", "label=agents.migration=" + run_id, "-q").decode().split()
+                for name in ids:
+                    fmt = "{{index .Labels \"agents.migration\"}}" if kind == "volume" else "{{index .Config.Labels \"agents.migration\"}}"
+                    if docker(kind, "inspect", name, "--format", fmt).decode().strip() != run_id:
+                        raise RuntimeError("Recurso ajeno")
+                    docker(kind, "rm", *(["-f"] if kind == "container" else []), name)
+            except Exception:
+                report["cleanupFailures"].append("label-sweep-" + kind)
+                report["ok"] = False
+        if backup:
+            (backup / "status.json").write_text(json.dumps(report, indent=2))
+
+
+if "payload" in globals():
+    print(json.dumps(main(payload)))
