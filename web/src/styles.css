@@ -171,7 +171,21 @@
 		@apply truncate text-sm font-semibold;
 	}
 	.card-foot {
-		@apply flex min-w-0 items-center justify-between gap-3 px-4 py-3 text-xs;
+		@apply flex min-w-0 items-center gap-3 px-4 py-3 text-xs;
+	}
+	/* Ticker: the new line rises from below and pushes the old one out the top. */
+	.ticker {
+		@apply relative grid min-w-0 overflow-hidden;
+	}
+	.ticker-line {
+		grid-area: 1 / 1;
+		@apply min-w-0;
+	}
+	.ticker-in {
+		animation: ticker-in 320ms ease-out both;
+	}
+	.ticker-out {
+		animation: ticker-out 320ms ease-in both;
 	}
 	.prompt {
 		@apply min-w-0 truncate;
@@ -1111,6 +1125,18 @@
 	}
 	70% {
 		transform: rotate(7deg) scale(1.08);
+	}
+}
+@keyframes ticker-in {
+	from {
+		opacity: 0;
+		transform: translateY(100%);
+	}
+}
+@keyframes ticker-out {
+	to {
+		opacity: 0;
+		transform: translateY(-100%);
 	}
 }
 @keyframes artifact-in {
