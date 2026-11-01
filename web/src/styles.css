@@ -70,6 +70,12 @@
 		height: var(--header-height);
 		@apply flex shrink-0 items-center gap-2 border-b border-shell-header-border bg-shell-header px-4 md:rounded-t-xl lg:gap-3 lg:px-6;
 	}
+	.cuby-header-slot {
+		@apply flex min-w-0 flex-1 items-center gap-1;
+	}
+	.cuby-header:has(.cuby-header-slot:not(:empty)) .cuby-header-title {
+		display: none;
+	}
 
 	.page {
 		@apply mx-auto w-full max-w-[1440px] p-4 lg:p-6;
@@ -284,6 +290,243 @@
 	.agent-view:not(.is-improving) {
 		max-width: 120rem;
 	}
+	/* The hub (#/agent/:id) scrolls as a page; the chat and Automejora split the height they get. */
+	.agent-view[data-view='hub'] {
+		@apply h-auto overflow-visible;
+	}
+	.agent-hub {
+		@apply mx-auto flex w-full flex-col gap-8;
+	}
+	/* The header spans the page; the work and everything under it share one centered column. */
+	.agent-hub > :not(.agent-head) {
+		@apply mx-auto w-full max-w-3xl;
+	}
+	.agent-hub .agent-head {
+		@apply mb-0;
+	}
+	.current-work {
+		@apply flex min-w-0 flex-col;
+	}
+	/* Nothing in the hub shrinks to fit the screen: it scrolls instead. */
+	.agent-hub,
+	.agent-hub > *,
+	.current-work .agent-tabs,
+	.current-work .work-body {
+		flex: none;
+	}
+	.current-work .work-body {
+		height: min(62vh, 40rem);
+	}
+	.work-footer {
+		@apply flex min-w-0 items-center justify-between gap-3 pt-3 text-xs;
+	}
+	.work-footer-face {
+		@apply flex size-6 shrink-0 items-center justify-center rounded-full bg-muted text-[0.5625rem] font-medium;
+	}
+	.hub-section-title {
+		@apply mb-2 text-xs font-medium text-muted-foreground;
+	}
+	.hub-list > li + li {
+		@apply border-t;
+	}
+	.hub-row {
+		@apply -mx-2 flex min-w-0 items-center justify-between gap-4 rounded-md px-2 py-3 text-sm outline-none hover:bg-muted/50 focus-visible:ring-2 focus-visible:ring-ring;
+	}
+	.hub-files {
+		@apply grid gap-2 sm:grid-cols-2;
+	}
+	.hub-file {
+		@apply flex min-w-0 items-center gap-2 rounded-lg border bg-card p-3;
+	}
+	/* Small cards (Configuración: tools, prompts, skills, MCP, CLI): an icon and a name; hover says more. */
+	.harness-tiles {
+		@apply grid grid-cols-[repeat(auto-fill,minmax(min(100%,11rem),1fr))] gap-2;
+	}
+	.harness-tile {
+		@apply flex min-w-0 items-center gap-2 rounded-lg border bg-card px-3 py-2.5 text-left text-xs font-medium outline-none focus-visible:ring-2 focus-visible:ring-ring;
+	}
+	button.harness-tile {
+		@apply transition-colors hover:border-primary/40 hover:bg-muted/50;
+	}
+	/* Two panes side by side: the list, and what opened from it; it slides left to show it and back. */
+	.slide-stack {
+		@apply min-w-0 overflow-hidden;
+	}
+	.slide-stack-track {
+		@apply flex w-[200%] items-start;
+		transition: transform 260ms cubic-bezier(0.2, 0, 0, 1);
+	}
+	.slide-stack[data-detail='true'] > .slide-stack-track {
+		transform: translateX(-50%);
+	}
+	.slide-stack-pane {
+		@apply w-1/2 min-w-0 shrink-0;
+	}
+	/* Once the slide ends, the hidden pane takes no height (the panel scrolls only what is shown). */
+	.slide-stack-hidden {
+		@apply max-h-0 overflow-hidden;
+	}
+	/* Compartir: a person's tile, checked when the agent is shared with them. */
+	button.share-tile {
+		@apply transition-colors hover:border-primary/40 hover:bg-muted/50 disabled:opacity-60;
+	}
+	.share-tile-on {
+		@apply border-primary/50 bg-primary/5;
+	}
+	.share-check {
+		@apply grid size-4 shrink-0 place-items-center rounded-sm border border-input;
+	}
+	.share-tile-on .share-check {
+		@apply border-primary bg-primary text-primary-foreground;
+	}
+	/* The role editor filling its container: header and footer fixed, CodeMirror takes the rest. */
+	.role-editor-fill {
+		@apply flex h-full min-h-0 flex-col;
+	}
+	.role-editor-fill > .cm-theme,
+	.role-editor-fill > div:has(> .cm-editor) {
+		@apply min-h-0 flex-1;
+	}
+	.role-editor-fill .cm-editor {
+		height: 100%;
+	}
+	.breadcrumb-link {
+		@apply shrink-0 truncate rounded-md px-1.5 py-1 text-muted-foreground outline-none hover:bg-muted hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring;
+	}
+	/* #/agent/:id/browser: the agent's browser, as big as the page allows. */
+	.browser-focus {
+		@apply mx-auto flex min-h-0 w-full max-w-[96rem] flex-1;
+	}
+	/* #/agent/:id/chat/:c: the chat is the protagonist; the work, when there is some, on the right. */
+	/* The chat reaches the page's top and bottom edges (its messages fade there); the work panel keeps the page's padding. */
+	.agent-view[data-view='chat'],
+	.agent-view[data-view='improve'] {
+		@apply max-w-none p-0;
+	}
+	.agent-view-error {
+		@apply mb-3;
+	}
+	.agent-view[data-view='chat'] .agent-view-error,
+	.agent-view[data-view='improve'] .agent-view-error {
+		@apply mx-4 mt-3 mb-0;
+	}
+	.chat-view {
+		@apply relative flex min-h-0 min-w-0 flex-1;
+	}
+	/* The chat's work panel: the tabs across its width with the close button right after them; the
+	   browser with a little air; activity, terminal and answer edge to edge, square. */
+	.chat-work {
+		@apply p-0;
+	}
+	.chat-work .work-toolbar {
+		@apply flex-nowrap gap-2 px-3 pt-3 pb-2;
+	}
+	.chat-work .work-toolbar [data-slot='tabs-list'] {
+		@apply min-w-0 flex-1;
+	}
+	.chat-work .work-toolbar > div {
+		@apply ml-0;
+	}
+	.chat-work .work-browser-panel {
+		@apply px-2 pb-2;
+	}
+	.chat-work .agent-details > [data-slot='tabs-content']:not(.work-browser-panel) {
+		@apply rounded-none border-x-0 border-b-0;
+	}
+	.chat-work .work-footer {
+		@apply px-3 pb-3;
+	}
+	/* Between the chat and its work: the handle's own line is the divider, no gap around it. */
+	.chat-split > .work-resize-handle {
+		@apply mx-0 bg-border;
+	}
+	/* When the four tabs do not fit with their names, only their icons (the name stays in the tooltip). */
+	.chat-work,
+	.current-work {
+		container: work-panel / inline-size;
+	}
+	@container work-panel (max-width: 36rem) {
+		.work-tab-label {
+			@apply sr-only;
+		}
+	}
+	/* A closed side panel's reopen button, where the panel's own close button was. */
+	.panel-reopen {
+		@apply absolute z-20;
+		/* The work panel's close button: 19 px down, 12 px in (measured in the chat view). */
+		top: 19px;
+		right: 12px;
+	}
+	/* The contract's close button (32 px at 8 / 16 px), centered on the same spot. */
+	.designer-panel-reopen {
+		top: 10px;
+		right: 18px;
+	}
+	/* The hidden work panel's peek: a small browser, top right under the panel's reopen button. */
+	.work-peek {
+		/* Under the reopen button, its right edge lined up with it. */
+		top: calc(19px + 1.75rem + 0.5rem);
+		right: 12px;
+		@apply absolute z-10 w-44 overflow-hidden rounded-card shadow-lg transition-shadow hover:ring-2 hover:ring-primary/50 has-[.work-peek-open:focus-visible]:ring-2 has-[.work-peek-open:focus-visible]:ring-ring;
+	}
+	.work-peek-open {
+		@apply block w-full rounded-card text-left outline-none;
+	}
+	.work-peek .browser {
+		@apply pointer-events-none;
+	}
+	.work-peek-close {
+		@apply absolute top-1 right-1 grid size-5 place-items-center rounded-full bg-neutral-900/80 text-neutral-300 outline-none hover:bg-neutral-800 hover:text-white focus-visible:ring-2 focus-visible:ring-ring;
+	}
+	.work-peek-close svg {
+		@apply size-3;
+	}
+	/* The composer's «Trabajo» while its run works: the screen glows and a live dot pings. */
+	.work-toggle-icon {
+		@apply relative inline-flex;
+	}
+	.work-toggle-icon[data-live] svg {
+		@apply text-success;
+		animation: work-glow 1.6s ease-in-out infinite;
+	}
+	.work-toggle-icon[data-live]::after {
+		content: '';
+		@apply absolute -top-0.5 -right-0.5 size-1.5 rounded-full bg-success;
+		animation: work-ping 1.6s cubic-bezier(0, 0, 0.2, 1) infinite;
+	}
+	.work-peek .browser.compact .browser-bar {
+		@apply gap-2 py-1 pr-7 pl-2;
+	}
+	.work-peek .browser.compact .browser-bar .url {
+		@apply bg-transparent p-0 text-[0.5625rem] leading-tight;
+	}
+	.work-peek .ended-note,
+	.work-peek .no-signal {
+		@apply text-[0.5625rem];
+	}
+	.work-peek .ended-note {
+		@apply hidden;
+	}
+	.chat-view > .chat-pane {
+		@apply mx-auto w-full max-w-3xl;
+	}
+	.chat-split {
+		@apply h-full min-h-0;
+	}
+	.chat-pane,
+	.chat-work {
+		@apply flex h-full min-h-0 min-w-0 flex-col;
+	}
+	.chat-view > .chat-work {
+		@apply w-full;
+	}
+	.chat-pane > .work-chat {
+		@apply min-h-0 flex-1;
+		height: auto;
+	}
+	.chat-work .work-body {
+		@apply min-h-0 flex-1;
+	}
 	.agent-work {
 		@apply flex min-h-0 flex-1 flex-col;
 	}
@@ -327,8 +570,11 @@
 	.agent-id > .muted:not(.agent-header-meta) {
 		@apply line-clamp-3 max-w-[80ch] break-words;
 	}
+	.agent-head-side {
+		@apply ml-auto flex max-w-full shrink-0 flex-col items-end gap-2;
+	}
 	.agent-actions {
-		@apply ml-auto flex max-w-full shrink-0 flex-wrap items-center justify-end gap-2;
+		@apply flex max-w-full flex-wrap items-center justify-end gap-2;
 	}
 	.agent-browser {
 		@apply flex h-full min-h-0 min-w-0 w-full items-start justify-center rounded-card outline-none focus-visible:ring-2 focus-visible:ring-ring;
@@ -349,7 +595,7 @@
 		@apply flex h-full min-h-0 min-w-0 flex-1 flex-col;
 	}
 	.work-toolbar {
-		@apply flex w-full min-w-0 shrink-0 items-start pb-3;
+		@apply flex w-full min-w-0 shrink-0 flex-wrap items-center gap-2 pb-3;
 	}
 	.work-toolbar [data-slot='tabs-list'] {
 		@apply grid! h-auto! max-w-full grid-cols-4;
@@ -361,7 +607,8 @@
 		container-type: inline-size;
 		@apply relative flex min-h-0 min-w-0 flex-1;
 	}
-	.work-split[data-animating='true'] > [data-panel] {
+	.work-split[data-animating='true'] > [data-panel],
+	.slide-split[data-animating='true'] > [data-panel] {
 		transition: flex-grow 240ms cubic-bezier(0.2, 0, 0, 1);
 	}
 	.work-sidebar-frame {
@@ -521,6 +768,10 @@
 	.app-settings .panel + .panel {
 		@apply mt-6 border-t pt-6;
 	}
+	/* The rule between sections sits midway: nothing trails the last element of a section. */
+	.app-settings .panel > :last-child {
+		@apply mb-0;
+	}
 	.automejora-action:hover svg,
 	.automejora-action:focus-visible svg {
 		animation: brain-activate 550ms ease-out;
@@ -617,6 +868,7 @@
 	.work-content-scroll {
 		@apply h-full min-h-0;
 	}
+	.sidebar-scroll [data-slot='scroll-area-viewport'] > div,
 	.work-content-scroll [data-slot='scroll-area-viewport'] > div {
 		display: block !important;
 	}
@@ -711,12 +963,16 @@
 	.field-list {
 		@apply grid gap-3;
 	}
-	label.field {
+	.field {
 		@apply grid items-center gap-x-3 gap-y-1.5;
 		grid-template-columns: var(--field-label) minmax(0, 1fr);
 	}
-	label.field:has(textarea) {
+	.field:has(textarea) {
 		@apply items-start;
+	}
+	/* A note under a field's control, in its column. */
+	.field > .field-hint {
+		grid-column: 2;
 	}
 	.field-actions {
 		padding-left: calc(var(--field-label) + 0.75rem);
@@ -742,9 +998,6 @@
 		grid-template-columns: repeat(auto-fit, minmax(min(100%, 15rem), 1fr));
 		gap: 1.25rem;
 		margin: 1.25rem 0;
-	}
-	.channel-section + .channel-section {
-		@apply pt-6;
 	}
 	.channel-section h2 {
 		@apply mb-2;
@@ -802,6 +1055,8 @@
 	.designer-thread-viewport {
 		@apply relative;
 		overscroll-behavior: contain;
+		/* The messages fade out at the top and bottom edges instead of being cut. */
+		mask-image: linear-gradient(to bottom, transparent, #000 1.5rem, #000 calc(100% - 1.5rem), transparent);
 	}
 	.designer-thread-viewport > div {
 		display: flex !important;
@@ -896,7 +1151,8 @@
 		@apply mt-1 flex gap-1 opacity-0 transition-opacity focus-within:opacity-100;
 	}
 	.designer-message:hover .message-actions,
-	.work-message:hover .message-actions {
+	.work-message:hover .message-actions,
+	.designer-message-user .message-actions {
 		@apply opacity-100;
 	}
 	.message-actions svg {
@@ -927,7 +1183,7 @@
 		@apply block w-full resize-none border-0 bg-transparent px-4 pt-4 pb-2 text-sm leading-relaxed text-foreground shadow-none outline-none placeholder:text-muted-foreground disabled:cursor-not-allowed disabled:opacity-50;
 	}
 	.designer-contract {
-		@apply flex h-full min-h-0 min-w-0 flex-col overflow-hidden rounded-xl border bg-card;
+		@apply flex h-full min-h-0 min-w-0 flex-col overflow-hidden border-l bg-card;
 		animation: artifact-in 180ms ease-out;
 	}
 	/* The contract's rounded border is the divider; don't draw a second straight edge. */
@@ -938,8 +1194,7 @@
 		@apply flex shrink-0 items-center gap-2 border-b px-4 py-2;
 	}
 	.designer-artifact-footer {
-		@apply shrink-0 overflow-y-auto border-t p-4;
-		max-height: 48%;
+		@apply flex shrink-0 gap-2 border-t p-3;
 	}
 	.designer-preview {
 		@apply m-0 min-h-0 min-w-0 flex-1 overflow-hidden;
@@ -1127,6 +1382,107 @@
 		transform: rotate(7deg) scale(1.08);
 	}
 }
+/* Native scrollbars (the page, dialogs, lists) look like ScrollArea's: a thin rounded thumb with
+   4 px of air from the edge, on a transparent track. Firefox keeps its own thin scrollbar. */
+@layer base {
+	::-webkit-scrollbar {
+		width: 14px;
+		height: 14px;
+	}
+	::-webkit-scrollbar-track,
+	::-webkit-scrollbar-corner {
+		background: transparent;
+	}
+	::-webkit-scrollbar-thumb {
+		border: solid transparent;
+		border-width: 3px 4px 3px 3px;
+		border-radius: 9999px;
+		background-clip: padding-box;
+		background-color: var(--border);
+	}
+	/* Only where ::-webkit-scrollbar is unknown: in Chrome, scrollbar-width would switch it off. */
+	@supports not selector(::-webkit-scrollbar) {
+		* {
+			scrollbar-width: thin;
+		}
+	}
+}
+/* Cuby agents' mark: it pops up from below on load, blinks twice, then blinks now and then. */
+.cuby-bot {
+	overflow: visible;
+}
+.cuby-bot-body {
+	transform-box: fill-box;
+	transform-origin: 50% 100%;
+	animation: cuby-bot-in 700ms cubic-bezier(0.34, 1.56, 0.64, 1) both;
+}
+.cuby-bot-antennas {
+	transform-box: fill-box;
+	transform-origin: 50% 100%;
+	animation: cuby-bot-antennas 900ms ease-out 350ms both;
+}
+.cuby-bot-eyes {
+	transform-box: fill-box;
+	transform-origin: center;
+	animation:
+		cuby-bot-blink 360ms ease-in-out 750ms 2,
+		cuby-bot-idle 6s ease-in-out 1.5s infinite;
+}
+@keyframes cuby-bot-in {
+	from {
+		opacity: 0;
+		transform: translateY(45%) scale(0.6);
+	}
+}
+@keyframes cuby-bot-antennas {
+	30% {
+		transform: scaleY(1.18);
+	}
+	60% {
+		transform: scaleY(0.92);
+	}
+}
+/* The global reduced-motion rule shortens animations but an infinite one would keep cycling (eyes
+   closed on random frames): still the robot outright. */
+@media (prefers-reduced-motion: reduce) {
+	.cuby-bot-body,
+	.cuby-bot-antennas,
+	.cuby-bot-eyes {
+		animation: none !important;
+	}
+}
+/* Open for most of the cycle; a quick blink at its end. */
+@keyframes cuby-bot-idle {
+	0%,
+	94%,
+	100% {
+		transform: scaleY(1);
+	}
+	97% {
+		transform: scaleY(0.12);
+	}
+}
+@keyframes cuby-bot-blink {
+	0%,
+	100% {
+		transform: scaleY(1);
+	}
+	50% {
+		transform: scaleY(0.12);
+	}
+}
+@keyframes work-glow {
+	50% {
+		opacity: 0.45;
+	}
+}
+@keyframes work-ping {
+	75%,
+	100% {
+		transform: scale(2.2);
+		opacity: 0;
+	}
+}
 @keyframes ticker-in {
 	from {
 		opacity: 0;
@@ -1219,8 +1575,11 @@
 	.agent-settings-content {
 		padding: 0.875rem;
 	}
-	label.field {
+	.field {
 		grid-template-columns: minmax(0, 1fr);
+	}
+	.field > .field-hint {
+		grid-column: 1;
 	}
 	.field-actions {
 		padding-left: 0;
@@ -1255,7 +1614,8 @@
 	.work-sidebar-frame,
 	.work-sidebar,
 	.work-chat-backdrop,
-	.work-split > [data-panel] {
+	.work-split > [data-panel],
+	.slide-split > [data-panel] {
 		transition: none !important;
 	}
 }

@@ -6,7 +6,7 @@ import { DeleteButton, EditButton, FormActions } from '@/components/actions';
 import { Input } from '@/components/ui/input';
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
 import { KeysSection, McpSection, useAccess } from './Access';
-import { AgentPicker, FormDialog, SectionHead } from '@/components/access-ui';
+import { AddMenu, AgentPicker, FormDialog, GrantToggle, SectionHead } from '@/components/access-ui';
 
 type KeyRow = { provider: 'openai'; last4: string; updated_at: number };
 type ProxyRow = { url: string; last4: string; updated_at: number };
@@ -244,7 +244,8 @@ function KeyRowForm({
 	);
 }
 
-function Vault({ agents }: { agents: Agent[] }) {
+/** scope: one agent's settings, as in KeysSection (a switch per access; a new one is granted to it alone). */
+export function Vault({ agents, scope }: { agents: Agent[]; scope?: Agent }) {
 	const [creds, setCreds] = useState<Credential[]>([]);
 	const [uses, setUses] = useState<any[]>([]);
 	const empty = { name: '', loginUrl: '', username: '', password: '' };
@@ -259,6 +260,8 @@ function Vault({ agents }: { agents: Agent[] }) {
 	useEffect(() => {
 		void load();
 	}, []);
+	// From an agent's Accesos: only the ones it uses.
+	const shown = scope ? creds.filter((c) => c.agents.includes(scope.id)) : creds;
 	const grant = async (c: Credential, next: number[]) =>
 		setCreds((await api(`/vault/${c.id}/grants`, { method: 'PUT', body: { agents: next } })).credentials);
 	const open = (c: Credential | null) => {
@@ -271,6 +274,21 @@ function Vault({ agents }: { agents: Agent[] }) {
 			<SectionHead
 				title="Accesos a sitios"
 				onAdd={() => open(null)}
+				action={
+					scope && (
+						<AddMenu
+							options={creds
+								.filter((c) => !c.agents.includes(scope.id))
+								.map((c) => ({ id: c.id, label: c.name, detail: c.origin }))}
+							onPick={(id) => {
+								const c = creds.find((x) => x.id === id)!;
+								void grant(c, [...c.agents, scope.id]);
+							}}
+							onNew={() => open(null)}
+							newLabel="Nuevo acceso sólo para este agente"
+						/>
+					)
+				}
 				security={
 					<>
 						Usuario y contraseña se guardan cifrados. El agente sólo conoce el nombre: <code>agents-login nombre</code>{' '}
@@ -279,43 +297,64 @@ function Vault({ agents }: { agents: Agent[] }) {
 					</>
 				}
 			/>
-			<p className="muted">Usuarios y contraseñas de páginas web para tus agentes.</p>
+			<p className="muted">
+				{scope
+					? 'Los que usa este agente: agrega uno tuyo o crea uno sólo para él; apagarlo se lo quita.'
+					: 'Usuarios y contraseñas de páginas web para tus agentes.'}
+			</p>
 			<Table className="vault">
 				<TableHeader>
 					<TableRow>
 						<TableHead>Nombre</TableHead>
 						<TableHead>Sitio</TableHead>
-						<TableHead>Agentes</TableHead>
-						<TableHead>
-							<span className="sr-only">Acciones</span>
+						{!scope && <TableHead>Agentes</TableHead>}
+						<TableHead className={scope ? 'text-right' : undefined}>
+							{scope ? 'Acciones' : <span className="sr-only">Acciones</span>}
 						</TableHead>
 					</TableRow>
 				</TableHeader>
 				<TableBody>
-					{creds.map((c) => (
+					{shown.map((c) => (
 						<TableRow key={c.id}>
 							<TableCell>
 								<code>{c.name}</code>
 							</TableCell>
 							<TableCell className="text-xs">{c.origin}</TableCell>
-							<TableCell>
-								<AgentPicker agents={agents} value={c.agents} onChange={(next) => void grant(c, next)} />
-							</TableCell>
+							{!scope && (
+								<TableCell>
+									<AgentPicker agents={agents} value={c.agents} onChange={(next) => void grant(c, next)} />
+								</TableCell>
+							)}
 							<TableCell className="text-right whitespace-nowrap">
-								<EditButton onClick={() => open(c)} />
-								<DeleteButton
-									onClick={async () =>
-										confirm(`¿Borrar ${c.name}?`) &&
-										setCreds((await api(`/vault/${c.id}`, { method: 'DELETE' })).credentials)
-									}
-								/>
+								<div className="inline-flex items-center justify-end gap-1">
+									<EditButton onClick={() => open(c)} />
+									{/* From an agent, deleting would take it from every agent: that stays in Configuración. */}
+									{!scope && (
+										<DeleteButton
+											onClick={async () =>
+												confirm(`¿Borrar ${c.name}?`) &&
+												setCreds((await api(`/vault/${c.id}`, { method: 'DELETE' })).credentials)
+											}
+										/>
+									)}
+									{/* Assigned here: switching it off takes it away from this agent (and from the table). */}
+									{scope && (
+										<GrantToggle
+											on
+											what={c.name}
+											onChange={(on) =>
+												void grant(c, on ? [...c.agents, scope.id] : c.agents.filter((a) => a !== scope.id))
+											}
+										/>
+									)}
+								</div>
 							</TableCell>
 						</TableRow>
 					))}
-					{!creds.length && (
+					{!shown.length && (
 						<TableRow>
 							<TableCell colSpan={4} className="py-8 text-center text-muted-foreground">
-								Sin accesos guardados.
+								{scope ? 'Este agente no usa accesos a sitios.' : 'Sin accesos guardados.'}
 							</TableCell>
 						</TableRow>
 					)}
@@ -333,7 +372,14 @@ function Vault({ agents }: { agents: Agent[] }) {
 						e.preventDefault();
 						setError('');
 						try {
-							setCreds((await api('/vault', { body: form })).credentials);
+							let list: Credential[] = (await api('/vault', { body: form })).credentials;
+							// From an agent's settings, a new access is granted to that agent (and only to it).
+							const c = scope && list.find((x) => x.name.toLowerCase() === form.name.trim().toLowerCase());
+							if (c && !c.agents.includes(scope.id))
+								list = (
+									await api(`/vault/${c.id}/grants`, { method: 'PUT', body: { agents: [...c.agents, scope.id] } })
+								).credentials;
+							setCreds(list);
 							setAdding(false);
 						} catch (err) {
 							setError((err as Error).message);
@@ -383,8 +429,12 @@ function Vault({ agents }: { agents: Agent[] }) {
 					<FormActions submitLabel="Guardar acceso" disabled={false} onCancel={() => setAdding(false)} />
 				</form>
 			</FormDialog>
-			<h3>Últimos usos</h3>
-			<UsesTable uses={uses} />
+			{!scope && (
+				<>
+					<h3>Últimos usos</h3>
+					<UsesTable uses={uses} />
+				</>
+			)}
 		</section>
 	);
 }

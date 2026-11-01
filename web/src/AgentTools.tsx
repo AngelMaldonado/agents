@@ -1,27 +1,31 @@
-// An agent's MCP servers, CLI tools and accesses (owner only). The harness' servers and tools are
-// approved through Automejora; the owner's own API Keys and MCP servers (#24) are granted here or in
-// Configuración → Accesos. What the migration could not move (conflicts) is resolved here.
+// An agent's settings: its accesses (Accesos, owner only). Its command-line tools are listed in
+// Avanzado → Harness.
+// Accesses are the person's (#24): site logins, MCP servers and API Keys, each granted to the agent
+// with a switch, or added from here and granted to this agent alone. The harness' own MCP servers
+// are approved through Automejora; what the migration could not move (conflicts) is resolved here.
 import { useEffect, useState } from 'react';
-import { api, ago, type AccessKey, type AccessMcp, type AccessView, type Agent } from './api';
+import { api, ago, type AccessView, type Agent } from './api';
 import { Badge } from '@/components/ui/badge';
-import { SectionHead } from '@/components/access-ui';
 import { Button } from '@/components/ui/button';
 import { DeleteButton } from '@/components/actions';
+import { KeysSection, McpSection, useAccess } from './Access';
+import { Vault } from './Settings';
 
 type Secret = { name: string; updated_at: number };
 type AgentAccess = AccessView & { conflicts: Secret[] };
 
-export function AgentTools({ agent, onBrowser }: { agent: Agent; onBrowser: () => void }) {
-	const [access, setAccess] = useState<AgentAccess | null>(null);
+/** Accesos: what the agent may log in to or call, inherited from the person or added for it. */
+export function AgentAccesses({ agent, onBrowser }: { agent: Agent; onBrowser: () => void }) {
+	const access = useAccess();
+	const [own, setOwn] = useState<AgentAccess | null>(null);
 	const [error, setError] = useState(''),
 		[busy, setBusy] = useState(false),
 		[note, setNote] = useState('');
-	const mcp = agent.harness?.mcp ?? [],
-		installs = agent.harness?.installs ?? [];
-	const load = () => api<AgentAccess>(`/agents/${agent.id}/access`).then(setAccess, (e: Error) => setError(e.message));
+	const mcp = agent.harness?.mcp ?? [];
+	const load = () => api<AgentAccess>(`/agents/${agent.id}/access`).then(setOwn, (e: Error) => setError(e.message));
 	useEffect(() => {
 		void load();
-	}, [agent.id]);
+	}, [agent.id, access.view]);
 	const call = async (fn: () => Promise<unknown>) => {
 		setBusy(true);
 		setError('');
@@ -34,17 +38,6 @@ export function AgentTools({ agent, onBrowser }: { agent: Agent; onBrowser: () =
 			setBusy(false);
 		}
 	};
-	const toggle = (kind: 'keys' | 'mcp', item: AccessKey | AccessMcp) =>
-		call(() =>
-			api(`/access/${kind}/${item.id}/grants`, {
-				method: 'PUT',
-				body: {
-					agents: item.agents.includes(agent.id)
-						? item.agents.filter((a) => a !== agent.id)
-						: [...item.agents, agent.id],
-				},
-			}),
-		);
 	const login = async (server: string) => {
 		setError('');
 		setNote('');
@@ -58,149 +51,58 @@ export function AgentTools({ agent, onBrowser }: { agent: Agent; onBrowser: () =
 			setError((e as Error).message);
 		}
 	};
-	const used = new Set([
-		...mcp.flatMap((s) =>
+	// Variables the approved MCP servers need (${NAME} in their headers or environment).
+	const used = new Set(
+		mcp.flatMap((s) =>
 			[...s.headers, ...s.env].flatMap((p) => [...p.value.matchAll(/\$\{([A-Z][A-Z0-9_]*)\}/g)].map((m) => m[1])),
 		),
-	]);
+	);
+	const keys = access.view?.keys ?? [];
+	const missing = [...used].filter(
+		(n) => !keys.some((k) => k.name === n && k.agents.includes(agent.id)) && !own?.conflicts.some((s) => s.name === n),
+	);
 	return (
-		<div className="grid min-w-0 gap-8">
-			{error && (
-				<p role="alert" className="error">
-					{error}
+		<div className="min-w-0">
+			{(error || access.error) && (
+				<p role="alert" className="error mb-4">
+					{error || access.error}
 				</p>
 			)}
 			{note && (
-				<p role="status" className="callout text-xs">
+				<p role="status" className="callout mb-4 text-xs">
 					{note}
 				</p>
 			)}
-			<section className="grid min-w-0 gap-3" aria-label="Servidores MCP">
-				<SectionHead
-					title="Servidores MCP"
-					security="Los secretos de tus servidores llegan al agente como marcador que la plataforma cambia sólo hacia el dominio del servidor. Quitarle un servidor con OAuth cierra su sesión en su siguiente tarea."
-				/>
-				<p className="muted">
-					Los del harness se cambian en Automejora; los tuyos se conceden aquí. Si un nombre se repite, gana el del
-					harness.
-				</p>
+			<Vault agents={[]} scope={agent} />
+			<McpSection agents={[]} access={access} scope={agent} onLogin={(s) => void login(s)}>
 				{mcp.length > 0 && (
-					<ul className="grid gap-2">
-						{mcp.map((s) => (
-							<li key={s.name} className="row wrap items-center gap-3 rounded-md border p-3 text-sm">
-								<div className="min-w-0 flex-1">
-									<strong>{s.name}</strong> <Badge variant="outline">harness</Badge>{' '}
-									<span className="muted small">
-										· {s.transport === 'http' ? s.url : `${s.command} ${s.args.join(' ')}`}
-									</span>
-									<p className="muted small">{s.description}</p>
-								</div>
-								{s.oauth && (
-									<Button size="sm" variant="outline" disabled={busy} onClick={() => void login(s.name)}>
-										Iniciar sesión
-									</Button>
-								)}
-							</li>
-						))}
-					</ul>
-				)}
-				{access?.mcp.length ? (
-					<ul className="grid gap-2">
-						{access.mcp.map((m) => {
-							const on = m.agents.includes(agent.id);
-							return (
-								<li key={m.id} className="row wrap items-center gap-3 rounded-md border p-3 text-sm">
-									<label className="chip !mr-0 min-w-0 flex-1">
-										<input type="checkbox" checked={on} disabled={busy} onChange={() => void toggle('mcp', m)} />
-										<span className="min-w-0">
-											<strong>{m.name}</strong>{' '}
-											<span className="muted small">
-												· {m.transport === 'http' ? m.url : `${m.command} ${m.args.join(' ')}`}
-											</span>
-											{m.description && <span className="muted small block">{m.description}</span>}
+					<div className="mt-4 grid gap-2">
+						<h3 className="!m-0 text-sm">Del harness</h3>
+						<p className="muted small">Se aprueban en Automejora. Si un nombre se repite, gana el del harness.</p>
+						<ul className="grid gap-2">
+							{mcp.map((s) => (
+								<li key={s.name} className="row wrap items-center gap-3 rounded-md border p-3 text-sm">
+									<div className="min-w-0 flex-1">
+										<strong>{s.name}</strong> <Badge variant="outline">harness</Badge>{' '}
+										<span className="muted small">
+											· {s.transport === 'http' ? s.url : `${s.command} ${s.args.join(' ')}`}
 										</span>
-									</label>
-									{on && m.oauth && !mcp.some((s) => s.name === m.name) && (
-										<Button size="sm" variant="outline" disabled={busy} onClick={() => void login(m.name)}>
+										<p className="muted small">{s.description}</p>
+									</div>
+									{s.oauth && (
+										<Button size="sm" variant="outline" disabled={busy} onClick={() => void login(s.name)}>
 											Iniciar sesión
 										</Button>
 									)}
 								</li>
-							);
-						})}
-					</ul>
-				) : (
-					!mcp.length && (
-						<p className="muted small">Sin servidores MCP. Registra los tuyos en Configuración → Accesos.</p>
-					)
+							))}
+						</ul>
+					</div>
 				)}
-			</section>
-			<section className="grid min-w-0 gap-3" aria-label="Herramientas instaladas">
-				<h2>Herramientas de línea de comandos</h2>
-				<p className="muted">
-					Se instalan en la computadora del agente la primera vez que arranca con esta lista y quedan en su PATH. Se
-					cambian en Automejora.
-				</p>
-				{installs.length ? (
-					<ul className="grid gap-1 text-sm">
-						{installs.map((i) => (
-							<li key={`${i.kind}:${i.spec}`}>
-								<code>{i.kind === 'binary' ? i.name : i.spec}</code>{' '}
-								<span className="muted small">
-									{i.kind === 'npm'
-										? 'npm'
-										: i.kind === 'uv'
-											? 'Python (uv)'
-											: `binario · sha256 ${i.sha256?.slice(0, 12)}…`}
-								</span>
-							</li>
-						))}
-					</ul>
-				) : (
-					<p className="muted small">Sin herramientas adicionales.</p>
-				)}
-			</section>
-			<section className="grid min-w-0 gap-3" aria-label="API Keys">
-				<SectionHead
-					title="API Keys"
-					security="Las que tienen dominios le llegan al agente como marcador y la plataforma pone el valor sólo hacia esos dominios; las de «valor real» las puede leer. Aplican a las tareas que empiecen después."
-				/>
-				<p className="muted">Tus keys concedidas a este agente; se registran en Configuración → Accesos.</p>
-				{access && !access.proxyReady && access.keys.some((k) => !k.expose_real) && (
-					<p className="callout text-xs">
-						Esta instancia todavía no tiene el proxy de salida: las keys con dominios no le llegan al agente.
-					</p>
-				)}
-				{access === null ? (
-					<p className="muted">Cargando…</p>
-				) : access.keys.length ? (
-					<ul className="grid gap-1 text-sm">
-						{access.keys.map((k) => (
-							<li key={k.id}>
-								<label className="chip !mr-0">
-									<input
-										type="checkbox"
-										checked={k.agents.includes(agent.id)}
-										disabled={busy}
-										onChange={() => void toggle('keys', k)}
-									/>
-									<code>{k.name}</code>
-									{k.expose_real ? (
-										<Badge variant="outline" className="border-danger/40 text-danger">
-											valor real
-										</Badge>
-									) : (
-										<span className="muted small">{k.domains.join(', ')}</span>
-									)}
-								</label>
-							</li>
-						))}
-					</ul>
-				) : (
-					<p className="muted small">Sin API Keys. Regístralas en Configuración → Accesos.</p>
-				)}
-				{access?.conflicts.length ? (
-					<div className="grid gap-2 rounded-md border border-warning/40 p-3">
+			</McpSection>
+			<KeysSection agents={[]} access={access} scope={agent}>
+				{own?.conflicts.length ? (
+					<div className="mt-4 grid gap-2 rounded-md border border-warning/40 p-3">
 						<h3 className="!m-0 text-sm">Por resolver</h3>
 						<p className="muted small">
 							Al pasar las credenciales de cada agente a tus API Keys, estas tenían otro valor en otro de tus agentes.
@@ -208,7 +110,7 @@ export function AgentTools({ agent, onBrowser }: { agent: Agent; onBrowser: () =
 							agentes que la tenían).
 						</p>
 						<ul className="grid gap-1 text-sm">
-							{access.conflicts.map((s) => (
+							{own.conflicts.map((s) => (
 								<li key={s.name} className="row wrap items-center gap-3">
 									<code>{s.name}</code>
 									<span className="muted small">actualizada {ago(s.updated_at)}</span>
@@ -236,19 +138,12 @@ export function AgentTools({ agent, onBrowser }: { agent: Agent; onBrowser: () =
 						</ul>
 					</div>
 				) : null}
-				{access &&
-					[...used]
-						.filter(
-							(n) =>
-								!access.keys.some((k) => k.name === n && k.agents.includes(agent.id)) &&
-								!access.conflicts.some((s) => s.name === n),
-						)
-						.map((n) => (
-							<p key={n} className="error small">
-								Falta {n}: la usa un servidor MCP aprobado. Concede una API Key con ese nombre.
-							</p>
-						))}
-			</section>
+				{missing.map((n) => (
+					<p key={n} className="error small mt-2">
+						Falta {n}: la usa un servidor MCP aprobado. Activa o agrega una API Key con ese nombre.
+					</p>
+				))}
+			</KeysSection>
 		</div>
 	);
 }

@@ -90,7 +90,7 @@ export function App() {
 	if (!settings) return null;
 
 	const designerMatch = hash.match(/^\/new(?:\/([\da-f-]+))?$/i);
-	const agentMatch = hash.match(/^\/agent\/(\d+)(?:\/(improve)(?:\/([\da-f-]+))?)?$/i);
+	const agentMatch = hash.match(/^\/agent\/(\d+)(?:\/(improve)(?:\/([\da-f-]+))?|\/chat\/(\d+)|\/(browser))?$/i);
 	const artifactMatch = hash.match(/^\/agent\/(\d+)\/artifact\/(\d+)\/([^/]+)$/i);
 	let artifact = null;
 	if (artifactMatch) {
@@ -169,10 +169,10 @@ export function App() {
 						settings={settings}
 						improving={!!agentMatch?.[2]}
 						designId={agentMatch?.[3]}
+						chatId={agentMatch?.[4] ? Number(agentMatch[4]) : undefined}
+						browsing={!!agentMatch?.[5]}
 						artifact={artifact}
-						onViewChange={(view, draft) =>
-							go(`/agent/${agent.id}${view === 'improve' ? `/improve${draft ? `/${draft}` : ''}` : ''}`)
-						}
+						onRoute={(suffix) => go(`/agent/${agent.id}${suffix}`)}
 						onBack={() => go('/')}
 						onChanged={changed}
 					/>

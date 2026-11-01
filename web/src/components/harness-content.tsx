@@ -1,7 +1,7 @@
 import type { Agent, Design, Harness, HarnessValidation } from '@/api';
 import { defaultHarness, effectiveTools, PLUGINS } from '../../../sandbox/harness';
 import { ContractMarkdown, ToolsPanel } from './design-content';
-import { nextRuns, SCHEDULE_TZ } from '@/lib/schedules';
+import { nextRuns, SCHEDULE_TZ, zoneLabel } from '@/lib/schedules';
 export function HarnessPanel({ value }: { value: Harness }) {
 	return (
 		<div className="grid min-w-0 gap-5" aria-label="Harness propuesto">
@@ -171,7 +171,7 @@ export function SchedulesPanel({ design }: { design: Design }) {
 						? 'Esta propuesta no cambia los horarios: se conservan los vigentes.'
 						: 'Sin horarios: el agente sólo trabaja cuando le escriben o por webhook.'
 					: 'Al aprobar, el agente queda con exactamente estos horarios. Los vigentes iguales se conservan (también si están en pausa); los demás se quitan.'}{' '}
-				Zona {timezone}.
+				{zoneLabel(timezone)}.
 			</p>
 			{list.length ? (
 				<ul className="grid gap-3">

@@ -10,6 +10,7 @@ import {
 	DropdownMenu,
 	DropdownMenuCheckboxItem,
 	DropdownMenuContent,
+	DropdownMenuItem,
 	DropdownMenuLabel,
 	DropdownMenuSeparator,
 	DropdownMenuTrigger,
@@ -74,6 +75,41 @@ export function AgentPicker({
 	);
 }
 
+/** One agent's grant of an access (its settings' Accesos tab): a switch, on when the agent has it. */
+export function GrantToggle({
+	on,
+	what,
+	disabled,
+	onChange,
+}: {
+	on: boolean;
+	what: string;
+	disabled?: boolean;
+	onChange: (on: boolean) => void;
+}) {
+	return (
+		<button
+			type="button"
+			role="switch"
+			aria-checked={on}
+			aria-label={`${what} para este agente`}
+			disabled={disabled}
+			onClick={() => onChange(!on)}
+			className={cn(
+				'relative inline-flex h-5 w-9 shrink-0 items-center rounded-full border transition-colors outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:opacity-50',
+				on ? 'border-primary bg-primary' : 'border-border bg-muted',
+			)}
+		>
+			<span
+				className={cn(
+					'block size-3.5 rounded-full bg-background shadow-sm transition-transform',
+					on ? 'translate-x-4' : 'translate-x-0.5',
+				)}
+			/>
+		</button>
+	);
+}
+
 /** The security details of a section, behind a shield (hover or focus shows them). */
 export function SecurityNote({ children }: { children: ReactNode }) {
 	return (
@@ -94,23 +130,73 @@ export function SecurityNote({ children }: { children: ReactNode }) {
 	);
 }
 
-/** A section's title with its security note and its «Agregar» button. */
+/**
+ * «Agregar» in an agent's Accesos: use one of yours it does not have yet, or create a new one for
+ * it alone.
+ */
+export function AddMenu({
+	options,
+	onPick,
+	onNew,
+	newLabel,
+}: {
+	options: { id: number; label: string; detail?: string }[];
+	onPick: (id: number) => void;
+	onNew: () => void;
+	newLabel: string;
+}) {
+	return (
+		<DropdownMenu>
+			<DropdownMenuTrigger asChild>
+				<Button type="button" size="sm" variant="outline" className="ml-auto">
+					<Plus aria-hidden="true" />
+					Agregar
+				</Button>
+			</DropdownMenuTrigger>
+			<DropdownMenuContent align="end" className="w-72">
+				{options.length > 0 && (
+					<>
+						<DropdownMenuLabel className="text-xs text-muted-foreground">Usar uno tuyo</DropdownMenuLabel>
+						{options.map((o) => (
+							<DropdownMenuItem key={o.id} onSelect={() => onPick(o.id)}>
+								<span className="grid min-w-0">
+									<code className="truncate text-xs">{o.label}</code>
+									{o.detail && <span className="truncate text-2xs text-muted-foreground">{o.detail}</span>}
+								</span>
+							</DropdownMenuItem>
+						))}
+						<DropdownMenuSeparator />
+					</>
+				)}
+				<DropdownMenuItem onSelect={onNew}>
+					<Plus aria-hidden="true" />
+					{newLabel}
+				</DropdownMenuItem>
+			</DropdownMenuContent>
+		</DropdownMenu>
+	);
+}
+
+/** A section's title with its security note and its «Agregar» button (or a custom action). */
 export function SectionHead({
 	title,
 	security,
 	onAdd,
 	addLabel = 'Agregar',
+	action,
 }: {
 	title: string;
 	security?: ReactNode;
 	onAdd?: () => void;
 	addLabel?: string;
+	action?: ReactNode;
 }) {
 	return (
 		<div className="mb-2 flex items-center gap-2">
 			<h2 className="!mb-0">{title}</h2>
 			{security && <SecurityNote>{security}</SecurityNote>}
-			{onAdd && (
+			{action}
+			{!action && onAdd && (
 				<Button type="button" size="sm" variant="outline" className="ml-auto" onClick={onAdd}>
 					<Plus aria-hidden="true" />
 					{addLabel}

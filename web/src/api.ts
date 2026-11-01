@@ -140,6 +140,7 @@ export type Conversation = {
 	started_at: number;
 	archived_at: number | null;
 	runs: number;
+	last_at?: number; // its latest message or run («Recientes»)
 };
 export type WorkRecord = { task: Task; events: TaskEvent[]; artifacts: Artifact[] };
 export type ConversationInput = {

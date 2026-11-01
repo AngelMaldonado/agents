@@ -17,15 +17,20 @@ import {
 	Check,
 	ChevronRight,
 	FileText,
+	FlaskConical,
 	LoaderCircle,
 	PanelRightClose,
+	PanelRightOpen,
 	RotateCcw,
 	BrainCircuit,
 	MessageSquare,
 } from 'lucide-react';
 import type { Agent, Design, PublicSettings, InterviewAnswers } from '@/api';
 import { Button } from '@/components/ui/button';
-import { Badge } from '@/components/ui/badge';
+import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip';
+import { useSlidePanel } from '@/lib/use-slide-panel';
+import { IconButton } from '@/components/actions';
+import { Character } from '@/Character';
 import { OptionSelect } from '@/components/option-select';
 import { ResizableHandle, ResizablePanel, ResizablePanelGroup } from '@/components/ui/resizable';
 import { ScrollArea } from '@/components/ui/scroll-area';
@@ -292,6 +297,7 @@ function DesignWorkspace(
 	useEffect(() => {
 		if (!wide && open) closeButton.current?.focus({ preventScroll: true });
 	}, [wide, open]);
+	const slide = useSlidePanel(open && !!artifact, () => setOpen(false));
 	const close = () => {
 		setOpen(false);
 		requestAnimationFrame(() => {
@@ -332,14 +338,15 @@ function DesignWorkspace(
 				<Button
 					type="button"
 					variant="outline"
-					size="icon-sm"
-					onClick={(e) => show(e.currentTarget)}
-					aria-label="Abrir contrato"
-					title="Abrir contrato"
+					size="sm"
+					onClick={(e) => (open ? close() : show(e.currentTarget))}
+					aria-label={open ? 'Cerrar contrato' : 'Abrir contrato'}
+					title={open ? 'Cerrar contrato' : 'Abrir contrato'}
 					aria-expanded={open}
 					aria-controls={open ? panelId : undefined}
 				>
 					<FileText aria-hidden="true" />
+					Contrato
 				</Button>
 			)}
 			{design && (
@@ -508,11 +515,12 @@ function DesignWorkspace(
 			}}
 		>
 			<div className="designer-artifact-header">
-				<FileText className="size-4 shrink-0 text-muted-foreground" aria-hidden="true" />
+				{agent ? (
+					<Character seed={agent.seed} state="idle" size={24} still />
+				) : (
+					<FileText className="size-4 shrink-0 text-muted-foreground" aria-hidden="true" />
+				)}
 				<h2 className="min-w-0 flex-1 truncate text-xs font-semibold">{artifact.name}</h2>
-				<Badge variant="outline">
-					{approved ? 'Aprobado' : design?.ready ? 'Listo para revisar' : design ? 'Borrador' : 'Vigente'}
-				</Badge>
 				<Button
 					ref={closeButton}
 					variant="ghost"
@@ -607,59 +615,63 @@ function DesignWorkspace(
 					/>
 				)}
 			</Tabs>
+			{/* Only the actions: what they do and why one is disabled go in their tooltips. */}
 			<div className="designer-artifact-footer">
-				<p className="mb-3 text-xs text-muted-foreground">
-					{agent
-						? 'Aprueba contrato, modelo, harness y horarios. Se aplican en corridas nuevas; conservan conversación y memoria. No conceden accesos de plataforma.'
-						: 'Prueba y aprueba contrato, modelo, harness y horarios antes de inicializar. Conversar o probar no crea un agente.'}
-				</p>
 				{design?.harness && !approved && (
-					<Button
-						type="button"
-						variant="outline"
-						className="mb-2 w-full whitespace-normal"
-						onClick={() => {
-							setPreview('tests');
-							props.onValidate();
-						}}
-						disabled={testBlocked}
-					>
-						{props.validating || (working && design.validation_pending)
-							? 'Probando harness…'
-							: tested
-								? 'Volver a probar harness'
-								: 'Probar harness'}
-					</Button>
+					<Tooltip>
+						<TooltipTrigger asChild>
+							<span className="min-w-0 flex-1" tabIndex={testBlocked ? 0 : undefined}>
+								<Button
+									type="button"
+									variant="outline"
+									className="w-full"
+									onClick={() => {
+										setPreview('tests');
+										props.onValidate();
+									}}
+									disabled={testBlocked}
+								>
+									<FlaskConical aria-hidden="true" />
+									{props.validating || (working && design.validation_pending)
+										? 'Probando…'
+										: tested
+											? 'Volver a probar'
+											: 'Probar harness'}
+								</Button>
+							</span>
+						</TooltipTrigger>
+						<TooltipContent side="top" className="max-w-xs">
+							{text.trim()
+								? 'Tienes un mensaje sin enviar.'
+								: !design.ready
+									? 'Continúa la conversación para resolver las decisiones pendientes.'
+									: 'Prueba el harness de esta revisión en una computadora aislada.'}
+						</TooltipContent>
+					</Tooltip>
 				)}
-				<Button className="w-full whitespace-normal" onClick={props.onApprove} disabled={blocked}>
-					<Check className="size-4" aria-hidden="true" />
-					{agent ? 'Aprobar y aplicar mejora' : 'Aprobar e inicializar agente'}
-				</Button>
-				{design?.ready && !tested && !approved && (
-					<p className="mt-2 text-2xs text-muted-foreground">
-						Falta una prueba correcta de esta misma revisión antes de aprobar.
-					</p>
-				)}
-				{!design?.ready && !approved && (
-					<p className="mt-2 text-2xs text-muted-foreground">
-						Continúa la conversación para resolver las decisiones pendientes.
-					</p>
-				)}
-				{agent && !props.canApply && (
-					<p className="mt-2 text-2xs text-muted-foreground">
-						Puedes preparar la propuesta; para aplicarla, termina o cancela la corrida activa.
-					</p>
-				)}
-				{!!text.trim() && (
-					<p className="mt-2 text-2xs text-muted-foreground">
-						Tienes un mensaje sin enviar. Envíalo o bórralo antes de aprobar.
-					</p>
-				)}
-				{design && (
-					<p className="mt-3 text-2xs text-muted-foreground">
-						{design.tokens.toLocaleString('es-MX')} tokens · versión {design.version}
-					</p>
-				)}
+				<Tooltip>
+					<TooltipTrigger asChild>
+						<span className="min-w-0 flex-1" tabIndex={blocked ? 0 : undefined}>
+							<Button className="w-full" onClick={props.onApprove} disabled={blocked}>
+								<Check className="size-4" aria-hidden="true" />
+								{agent ? 'Aprobar y aplicar' : 'Aprobar e inicializar'}
+							</Button>
+						</span>
+					</TooltipTrigger>
+					<TooltipContent side="top" className="max-w-xs">
+						{text.trim()
+							? 'Tienes un mensaje sin enviar. Envíalo o bórralo antes de aprobar.'
+							: !design?.ready && !approved
+								? 'Continúa la conversación para resolver las decisiones pendientes.'
+								: design?.ready && !tested && !approved
+									? 'Falta una prueba correcta de esta misma revisión antes de aprobar.'
+									: agent && !props.canApply
+										? 'Para aplicarla, termina o cancela la corrida activa.'
+										: agent
+											? 'Aprueba contrato, modelo, harness y horarios. Se aplican en corridas nuevas; conservan conversación y memoria. No conceden accesos de plataforma.'
+											: 'Prueba y aprueba contrato, modelo, harness y horarios antes de inicializar. Conversar o probar no crea un agente.'}
+					</TooltipContent>
+				</Tooltip>
 			</div>
 		</section>
 	);
@@ -713,20 +725,49 @@ function DesignWorkspace(
 						</p>
 					)}
 					<div className="designer-workspace">
+						{wide && artifact && !open && (
+							// Where the contract's own close button was: open it again from the same spot.
+							<IconButton
+								icon={PanelRightOpen}
+								label="Abrir contrato"
+								aria-expanded={false}
+								className="panel-reopen designer-panel-reopen"
+								onClick={(e) => show(e.currentTarget)}
+							/>
+						)}
 						{wide ? (
-							<ResizablePanelGroup orientation="horizontal" id="design-workspace">
-								<ResizablePanel id="conversation" minSize="34%" defaultSize={open && artifact ? '50%' : '100%'}>
+							<ResizablePanelGroup
+								orientation="horizontal"
+								id="design-workspace"
+								className="slide-split"
+								data-animating={slide.animating}
+							>
+								<ResizablePanel id="conversation" minSize="34%">
 									{conversation}
 								</ResizablePanel>
-								{open && contract && (
+								{contract && (
 									<>
 										<ResizableHandle
 											withHandle
+											hidden={!open}
+											disabled={!open}
 											className="designer-resize-handle bg-transparent focus-visible:bg-transparent focus-visible:ring-0"
 											aria-label="Redimensionar chat y contrato"
 										/>
-										<ResizablePanel id="contract" minSize="34%" maxSize="66%" defaultSize="50%">
-											{contract}
+										{/* Stays mounted and slides open and closed. */}
+										<ResizablePanel
+											id="contract"
+											panelRef={slide.ref}
+											minSize="34%"
+											maxSize="66%"
+											defaultSize="50%"
+											collapsible
+											collapsedSize={0}
+											onResize={slide.onResize}
+										>
+											<div className="h-full min-w-0" inert={!open} aria-hidden={!open}>
+												{contract}
+											</div>
 										</ResizablePanel>
 									</>
 								)}

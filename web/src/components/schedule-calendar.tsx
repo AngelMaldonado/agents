@@ -9,7 +9,7 @@ import esLocale from '@fullcalendar/core/locales/es';
 import type { DatesSetArg } from '@fullcalendar/core';
 import { DateTime } from 'luxon';
 import { CalendarDays, ChevronLeft, ChevronRight, Plus } from 'lucide-react';
-import { cronFromDraft, expandSchedules, type Schedule, type ScheduleDraft } from '@/lib/schedules';
+import { cronFromDraft, expandSchedules, zoneLabel, type Schedule, type ScheduleDraft } from '@/lib/schedules';
 import { Button } from '@/components/ui/button';
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from '@/components/ui/dialog';
 import { Input } from '@/components/ui/input';
@@ -109,7 +109,7 @@ export function ScheduleCalendar({ schedules, timezone, add, toggle, remove }: P
 						Agenda de horarios
 					</h2>
 					<p className="mt-1 text-xs text-muted-foreground">
-						{timezone} · Cada bloque marca un disparo, no la duración de una tarea.
+						{zoneLabel(timezone)} · Cada bloque marca un disparo, no la duración de una tarea.
 					</p>
 				</div>
 				<Button
@@ -243,8 +243,8 @@ export function ScheduleCalendar({ schedules, timezone, add, toggle, remove }: P
 					<DialogHeader>
 						<DialogTitle>Nuevo horario</DialogTitle>
 						<DialogDescription>
-							Se repetirá en {timezone} a partir de guardar. La fecha elegida indica el día de recurrencia, no una
-							primera ejecución diferida. Si está ocupado, entrará como seguimiento.
+							Se repetirá en {zoneLabel(timezone)} a partir de guardar. La fecha elegida indica el día de recurrencia,
+							no una primera ejecución diferida. Si está ocupado, entrará como seguimiento.
 						</DialogDescription>
 					</DialogHeader>
 					{creation && (
@@ -285,7 +285,7 @@ export function ScheduleCalendar({ schedules, timezone, add, toggle, remove }: P
 						<div className="grid min-w-0 gap-4">
 							<p className="whitespace-pre-wrap break-words">{schedule.message}</p>
 							<p className="text-xs text-muted-foreground">
-								{schedule.status === 'PAUSED' ? 'En pausa' : 'Activo'} · {schedule.timezone || timezone}
+								{schedule.status === 'PAUSED' ? 'En pausa' : 'Activo'} · {zoneLabel(schedule.timezone || timezone)}
 								<br />
 								<code className="break-words">{schedule.cron}</code>
 							</p>
@@ -386,9 +386,9 @@ function ScheduleForm({
 				}
 			}}
 		>
-			<fieldset disabled={busy} className="grid min-w-0 gap-4">
-				<label>
-					Repetir
+			<fieldset disabled={busy} className="field-list min-w-0">
+				<label className="field">
+					<span>Repetir</span>
 					<OptionSelect
 						label="Repetir horario"
 						value={frequency}
@@ -404,8 +404,8 @@ function ScheduleForm({
 					/>
 				</label>
 				{frequency !== 'custom' && (
-					<label>
-						Hora
+					<label className="field">
+						<span>Hora</span>
 						<Input
 							aria-label="Hora del horario"
 							type="time"
@@ -416,8 +416,8 @@ function ScheduleForm({
 					</label>
 				)}
 				{frequency === 'weekly' && (
-					<fieldset>
-						<legend className="mb-2 text-xs font-medium">Días de la semana</legend>
+					<div className="field" role="group" aria-labelledby="schedule-days">
+						<span id="schedule-days">Días de la semana</span>
 						<div className="flex flex-wrap gap-2">
 							{days.map((day) => (
 								<Button
@@ -438,11 +438,11 @@ function ScheduleForm({
 								</Button>
 							))}
 						</div>
-					</fieldset>
+					</div>
 				)}
 				{frequency === 'monthly' && (
-					<label>
-						Día del mes
+					<label className="field">
+						<span>Día del mes</span>
 						<Input
 							type="number"
 							min={1}
@@ -451,12 +451,14 @@ function ScheduleForm({
 							onChange={(event) => setMonthDay(event.target.valueAsNumber)}
 							required
 						/>
-						<span className="text-2xs text-muted-foreground">Si el mes no tiene ese día, no se dispara ese mes.</span>
+						<span className="field-hint text-2xs text-muted-foreground">
+							Si el mes no tiene ese día, no se dispara ese mes.
+						</span>
 					</label>
 				)}
 				{frequency === 'custom' && (
-					<label>
-						Expresión cron
+					<label className="field">
+						<span>Expresión cron</span>
 						<Input
 							value={custom}
 							onChange={(event) => setCustom(event.target.value)}
@@ -465,8 +467,8 @@ function ScheduleForm({
 						/>
 					</label>
 				)}
-				<label>
-					Mensaje del horario
+				<label className="field">
+					<span>Mensaje del horario</span>
 					<Textarea
 						aria-label="Mensaje del horario"
 						value={message}
@@ -484,7 +486,7 @@ function ScheduleForm({
 				</p>
 			) : (
 				<p className="text-2xs text-muted-foreground">
-					Regla resultante: <code>{cron}</code> · {timezone}
+					Regla resultante: <code>{cron}</code> · {zoneLabel(timezone)}
 				</p>
 			)}
 			{error && (

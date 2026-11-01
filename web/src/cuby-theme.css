@@ -46,6 +46,7 @@
 	--danger: #e53017;
 	--danger-soft: #fdebe8;
 	--danger-on-soft: #a01c0d;
+	--danger-foreground: #ffffff;
 	--info: #0986c7;
 	--info-soft: #e7f3fb;
 	--info-on-soft: #065f90;
@@ -102,6 +103,7 @@
 	--danger: #ef5340;
 	--danger-soft: #2a120f;
 	--danger-on-soft: #ff8a7c;
+	--danger-foreground: #ffffff;
 	--info: #3aa3de;
 	--info-soft: #0b2b40;
 	--info-on-soft: #8fc6e9;
@@ -159,6 +161,7 @@
 	--color-danger: var(--danger);
 	--color-danger-soft: var(--danger-soft);
 	--color-danger-on-soft: var(--danger-on-soft);
+	--color-danger-foreground: var(--danger-foreground);
 	--color-info: var(--info);
 	--color-info-soft: var(--info-soft);
 	--color-info-on-soft: var(--info-on-soft);

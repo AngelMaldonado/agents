@@ -2,29 +2,37 @@
 // list of the person's agents, and everything else under the person's tile. Built on shadcn's
 // Sidebar (the same base assistant-ui's thread list uses); assistant-ui's ThreadList primitives list
 // one chat runtime's threads, not agents, so they stay in the agent view's conversation tabs.
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
 	BadgeCheck,
+	Bot,
 	ChevronsUpDown,
 	LayoutGrid,
 	Loader2,
 	LogOut,
+	MessageSquare,
 	MessageSquareText,
+	MoreHorizontal,
+	Pencil,
 	Moon,
 	Palette,
+	Pin,
+	PinOff,
+	Save,
 	Search,
 	Settings2,
 	SquarePen,
 	Sun,
+	Trash2,
 	Users,
 	X,
 } from 'lucide-react';
 import { api, ago, isLive, type Agent, type Person, type SearchHit } from '@/api';
-import { Character } from '@/Character';
-import { stateOf } from '@/Gallery';
-import logoUrl from '@/assets/agents-logo.png';
+import { onTask } from '@/live';
+import { CubyBot } from '@/components/cuby-bot';
+import wordmarkUrl from '@/assets/cuby-agents-wordmark.png';
+import { useVersion } from '@/lib/use-version';
 import { useTheme } from '@/lib/theme';
-import { requestConversation } from '@/lib/conversation-request';
 import { cn } from '@/lib/utils';
 import {
 	DropdownMenu,
@@ -46,11 +54,16 @@ import {
 	SidebarHeader,
 	SidebarInput,
 	SidebarMenu,
+	SidebarMenuAction,
 	SidebarMenuButton,
 	SidebarMenuItem,
 	useSidebar,
 } from '@/components/ui/sidebar';
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip';
+import { ScrollArea } from '@/components/ui/scroll-area';
+import { AgentFace } from '@/components/agent-face';
+import { Input } from '@/components/ui/input';
+import { FormDialog } from '@/components/access-ui';
 import { Button } from '@/components/ui/button';
 import {
 	Dialog,
@@ -115,6 +128,20 @@ function AgentMarks({ agent, me }: { agent: Agent; me: Person }) {
 	);
 }
 
+/** In «Fijados», what a row is: an agent or a conversation, a mini icon at the face's bottom left. */
+function KindBadge({ kind }: { kind: 'agent' | 'conversation' }) {
+	const Icon = kind === 'agent' ? Bot : MessageSquare;
+	return (
+		<span
+			role="img"
+			aria-label={kind === 'agent' ? 'Agente' : 'Conversación'}
+			className="absolute -bottom-1 -left-1 grid size-3.5 place-items-center rounded-full bg-sidebar-accent text-sidebar-foreground ring-2 ring-sidebar"
+		>
+			<Icon className="size-2!" aria-hidden="true" />
+		</span>
+	);
+}
+
 function StatusDot({ agent }: { agent: Agent }) {
 	const t = agent.task;
 	if (!isLive(t)) return null;
@@ -134,37 +161,284 @@ function StatusDot({ agent }: { agent: Agent }) {
 	);
 }
 
+type PinRef = { kind: 'agent' | 'conversation'; ref_id: number };
+type RecentConversation = {
+	id: number;
+	agent_id: number;
+	title: string;
+	archived_at: number | null;
+	is_default: boolean;
+	last_at: number;
+};
+
+/** The sidebar's pins and recent conversations; reloaded on navigation and when a run ends. */
+function useSidebarData(hash: string) {
+	const [pins, setPins] = useState<PinRef[]>([]);
+	const [conversations, setConversations] = useState<RecentConversation[]>([]);
+	const load = useCallback(
+		() =>
+			api<{ pins: PinRef[]; conversations: RecentConversation[] }>('/sidebar')
+				.then((r) => {
+					setPins(r.pins);
+					setConversations(r.conversations);
+				})
+				.catch(() => {}),
+		[],
+	);
+	useEffect(() => {
+		void load();
+	}, [hash, load]);
+	useEffect(() => onTask((t) => !isLive(t) && void load()), [load]);
+	const isPinned = (kind: PinRef['kind'], id: number) => pins.some((p) => p.kind === kind && p.ref_id === id);
+	const toggle = async (kind: PinRef['kind'], id: number) => {
+		const pinned = !isPinned(kind, id);
+		setPins((ps) => (pinned ? [...ps, { kind, ref_id: id }] : ps.filter((p) => p.kind !== kind || p.ref_id !== id)));
+		try {
+			setPins((await api<{ pins: PinRef[] }>('/pins', { method: 'PUT', body: { kind, id, pinned } })).pins);
+			if (kind === 'conversation') void load(); // a pinned closed chat joins the list, an unpinned one may leave it
+		} catch {
+			void load();
+		}
+	};
+	return { pins, conversations, isPinned, toggle, reload: load };
+}
+
+function PinAction({
+	pinned,
+	what,
+	onToggle,
+	className,
+}: {
+	pinned: boolean;
+	what: string;
+	onToggle: () => void;
+	className?: string;
+}) {
+	return (
+		<SidebarMenuAction
+			showOnHover
+			className={cn('text-muted-foreground', className)}
+			onClick={onToggle}
+			aria-label={pinned ? `Desfijar ${what}` : `Fijar ${what}`}
+			title={pinned ? 'Desfijar' : 'Fijar'}
+		>
+			{pinned ? <PinOff aria-hidden="true" /> : <Pin aria-hidden="true" />}
+		</SidebarMenuAction>
+	);
+}
+
 function AgentItem({
 	agent,
 	me,
 	active,
 	query,
+	pinned,
+	onPin,
 	onNavigate,
+	badge = false,
 }: {
 	agent: Agent;
 	me: Person;
 	active: boolean;
 	query: string;
+	pinned: boolean;
+	onPin: () => void;
 	onNavigate: () => void;
+	badge?: boolean;
 }) {
 	return (
 		<SidebarMenuItem>
 			<SidebarMenuButton asChild isActive={active} className="h-9">
 				<a href={`#/agent/${agent.id}`} onClick={onNavigate} aria-current={active ? 'page' : undefined}>
-					<span className="relative flex size-7 shrink-0 items-center justify-center rounded-md bg-muted">
-						{/* The 32 px drawing has a desk and margins: drawn larger and cropped to the person. */}
-						<span className="flex size-7 items-end justify-center overflow-hidden rounded-md">
-							<Character seed={agent.seed} state={stateOf(agent)} size={40} still />
-						</span>
+					<span className="relative flex shrink-0">
+						<AgentFace agent={agent} size={28} still />
+						{badge && <KindBadge kind="agent" />}
 						<StatusDot agent={agent} />
 					</span>
 					<span className="min-w-0 flex-1 truncate">
 						<Highlight text={agent.name} query={query} />
 					</span>
-					<AgentMarks agent={agent} me={me} />
+					{/* The marks give way to the pin action while hovering. */}
+					<span className="contents md:group-hover/menu-item:[&>*]:invisible md:group-focus-within/menu-item:[&>*]:invisible">
+						<AgentMarks agent={agent} me={me} />
+					</span>
 				</a>
 			</SidebarMenuButton>
+			<PinAction pinned={pinned} what={agent.name} onToggle={onPin} className="top-2" />
 		</SidebarMenuItem>
+	);
+}
+
+function ConversationItem({
+	chat,
+	agent,
+	active,
+	query,
+	pinned,
+	onPin,
+	onRename,
+	onDelete,
+	onNavigate,
+	badge = false,
+}: {
+	chat: RecentConversation;
+	agent: Agent | undefined;
+	active: boolean;
+	query: string;
+	pinned: boolean;
+	onPin: () => void;
+	onRename: () => void;
+	onDelete: () => void;
+	onNavigate: () => void;
+	badge?: boolean;
+}) {
+	return (
+		<SidebarMenuItem>
+			<SidebarMenuButton asChild isActive={active}>
+				<a
+					href={`#/agent/${chat.agent_id}/chat/${chat.id}`}
+					onClick={onNavigate}
+					aria-current={active ? 'page' : undefined}
+					title={agent ? `${chat.title} · ${agent.name}` : chat.title}
+				>
+					<span className="relative flex shrink-0">
+						{agent ? <AgentFace agent={agent} size={20} still /> : <MessageSquareText aria-hidden="true" />}
+						{badge && <KindBadge kind="conversation" />}
+					</span>
+					<span className={cn('min-w-0 flex-1 truncate', chat.archived_at && 'text-muted-foreground')}>
+						<Highlight text={chat.title} query={query} />
+					</span>
+				</a>
+			</SidebarMenuButton>
+			<DropdownMenu>
+				<DropdownMenuTrigger asChild>
+					<SidebarMenuAction
+						showOnHover
+						className="text-muted-foreground data-[state=open]:opacity-100"
+						aria-label={`Acciones de ${chat.title}`}
+						title="Más"
+					>
+						<MoreHorizontal aria-hidden="true" />
+					</SidebarMenuAction>
+				</DropdownMenuTrigger>
+				<DropdownMenuContent side="right" align="start" className="w-44">
+					<DropdownMenuItem onSelect={onRename}>
+						<Pencil aria-hidden="true" />
+						Renombrar
+					</DropdownMenuItem>
+					<DropdownMenuItem onSelect={onPin}>
+						{pinned ? <PinOff aria-hidden="true" /> : <Pin aria-hidden="true" />}
+						{pinned ? 'Desfijar' : 'Fijar'}
+					</DropdownMenuItem>
+					<DropdownMenuSeparator />
+					<DropdownMenuItem
+						variant="destructive"
+						disabled={chat.is_default}
+						title={chat.is_default ? 'Principal no se elimina: ahí llegan los canales y los horarios.' : undefined}
+						onSelect={onDelete}
+					>
+						<Trash2 aria-hidden="true" />
+						Eliminar
+					</DropdownMenuItem>
+				</DropdownMenuContent>
+			</DropdownMenu>
+		</SidebarMenuItem>
+	);
+}
+
+/** Renaming or deleting a chat from the sidebar: one dialog, over the page. */
+function ChatDialog({
+	edit,
+	onClose,
+	onDone,
+}: {
+	edit: { chat: RecentConversation; action: 'rename' | 'delete' } | null;
+	onClose: () => void;
+	onDone: (deleted: RecentConversation | null) => void;
+}) {
+	const [title, setTitle] = useState('');
+	const [busy, setBusy] = useState(false);
+	const [error, setError] = useState('');
+	useEffect(() => {
+		setTitle(edit?.chat.title ?? '');
+		setError('');
+	}, [edit]);
+	const chat = edit?.chat;
+	const path = chat && `/agents/${chat.agent_id}/conversations/${chat.id}`;
+	const run = async (fn: () => Promise<void>) => {
+		setBusy(true);
+		setError('');
+		try {
+			await fn();
+		} catch (e) {
+			setError((e as Error).message);
+		} finally {
+			setBusy(false);
+		}
+	};
+	return (
+		<FormDialog
+			open={!!edit}
+			onOpenChange={(open) => !open && !busy && onClose()}
+			title={edit?.action === 'delete' ? '¿Eliminar este chat?' : 'Renombrar chat'}
+			description={
+				edit?.action === 'delete'
+					? `«${chat?.title}» desaparece de tus listas y de la búsqueda. Sus mensajes, trabajos y archivos se conservan.`
+					: undefined
+			}
+		>
+			<form
+				className="form"
+				onSubmit={(e) => {
+					e.preventDefault();
+					if (!path) return;
+					void run(async () => {
+						if (edit?.action === 'delete') {
+							await api(path, { method: 'DELETE' });
+							onDone(chat!);
+						} else {
+							await api(path, { method: 'PATCH', body: { title } });
+							onDone(null);
+						}
+					});
+				}}
+			>
+				{edit?.action === 'rename' && (
+					<label>
+						Título
+						<Input
+							value={title}
+							onChange={(e) => setTitle(e.target.value)}
+							maxLength={80}
+							autoFocus
+							placeholder="Vacío: vuelve al título automático"
+						/>
+					</label>
+				)}
+				{error && (
+					<p role="alert" className="error">
+						{error}
+					</p>
+				)}
+				<div className="flex flex-wrap justify-end gap-2 border-t pt-4">
+					<Button type="button" variant="outline" onClick={onClose} disabled={busy}>
+						<X aria-hidden="true" />
+						Cancelar
+					</Button>
+					{edit?.action === 'delete' ? (
+						<Button type="submit" variant="destructive" disabled={busy}>
+							<Trash2 aria-hidden="true" />
+							Eliminar
+						</Button>
+					) : (
+						<Button type="submit" disabled={busy}>
+							<Save aria-hidden="true" />
+							Guardar
+						</Button>
+					)}
+				</div>
+			</form>
+		</FormDialog>
 	);
 }
 
@@ -175,13 +449,7 @@ function CollapsedAgent({ agent, active }: { agent: Agent; active: boolean }) {
 			<SidebarMenuButton asChild isActive={active} tooltip={agent.name} className="group-data-[collapsible=icon]:p-0!">
 				<a href={`#/agent/${agent.id}`} aria-label={agent.name} aria-current={active ? 'page' : undefined}>
 					<span className="relative flex size-8 shrink-0 justify-center">
-						{/* The 32-unit drawing at 2 px a unit, cropped to the character: units x 5–21, y 2–18
-						    (Character.tsx draws it at x 7–21 from y 3; the laptop starts at x 18, y 17). */}
-						<span className="relative size-8 overflow-hidden rounded-md">
-							<span className="absolute -top-1 -left-2.5">
-								<Character seed={agent.seed} state={stateOf(agent)} size={64} />
-							</span>
-						</span>
+						<AgentFace agent={agent} size={32} />
 						<StatusDot agent={agent} />
 					</span>
 				</a>
@@ -359,12 +627,57 @@ export function AppSidebar({
 	const { isMobile, setOpenMobile, state, setOpen } = useSidebar();
 	const [query, setQuery] = useState('');
 	const input = useRef<HTMLInputElement>(null);
+	const version = useVersion();
 	const listed = useMemo(() => listedAgents(agents, me), [agents, me]);
 	const names = useMemo(() => new Map(agents.map((a) => [a.id, a.name])), [agents]);
 	const q = query.trim();
 	const shown = q ? listed.filter((a) => fold(a.name).includes(fold(q))) : listed;
 	const search = useSearch(q);
 	const activeAgent = Number(hash.match(/^\/agent\/(\d+)/)?.[1]);
+	const activeChat = Number(hash.match(/^\/agent\/\d+\/chat\/(\d+)/)?.[1]);
+	const side = useSidebarData(hash);
+	const byId = useMemo(() => new Map(agents.map((a) => [a.id, a])), [agents]);
+	// Pinned first (in the order they were pinned), then the rest.
+	const pinnedAgents = side.pins.flatMap((p) => (p.kind === 'agent' ? shown.filter((a) => a.id === p.ref_id) : []));
+	const otherAgents = shown.filter((a) => !side.isPinned('agent', a.id));
+	const chatMatches = (c: RecentConversation) =>
+		!q || fold(c.title).includes(fold(q)) || fold(byId.get(c.agent_id)?.name ?? '').includes(fold(q));
+	const pinnedChats = side.pins.flatMap((p) =>
+		p.kind === 'conversation' ? side.conversations.filter((c) => c.id === p.ref_id && chatMatches(c)) : [],
+	);
+	const recentChats = side.conversations
+		.filter((c) => !side.isPinned('conversation', c.id) && chatMatches(c))
+		.slice(0, 15);
+	const agentItem = (a: Agent, badge = false) => (
+		<AgentItem
+			key={a.id}
+			badge={badge}
+			agent={a}
+			me={me}
+			// In one of its chats, the chat is the highlighted row (when it is listed).
+			active={a.id === activeAgent && !side.conversations.some((c) => c.id === activeChat)}
+			query={q}
+			pinned={side.isPinned('agent', a.id)}
+			onPin={() => void side.toggle('agent', a.id)}
+			onNavigate={close}
+		/>
+	);
+	const chatItem = (c: RecentConversation, badge = false) => (
+		<ConversationItem
+			key={c.id}
+			badge={badge}
+			chat={c}
+			agent={byId.get(c.agent_id)}
+			active={c.id === activeChat}
+			query={q}
+			pinned={side.isPinned('conversation', c.id)}
+			onPin={() => void side.toggle('conversation', c.id)}
+			onRename={() => setChatEdit({ chat: c, action: 'rename' })}
+			onDelete={() => setChatEdit({ chat: c, action: 'delete' })}
+			onNavigate={close}
+		/>
+	);
+	const [chatEdit, setChatEdit] = useState<{ chat: RecentConversation; action: 'rename' | 'delete' } | null>(null);
 	const close = () => isMobile && setOpenMobile(false);
 	const collapsed = state === 'collapsed' && !isMobile;
 	const focusSearch = () => {
@@ -389,149 +702,173 @@ export function AppSidebar({
 	];
 	return (
 		<Sidebar variant="inset" collapsible="icon" aria-label="Barra lateral">
-			<SidebarHeader>
-				<SidebarMenu>
-					<SidebarMenuItem>
-						<SidebarMenuButton asChild size="lg" tooltip="Agents">
-							<a href="#/" onClick={close}>
-								<img src={logoUrl} alt="" width={512} height={512} className="size-8 shrink-0 object-contain" />
-								<span className="grid min-w-0 flex-1 gap-0.5 leading-tight">
-									<span className="text-sm font-semibold">Agents</span>
-									<span className="truncate text-xs text-muted-foreground">Espacio de trabajo</span>
-								</span>
-							</a>
-						</SidebarMenuButton>
-					</SidebarMenuItem>
-				</SidebarMenu>
-				<SidebarMenu>
-					<SidebarMenuItem>
-						<SidebarMenuButton
-							tooltip="Buscar (⌘K)"
-							onClick={focusSearch}
-							className="hidden group-data-[collapsible=icon]:flex"
-						>
-							<Search aria-hidden="true" />
-							<span>Buscar</span>
-						</SidebarMenuButton>
-					</SidebarMenuItem>
-					{nav.map(({ href, label, icon: Icon, active }) => (
-						<SidebarMenuItem key={href}>
-							<SidebarMenuButton asChild isActive={active} tooltip={label}>
-								<a href={`#${href}`} onClick={close} aria-current={active ? 'page' : undefined}>
-									<Icon aria-hidden="true" />
-									<span>{label}</span>
+			{/* Everything scrolls together (header, search, lists); only the person's tile stays put. */}
+			{/* Out to the sidebar's top edge (rows scroll away under it instead of being cut 8 px below, the
+			    inset container's padding) and close to its right edge (the scrollbar keeps 4 px of air). */}
+			<ScrollArea
+				type="hover"
+				className="sidebar-scroll min-h-0 flex-1 md:-mt-2 md:-mr-2"
+				viewportProps={{ className: 'md:pt-2 md:pr-2' }}
+			>
+				<SidebarHeader>
+					<SidebarMenu>
+						<SidebarMenuItem>
+							<SidebarMenuButton asChild size="lg" tooltip="Cuby agents">
+								<a href="#/" onClick={close} aria-label="Cuby agents">
+									<CubyBot size={32} className="size-8!" />
+									{/* «cuby» cut from the Cuby Smart logo, «agents» in the style of its «smart» (Codex). */}
+									<img src={wordmarkUrl} alt="" width={307} height={160} className="h-9 w-auto shrink-0" />
+									{version && (
+										<span className="ml-auto self-end pb-0.5 font-mono text-2xs text-muted-foreground" title="Versión">
+											{version}
+										</span>
+									)}
 								</a>
 							</SidebarMenuButton>
 						</SidebarMenuItem>
-					))}
-				</SidebarMenu>
-				<div role="search" className="relative group-data-[collapsible=icon]:hidden">
-					<Search
-						className="pointer-events-none absolute top-1/2 left-2 size-4 -translate-y-1/2 text-muted-foreground"
-						aria-hidden="true"
-					/>
-					<SidebarInput
-						ref={input}
-						type="search"
-						value={query}
-						onChange={(e) => setQuery(e.target.value)}
-						onKeyDown={(e) => {
-							if (e.key === 'Escape' && query) {
-								e.stopPropagation();
-								setQuery('');
-							}
-						}}
-						placeholder="Buscar agentes y conversaciones"
-						aria-label="Buscar agentes y conversaciones"
-						className="pr-8 pl-8 [&::-webkit-search-cancel-button]:hidden"
-					/>
-					{query && (
-						<button
-							type="button"
-							onClick={() => {
-								setQuery('');
-								input.current?.focus();
+					</SidebarMenu>
+					<SidebarMenu>
+						<SidebarMenuItem>
+							<SidebarMenuButton
+								tooltip="Buscar (⌘K)"
+								onClick={focusSearch}
+								className="hidden group-data-[collapsible=icon]:flex"
+							>
+								<Search aria-hidden="true" />
+								<span>Buscar</span>
+							</SidebarMenuButton>
+						</SidebarMenuItem>
+						{nav.map(({ href, label, icon: Icon, active }) => (
+							<SidebarMenuItem key={href}>
+								<SidebarMenuButton asChild isActive={active} tooltip={label}>
+									<a href={`#${href}`} onClick={close} aria-current={active ? 'page' : undefined}>
+										<Icon aria-hidden="true" />
+										<span>{label}</span>
+									</a>
+								</SidebarMenuButton>
+							</SidebarMenuItem>
+						))}
+					</SidebarMenu>
+					<div role="search" className="relative group-data-[collapsible=icon]:hidden">
+						<Search
+							className="pointer-events-none absolute top-1/2 left-2 size-4 -translate-y-1/2 text-muted-foreground"
+							aria-hidden="true"
+						/>
+						<SidebarInput
+							ref={input}
+							type="search"
+							value={query}
+							onChange={(e) => setQuery(e.target.value)}
+							onKeyDown={(e) => {
+								if (e.key === 'Escape' && query) {
+									e.stopPropagation();
+									setQuery('');
+								}
 							}}
-							className="absolute top-1/2 right-1.5 flex size-5 -translate-y-1/2 items-center justify-center rounded-sm text-muted-foreground outline-none hover:text-sidebar-foreground focus-visible:ring-2 focus-visible:ring-sidebar-ring"
-							aria-label="Limpiar búsqueda"
-						>
-							<X className="size-3.5" aria-hidden="true" />
-						</button>
-					)}
-				</div>
-			</SidebarHeader>
-			<SidebarContent className="group-data-[collapsible=icon]:overflow-y-auto group-data-[collapsible=icon]:[scrollbar-width:none]">
-				{collapsed && (
-					<SidebarGroup className="py-0">
-						<SidebarMenu aria-label="Tus agentes">
-							{listed.map((a) => (
-								<CollapsedAgent key={a.id} agent={a} active={a.id === activeAgent} />
-							))}
-						</SidebarMenu>
-					</SidebarGroup>
-				)}
-				<SidebarGroup className="group-data-[collapsible=icon]:hidden">
-					<SidebarGroupLabel>Agentes</SidebarGroupLabel>
-					<SidebarGroupContent>
-						<SidebarMenu aria-label="Tus agentes">
-							{shown.map((a) => (
-								<AgentItem key={a.id} agent={a} me={me} active={a.id === activeAgent} query={q} onNavigate={close} />
-							))}
-						</SidebarMenu>
-						{!shown.length && (
-							<p className="px-2 py-1.5 text-xs text-muted-foreground">
-								{q ? 'Ningún agente se llama así.' : 'Todavía no tienes agentes.'}
-							</p>
+							placeholder="Buscar agentes y conversaciones"
+							aria-label="Buscar agentes y conversaciones"
+							className="pr-8 pl-8 [&::-webkit-search-cancel-button]:hidden"
+						/>
+						{query && (
+							<button
+								type="button"
+								onClick={() => {
+									setQuery('');
+									input.current?.focus();
+								}}
+								className="absolute top-1/2 right-1.5 flex size-5 -translate-y-1/2 items-center justify-center rounded-sm text-muted-foreground outline-none hover:text-sidebar-foreground focus-visible:ring-2 focus-visible:ring-sidebar-ring"
+								aria-label="Limpiar búsqueda"
+							>
+								<X className="size-3.5" aria-hidden="true" />
+							</button>
 						)}
-					</SidebarGroupContent>
-				</SidebarGroup>
-				{q.length >= 2 && (
-					<SidebarGroup className="group-data-[collapsible=icon]:hidden">
-						<SidebarGroupLabel className="gap-2">
-							En conversaciones
-							{search.loading && <Loader2 className="size-3 animate-spin" aria-label="Buscando" />}
-						</SidebarGroupLabel>
-						<SidebarGroupContent>
-							<SidebarMenu aria-label="Coincidencias en conversaciones" aria-busy={search.loading}>
-								{search.hits.map((h) => (
-									<SidebarMenuItem key={`${h.kind}-${h.run_id ?? ''}-${h.conversation_id}-${h.at}`}>
-										<SidebarMenuButton asChild className="h-auto items-start py-1.5">
-											<a
-												href={`#/agent/${h.agent_id}`}
-												onClick={() => {
-													requestConversation(h.agent_id, h.conversation_id);
-													close();
-												}}
-											>
-												<MessageSquareText className="mt-0.5" aria-hidden="true" />
-												<span className="grid min-w-0 flex-1 gap-0.5">
-													<span className="flex min-w-0 items-baseline gap-1 text-xs">
-														<span className="truncate font-medium">{names.get(h.agent_id) ?? 'Agente'}</span>
-														<span className="truncate text-muted-foreground">· {h.conversation_title}</span>
-													</span>
-													<span className="line-clamp-2 text-xs whitespace-normal text-muted-foreground">
-														<span className="sr-only">{h.kind === 'answer' ? 'Respondió: ' : 'Dijeron: '}</span>
-														<Highlight text={h.snippet} query={q} />
-													</span>
-													<span className="text-2xs text-muted-foreground/80">
-														{h.kind === 'answer' ? 'Respuesta' : 'Mensaje'} · {ago(h.at)}
-													</span>
-												</span>
-											</a>
-										</SidebarMenuButton>
-									</SidebarMenuItem>
+					</div>
+				</SidebarHeader>
+				<SidebarContent className="flex-none overflow-visible group-data-[collapsible=icon]:overflow-visible">
+					{collapsed && (
+						<SidebarGroup className="py-0">
+							<SidebarMenu aria-label="Tus agentes">
+								{[
+									...listed.filter((a) => side.isPinned('agent', a.id)),
+									...listed.filter((a) => !side.isPinned('agent', a.id)),
+								].map((a) => (
+									<CollapsedAgent key={a.id} agent={a} active={a.id === activeAgent} />
 								))}
 							</SidebarMenu>
-							{!search.loading && !search.hits.length && (
-								<p className="px-2 py-1.5 text-xs text-muted-foreground" role="status">
-									{search.error || 'Nada dicho en tus conversaciones coincide.'}
+						</SidebarGroup>
+					)}
+					{(pinnedAgents.length > 0 || pinnedChats.length > 0) && (
+						<SidebarGroup className="group-data-[collapsible=icon]:hidden">
+							<SidebarGroupLabel>Fijados</SidebarGroupLabel>
+							<SidebarGroupContent>
+								<SidebarMenu aria-label="Fijados">
+									{pinnedAgents.map((a) => agentItem(a, true))}
+									{pinnedChats.map((c) => chatItem(c, true))}
+								</SidebarMenu>
+							</SidebarGroupContent>
+						</SidebarGroup>
+					)}
+					<SidebarGroup className="group-data-[collapsible=icon]:hidden">
+						<SidebarGroupLabel>Agentes</SidebarGroupLabel>
+						<SidebarGroupContent>
+							<SidebarMenu aria-label="Tus agentes">{otherAgents.map((a) => agentItem(a))}</SidebarMenu>
+							{!shown.length && (
+								<p className="px-2 py-1.5 text-xs text-muted-foreground">
+									{q ? 'Ningún agente se llama así.' : 'Todavía no tienes agentes.'}
 								</p>
 							)}
 						</SidebarGroupContent>
 					</SidebarGroup>
-				)}
-			</SidebarContent>
-			<SidebarFooter>
+					{recentChats.length > 0 && (
+						<SidebarGroup className="group-data-[collapsible=icon]:hidden">
+							<SidebarGroupLabel>Conversaciones</SidebarGroupLabel>
+							<SidebarGroupContent>
+								<SidebarMenu aria-label="Conversaciones recientes">{recentChats.map((c) => chatItem(c))}</SidebarMenu>
+							</SidebarGroupContent>
+						</SidebarGroup>
+					)}
+					{q.length >= 2 && (
+						<SidebarGroup className="group-data-[collapsible=icon]:hidden">
+							<SidebarGroupLabel className="gap-2">
+								En conversaciones
+								{search.loading && <Loader2 className="size-3 animate-spin" aria-label="Buscando" />}
+							</SidebarGroupLabel>
+							<SidebarGroupContent>
+								<SidebarMenu aria-label="Coincidencias en conversaciones" aria-busy={search.loading}>
+									{search.hits.map((h) => (
+										<SidebarMenuItem key={`${h.kind}-${h.run_id ?? ''}-${h.conversation_id}-${h.at}`}>
+											<SidebarMenuButton asChild className="h-auto items-start py-1.5">
+												<a href={`#/agent/${h.agent_id}/chat/${h.conversation_id}`} onClick={close}>
+													<MessageSquareText className="mt-0.5" aria-hidden="true" />
+													<span className="grid min-w-0 flex-1 gap-0.5">
+														<span className="flex min-w-0 items-baseline gap-1 text-xs">
+															<span className="truncate font-medium">{names.get(h.agent_id) ?? 'Agente'}</span>
+															<span className="truncate text-muted-foreground">· {h.conversation_title}</span>
+														</span>
+														<span className="line-clamp-2 text-xs whitespace-normal text-muted-foreground">
+															<span className="sr-only">{h.kind === 'answer' ? 'Respondió: ' : 'Dijeron: '}</span>
+															<Highlight text={h.snippet} query={q} />
+														</span>
+														<span className="text-2xs text-muted-foreground/80">
+															{h.kind === 'answer' ? 'Respuesta' : 'Mensaje'} · {ago(h.at)}
+														</span>
+													</span>
+												</a>
+											</SidebarMenuButton>
+										</SidebarMenuItem>
+									))}
+								</SidebarMenu>
+								{!search.loading && !search.hits.length && (
+									<p className="px-2 py-1.5 text-xs text-muted-foreground" role="status">
+										{search.error || 'Nada dicho en tus conversaciones coincide.'}
+									</p>
+								)}
+							</SidebarGroupContent>
+						</SidebarGroup>
+					)}
+				</SidebarContent>
+			</ScrollArea>
+			<SidebarFooter className="border-t border-sidebar-border">
 				<ProfileMenu
 					me={me}
 					onSettings={() => {
@@ -541,6 +878,16 @@ export function AppSidebar({
 					onLogout={onLogout}
 				/>
 			</SidebarFooter>
+			<ChatDialog
+				edit={chatEdit}
+				onClose={() => setChatEdit(null)}
+				onDone={(deleted) => {
+					setChatEdit(null);
+					void side.reload();
+					// The open chat was deleted: go to its agent's hub.
+					if (deleted && deleted.id === activeChat) location.hash = `/agent/${deleted.agent_id}`;
+				}}
+			/>
 			<SidebarResizer width={width} />
 		</Sidebar>
 	);

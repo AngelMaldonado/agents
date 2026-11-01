@@ -1,31 +1,49 @@
 // The owner shares the agent: those people may run tasks with it (chat, give work, answer it). They
 // cannot improve or configure it, nor take control of its browser; its runs use the owner's account.
+// A gallery of people: clicking a tile shares it at once, clicking it again stops sharing it.
 import { useEffect, useState } from 'react';
+import { Check } from 'lucide-react';
 import { api, type Agent, type Person } from './api';
-import { Button } from '@/components/ui/button';
+import { SectionHead } from '@/components/access-ui';
+import { cn } from '@/lib/utils';
 
 type Someone = Pick<Person, 'id' | 'name' | 'avatar_seed'>;
 
 export function ShareAgent({ agent, onChanged }: { agent: Agent; onChanged: () => void }) {
 	const [people, setPeople] = useState<Someone[] | null>(null);
 	const [chosen, setChosen] = useState<number[]>(agent.shares ?? []);
-	const [busy, setBusy] = useState(false),
-		[error, setError] = useState(''),
-		[saved, setSaved] = useState(false);
+	const [pending, setPending] = useState<number | null>(null),
+		[error, setError] = useState('');
 	useEffect(() => {
 		api<{ people: Someone[] }>('/people')
 			.then((r) => setPeople(r.people.filter((p) => p.id !== agent.person_id)))
 			.catch((e) => setError((e as Error).message));
 	}, [agent.person_id]);
-	const dirty = JSON.stringify([...chosen].sort()) !== JSON.stringify([...(agent.shares ?? [])].sort());
+	const toggle = async (id: number) => {
+		if (pending !== null) return;
+		const next = chosen.includes(id) ? chosen.filter((x) => x !== id) : [...chosen, id];
+		setPending(id);
+		setError('');
+		setChosen(next);
+		try {
+			setChosen(
+				(await api<{ shares: number[] }>(`/agents/${agent.id}/shares`, { method: 'PUT', body: { people: next } }))
+					.shares,
+			);
+			onChanged();
+		} catch (e) {
+			setChosen(chosen);
+			setError((e as Error).message);
+		} finally {
+			setPending(null);
+		}
+	};
 	return (
-		<section className="grid min-w-0 gap-3 border-t pt-6" aria-label="Compartir">
-			<h2>Compartir</h2>
-			<p className="muted">
-				Quienes elijas pueden darle tareas, conversar con él y responderle cuando se atore, en las mismas
-				conversaciones. No pueden mejorarlo, configurarlo ni tomar el control de su navegador. Sus tareas usan tu cuenta
-				GPT y tu cuota, y el agente usa sus sesiones, credenciales y compras autorizadas como siempre.
-			</p>
+		<section className="panel grid min-w-0 gap-3" aria-label="Compartir">
+			<SectionHead
+				title="Compartir"
+				security="Quienes elijas pueden darle tareas, conversar con él y responderle cuando se atore, en las mismas conversaciones. No pueden mejorarlo, configurarlo ni tomar el control de su navegador. Sus tareas usan tu cuenta GPT y tu cuota, y el agente usa sus sesiones, credenciales y compras autorizadas como siempre."
+			/>
 			{error && (
 				<p role="alert" className="error">
 					{error}
@@ -36,52 +54,32 @@ export function ShareAgent({ agent, onChanged }: { agent: Agent; onChanged: () =
 			) : !people.length ? (
 				<p className="muted small">No hay otras personas en Agents todavía.</p>
 			) : (
-				<div className="grid max-h-60 gap-1 overflow-y-auto" role="group" aria-label="Personas">
-					{people.map((p) => (
-						<label key={p.id} className="row gap-2 text-sm">
-							<input
-								type="checkbox"
-								checked={chosen.includes(p.id)}
-								onChange={(e) => {
-									setSaved(false);
-									setChosen((c) => (e.target.checked ? [...c, p.id] : c.filter((id) => id !== p.id)));
-								}}
-							/>
-							{p.name}
-						</label>
-					))}
+				<div className="harness-tiles" role="group" aria-label="Personas con quienes compartirlo">
+					{people.map((p) => {
+						const on = chosen.includes(p.id);
+						return (
+							<button
+								key={p.id}
+								type="button"
+								role="checkbox"
+								aria-checked={on}
+								aria-busy={pending === p.id}
+								disabled={pending !== null && pending !== p.id}
+								className={cn('harness-tile share-tile', on && 'share-tile-on')}
+								onClick={() => void toggle(p.id)}
+							>
+								<span className="flex size-7 shrink-0 items-center justify-center rounded-full bg-muted text-2xs font-medium">
+									{p.name.slice(0, 2).toUpperCase()}
+								</span>
+								<span className="min-w-0 flex-1 truncate">{p.name}</span>
+								<span className="share-check" aria-hidden="true">
+									{on && <Check className="size-3" />}
+								</span>
+							</button>
+						);
+					})}
 				</div>
 			)}
-			<div className="row gap-2">
-				<Button
-					size="sm"
-					disabled={!dirty || busy}
-					onClick={async () => {
-						setBusy(true);
-						setError('');
-						try {
-							const r = await api<{ shares: number[] }>(`/agents/${agent.id}/shares`, {
-								method: 'PUT',
-								body: { people: chosen },
-							});
-							setChosen(r.shares);
-							setSaved(true);
-							onChanged();
-						} catch (e) {
-							setError((e as Error).message);
-						} finally {
-							setBusy(false);
-						}
-					}}
-				>
-					{busy ? 'Guardando…' : 'Guardar'}
-				</Button>
-				{saved && !dirty && (
-					<span role="status" className="muted small">
-						Guardado.
-					</span>
-				)}
-			</div>
 		</section>
 	);
 }

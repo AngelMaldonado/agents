@@ -2,6 +2,7 @@ import Markdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import type { AgentTool } from '@/api';
 import { Files, Globe, Hand, KeyRound, Terminal, Wrench } from 'lucide-react';
+import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip';
 const toolIcons = { files: Files, bash: Terminal, browser: Globe, help: Hand, login: KeyRound };
 
 export function ContractMarkdown({ text }: { text: string }) {
@@ -14,7 +15,29 @@ export function ContractMarkdown({ text }: { text: string }) {
 	);
 }
 
-export function ToolsPanel({ tools }: { tools: AgentTool[] }) {
+/** compact: an icon and a name per tool; what it does goes in the tooltip. */
+export function ToolsPanel({ tools, compact = false }: { tools: AgentTool[]; compact?: boolean }) {
+	if (compact)
+		return (
+			<section aria-label="Herramientas disponibles" className="harness-tiles">
+				{tools.map((tool) => {
+					const Icon = toolIcons[tool.id as keyof typeof toolIcons] ?? Wrench;
+					return (
+						<Tooltip key={tool.id}>
+							<TooltipTrigger asChild>
+								<div className="harness-tile" tabIndex={0} aria-label={`${tool.name}: ${tool.description}`}>
+									<Icon className="size-4 shrink-0 text-primary" aria-hidden="true" />
+									<span className="min-w-0 truncate">{tool.name}</span>
+								</div>
+							</TooltipTrigger>
+							<TooltipContent side="top" className="max-w-xs">
+								{tool.description}
+							</TooltipContent>
+						</Tooltip>
+					);
+				})}
+			</section>
+		);
 	return (
 		<section
 			aria-label="Herramientas disponibles"

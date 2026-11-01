@@ -62,7 +62,7 @@ export async function search(viewer: Person, raw: unknown): Promise<SearchHit[]>
 			  and r.answer ilike $2 escape '\\'
 		)
 		select h.kind, h.agent_id, h.conversation_id, h.run_id, h.text, h.at, ${titleSql} as conversation_title
-		from hits h join conversations c on c.id = h.conversation_id
+		from hits h join conversations c on c.id = h.conversation_id and c.deleted_at is null
 		order by h.at desc
 		limit ${LIMIT}`,
 		[viewer.id, like],

@@ -1,6 +1,6 @@
 // The app's frame: shadcn's Sidebar (variant inset, collapsible to icons; ⌘B toggles it) around the
 // page, with a header for the page's title and the live status. The sidebar itself: app-sidebar.tsx.
-import type { ReactNode } from 'react';
+import { useState, type ReactNode } from 'react';
 import type { Agent, Person } from '@/api';
 import { cn } from '@/lib/utils';
 import { AppSidebar } from '@/components/app-sidebar';
@@ -8,6 +8,7 @@ import { Badge } from '@/components/ui/badge';
 import { Separator } from '@/components/ui/separator';
 import { SidebarInset, SidebarProvider, SidebarTrigger } from '@/components/ui/sidebar';
 import { useSidebarWidth } from '@/lib/sidebar-width';
+import { HeaderSlotContext } from '@/components/header-slot';
 import type { CSSProperties } from 'react';
 
 // shadcn's SidebarProvider writes its open/closed state to this cookie; it is read back here.
@@ -34,6 +35,7 @@ export function AppShell({
 }) {
 	const title = agentName ?? (hash.startsWith('/new') ? 'Nuevo agente' : 'Galería');
 	const width = useSidebarWidth();
+	const [slot, setSlot] = useState<HTMLElement | null>(null);
 	return (
 		<SidebarProvider
 			defaultOpen={sidebarOpen()}
@@ -55,8 +57,10 @@ export function AppShell({
 				<header className="cuby-header">
 					<SidebarTrigger className="-ml-1" />
 					<Separator orientation="vertical" className="mx-1 data-[orientation=vertical]:h-4" />
-					<span className="min-w-0 truncate text-sm font-semibold">{title}</span>
-					<div className="ml-auto flex shrink-0 items-center gap-3">
+					<span className="cuby-header-title min-w-0 truncate text-sm font-semibold">{title}</span>
+					{/* A page's own bar (the chat view's breadcrumb and actions) replaces the title. */}
+					<div ref={setSlot} className="cuby-header-slot" />
+					<div className="flex shrink-0 items-center gap-3">
 						{import.meta.env.DEV && (
 							<Badge variant="outline" className="hidden sm:inline-flex">
 								Desarrollo
@@ -73,7 +77,7 @@ export function AppShell({
 					</div>
 				</header>
 				<div id="main-content" tabIndex={-1} className="cuby-main min-h-0 min-w-0 flex-1 overflow-y-auto outline-none">
-					{children}
+					<HeaderSlotContext.Provider value={slot}>{children}</HeaderSlotContext.Provider>
 				</div>
 			</SidebarInset>
 		</SidebarProvider>

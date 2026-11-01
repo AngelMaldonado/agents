@@ -13,6 +13,7 @@ import { search } from './search';
 import * as designs from './designs';
 import * as tasks from './tasks';
 import * as conversations from './conversations';
+import * as pins from './pins';
 import * as vault from './vault';
 import * as hub from './hub';
 import { settings, saveSettings, loadSettings } from './settings';
@@ -790,6 +791,23 @@ app.delete('/api/agents/:id/schedules/:name', async (c) => {
 	}
 });
 
+// ---------- the sidebar: pins and recent conversations ----------
+
+app.get('/api/sidebar', async (c) => {
+	const me = c.get('me');
+	c.header('Cache-Control', 'private, no-store');
+	return c.json({ pins: await pins.list(me.id), conversations: await pins.recentConversations(me.id) });
+});
+
+app.put('/api/pins', async (c) => {
+	const body = await c.req.json().catch(() => null);
+	try {
+		return c.json({ pins: await pins.set(c.get('me'), body?.kind, body?.id, body?.pinned) });
+	} catch (err) {
+		return fail(c, err);
+	}
+});
+
 // ---------- an agent's memory: conversations and browser profile ----------
 
 app.get('/api/agents/:id/conversations', async (c) => {
@@ -819,11 +837,36 @@ app.patch('/api/agents/:id/conversations/:conversation', async (c) => {
 	const a = await usableAgent(c);
 	if (!a) return c.json({ error: 'Sólo su dueño y quienes lo tienen compartido administran las conversaciones.' }, 403);
 	const body = await c.req.json().catch(() => null);
+	const id = Number(c.req.param('conversation'));
+	if (typeof body?.title === 'string')
+		try {
+			return c.json({ conversation: await conversations.rename(a.id, id, body.title) });
+		} catch (err) {
+			return fail(c, err);
+		}
 	if (typeof body?.archived !== 'boolean') return c.json({ error: 'Indica si quieres cerrar o reabrir el tab.' }, 400);
 	try {
 		return c.json({
-			conversation: await conversations.archive(a.id, Number(c.req.param('conversation')), body.archived),
+			conversation: await conversations.archive(a.id, id, body.archived),
 		});
+	} catch (err) {
+		return fail(c, err);
+	}
+});
+// The hub's «Archivos recientes»: what its runs produced, newest first, with the run each came from.
+app.get('/api/agents/:id/files', async (c) => {
+	const a = await agents.seeable(c.get('me'), Number(c.req.param('id')));
+	if (!a) return c.json({ error: 'No existe.' }, 404);
+	const limit = Math.min(50, Math.max(1, Number(c.req.query('limit')) || 12));
+	c.header('Cache-Control', 'private, no-store');
+	return c.json({ files: await tasks.recentArtifacts(a.id, limit) });
+});
+app.delete('/api/agents/:id/conversations/:conversation', async (c) => {
+	const a = await usableAgent(c);
+	if (!a) return c.json({ error: 'Sólo su dueño y quienes lo tienen compartido eliminan sus conversaciones.' }, 403);
+	try {
+		await conversations.remove(a.id, Number(c.req.param('conversation')));
+		return c.json({ ok: true });
 	} catch (err) {
 		return fail(c, err);
 	}

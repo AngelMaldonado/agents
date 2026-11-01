@@ -1,4 +1,4 @@
-import { useId, useMemo, useRef, useState } from 'react';
+import { useId, useMemo, useRef, useState, type ReactNode } from 'react';
 import CodeMirror from '@uiw/react-codemirror';
 import { EditorState, Prec } from '@codemirror/state';
 import { EditorView } from '@codemirror/view';
@@ -36,10 +36,22 @@ export function RoleEditor({
 	value,
 	onChange,
 	disabled,
+	label = 'Rol e instrucciones',
+	fill = false,
+	leading,
+	actions,
 }: {
 	value: string;
 	onChange: (value: string) => void;
 	disabled?: boolean;
+	/** The document's name, over the editor and for screen readers. */
+	label?: string;
+	/** Takes the height of its container (Configuración → Harness) instead of a fixed 20rem. */
+	fill?: boolean;
+	/** In place of the label, at the start of the header (Harness: «Volver», title and subtitle). */
+	leading?: ReactNode;
+	/** Before the Vim toggle, at the end of the header (Harness: «Guardar»). */
+	actions?: ReactNode;
 }) {
 	const { mode } = useTheme();
 	const [vimEnabled, setVimEnabled] = useState(true);
@@ -52,19 +64,19 @@ export function RoleEditor({
 			EditorView.lineWrapping,
 			Prec.high(EditorView.theme(theme, { dark: mode === 'dark' })),
 			EditorView.contentAttributes.of({
-				'aria-label': 'Rol e instrucciones',
+				'aria-label': label,
 				'aria-describedby': id,
 				role: 'textbox',
 				'aria-multiline': 'true',
 			}),
 			EditorState.transactionFilter.of((transaction) => (transaction.newDoc.length > 16000 ? [] : transaction)),
 		],
-		[vimEnabled, id, mode],
+		[vimEnabled, id, mode, label],
 	);
 	return (
 		<section
-			className="role-editor min-w-0 overflow-hidden rounded-lg border"
-			aria-label="Editor de rol"
+			className={`role-editor min-w-0 overflow-hidden${fill ? ' role-editor-fill' : ' rounded-lg border'}`}
+			aria-label={`Editor: ${label}`}
 			data-vim-enabled={vimEnabled}
 			onKeyDownCapture={(event) => {
 				// Radix handles Escape on document capture, before CodeMirror can exit insert mode.
@@ -78,21 +90,26 @@ export function RoleEditor({
 			}}
 		>
 			<div className="flex items-center justify-between gap-3 border-b bg-muted/40 px-3 py-2">
-				<span className="flex min-w-0 items-center gap-2 text-xs font-medium">
-					<Code2 className="size-4" aria-hidden="true" />
-					Rol e instrucciones <span className="text-muted-foreground">· Markdown</span>
-				</span>
-				<Button
-					type="button"
-					size="xs"
-					variant="outline"
-					className="aria-pressed:border-primary/60 aria-pressed:text-primary"
-					aria-pressed={vimEnabled}
-					disabled={disabled}
-					onClick={() => setVimEnabled((value) => !value)}
-				>
-					Vim
-				</Button>
+				{leading ?? (
+					<span className="flex min-w-0 items-center gap-2 text-xs font-medium">
+						<Code2 className="size-4" aria-hidden="true" />
+						{label} <span className="text-muted-foreground">· Markdown</span>
+					</span>
+				)}
+				<div className="flex shrink-0 items-center gap-2">
+					{actions}
+					<Button
+						type="button"
+						size="xs"
+						variant="outline"
+						className="aria-pressed:border-primary/60 aria-pressed:text-primary"
+						aria-pressed={vimEnabled}
+						disabled={disabled}
+						onClick={() => setVimEnabled((value) => !value)}
+					>
+						Vim
+					</Button>
+				</div>
 			</div>
 			<CodeMirror
 				onCreateEditor={(editor) => {
@@ -101,7 +118,7 @@ export function RoleEditor({
 				value={value}
 				extensions={extensions}
 				theme={mode}
-				height="20rem"
+				height={fill ? '100%' : '20rem'}
 				editable={!disabled}
 				readOnly={disabled}
 				indentWithTab={false}

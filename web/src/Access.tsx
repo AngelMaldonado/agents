@@ -4,7 +4,7 @@
 import { useEffect, useState, type ReactNode } from 'react';
 import { api, ago, type AccessKey, type AccessMcp, type AccessPair, type AccessView, type Agent } from './api';
 import { Badge } from '@/components/ui/badge';
-import { AgentPicker, FormDialog, SectionHead, TestButton } from '@/components/access-ui';
+import { AddMenu, AgentPicker, FormDialog, GrantToggle, SectionHead, TestButton } from '@/components/access-ui';
 import { Button } from '@/components/ui/button';
 import { DeleteButton, EditButton, FormActions } from '@/components/actions';
 import { Input } from '@/components/ui/input';
@@ -120,12 +120,35 @@ function PairsEditor({
 	);
 }
 
-export function KeysSection({ agents, access }: { agents: Agent[]; access: ReturnType<typeof useAccess> }) {
+/**
+ * scope: one agent's settings (its Accesos tab): a switch grants each key to it, and a new key is
+ * granted to it alone. Without scope, the person's settings: a picker of agents per key.
+ */
+export function KeysSection({
+	agents,
+	access,
+	scope,
+	children,
+}: {
+	agents: Agent[];
+	access: ReturnType<typeof useAccess>;
+	scope?: Agent;
+	children?: ReactNode;
+}) {
 	const { view, busy, act } = access;
 	const empty = { name: '', value: '', domains: '', exposeReal: false };
 	const [form, setForm] = useState(empty);
 	const [open, setOpen] = useState(false);
 	const [editing, setEditing] = useState<AccessKey | null>(null);
+	// From an agent's Accesos: only what it uses, and a switch that grants or takes each one away.
+	const keys = scope ? (view?.keys ?? []).filter((k) => k.agents.includes(scope.id)) : (view?.keys ?? []);
+	const grantKey = (k: AccessKey, on: boolean) =>
+		act(() =>
+			api(`/access/keys/${k.id}/grants`, {
+				method: 'PUT',
+				body: { agents: on ? [...k.agents, scope!.id] : k.agents.filter((a) => a !== scope!.id) },
+			}),
+		);
 	const start = (k: AccessKey | null) => {
 		setEditing(k);
 		setForm(k ? { name: k.name, value: '', domains: k.domains.join(', '), exposeReal: k.expose_real } : empty);
@@ -136,6 +159,25 @@ export function KeysSection({ agents, access }: { agents: Agent[]; access: Retur
 			<SectionHead
 				title="API Keys"
 				onAdd={() => start(null)}
+				action={
+					scope && (
+						<AddMenu
+							options={(view?.keys ?? [])
+								.filter((k) => !k.agents.includes(scope.id))
+								.map((k) => ({
+									id: k.id,
+									label: k.name,
+									detail: k.expose_real ? 'valor real' : k.domains.join(', '),
+								}))}
+							onPick={(id) => {
+								const k = view!.keys.find((x) => x.id === id)!;
+								void grantKey(k, true);
+							}}
+							onNew={() => start(null)}
+							newLabel="Nueva API Key sólo para este agente"
+						/>
+					)
+				}
 				security={
 					<>
 						El valor se guarda cifrado y no se vuelve a mostrar. El agente recibe un marcador en la variable; la
@@ -144,7 +186,11 @@ export function KeysSection({ agents, access }: { agents: Agent[]; access: Retur
 					</>
 				}
 			/>
-			<p className="muted">Tokens para las herramientas de línea de comandos de tus agentes.</p>
+			<p className="muted">
+				{scope
+					? 'Las que usa este agente: agrega una tuya o crea una sólo para él; apagarla se la quita.'
+					: 'Tokens para las herramientas de línea de comandos de tus agentes.'}
+			</p>
 			{view && !view.proxyReady && (
 				<p className="callout mb-4 text-xs">
 					Esta instancia aún no tiene el proxy de salida: las keys con dominios no llegan a los agentes.
@@ -155,14 +201,14 @@ export function KeysSection({ agents, access }: { agents: Agent[]; access: Retur
 					<TableRow>
 						<TableHead>Variable</TableHead>
 						<TableHead>Dónde se usa</TableHead>
-						<TableHead>Agentes</TableHead>
-						<TableHead>
-							<span className="sr-only">Acciones</span>
+						{!scope && <TableHead>Agentes</TableHead>}
+						<TableHead className={scope ? 'text-right' : undefined}>
+							{scope ? 'Acciones' : <span className="sr-only">Acciones</span>}
 						</TableHead>
 					</TableRow>
 				</TableHeader>
 				<TableBody>
-					{view?.keys.map((k: AccessKey) => (
+					{keys.map((k: AccessKey) => (
 						<TableRow key={k.id}>
 							<TableCell>
 								<code>{k.name}</code>
@@ -178,43 +224,64 @@ export function KeysSection({ agents, access }: { agents: Agent[]; access: Retur
 									k.domains.join(', ')
 								)}
 							</TableCell>
-							<TableCell>
-								<AgentPicker
-									agents={agents}
-									value={k.agents}
-									disabled={busy}
-									onChange={(next) =>
-										act(() => api(`/access/keys/${k.id}/grants`, { method: 'PUT', body: { agents: next } }))
-									}
-								/>
-							</TableCell>
+							{!scope && (
+								<TableCell>
+									<AgentPicker
+										agents={agents}
+										value={k.agents}
+										disabled={busy}
+										onChange={(next) =>
+											act(() => api(`/access/keys/${k.id}/grants`, { method: 'PUT', body: { agents: next } }))
+										}
+									/>
+								</TableCell>
+							)}
 							<TableCell className="text-right whitespace-nowrap">
-								<EditButton onClick={() => start(k)} />
-								<DeleteButton
-									disabled={busy}
-									onClick={() =>
-										confirm(`¿Borrar ${k.name}? Los agentes que la usan la pierden desde su siguiente tarea.`) &&
-										act(() => api(`/access/keys/${k.id}`, { method: 'DELETE' }))
-									}
-								/>
+								<div className="inline-flex items-center justify-end gap-1">
+									<EditButton onClick={() => start(k)} />
+									{/* From an agent, deleting would take it from every agent: that stays in Configuración. */}
+									{!scope && (
+										<DeleteButton
+											disabled={busy}
+											onClick={() =>
+												confirm(`¿Borrar ${k.name}? Los agentes que la usan la pierden desde su siguiente tarea.`) &&
+												act(() => api(`/access/keys/${k.id}`, { method: 'DELETE' }))
+											}
+										/>
+									)}
+									{/* Assigned here: switching it off takes it away from this agent (and from the table). */}
+									{scope && <GrantToggle on what={k.name} disabled={busy} onChange={(on) => void grantKey(k, on)} />}
+								</div>
 							</TableCell>
 						</TableRow>
 					))}
-					{view && !view.keys.length && (
+					{view && !keys.length && (
 						<TableRow>
 							<TableCell colSpan={4} className="py-8 text-center text-muted-foreground">
-								Sin API Keys guardadas.
+								{scope ? 'Este agente no usa API Keys.' : 'Sin API Keys guardadas.'}
 							</TableCell>
 						</TableRow>
 					)}
 				</TableBody>
 			</Table>
+			{children}
 			<FormDialog open={open} onOpenChange={setOpen} title={editing ? `Editar ${editing.name}` : 'Agregar una API Key'}>
 				<form
 					className="form"
 					onSubmit={async (e) => {
 						e.preventDefault();
-						if (await act(() => api('/access/keys', { body: form }))) setOpen(false);
+						const saved = await act(async () => {
+							const view = await api<AccessView>('/access/keys', { body: form });
+							// From an agent's settings, a new key is granted to that agent (and only to it).
+							const k = scope && view.keys.find((x) => x.name.toUpperCase() === form.name.trim().toUpperCase());
+							return k && !k.agents.includes(scope.id)
+								? api<AccessView>(`/access/keys/${k.id}/grants`, {
+										method: 'PUT',
+										body: { agents: [...k.agents, scope.id] },
+									})
+								: view;
+						});
+						if (saved) setOpen(false);
 					}}
 				>
 					<div className="field-list">
@@ -288,7 +355,20 @@ export function KeysSection({ agents, access }: { agents: Agent[]; access: Retur
 	);
 }
 
-export function McpSection({ agents, access }: { agents: Agent[]; access: ReturnType<typeof useAccess> }) {
+/** scope: as in KeysSection; onLogin signs the scoped agent in to an OAuth server it was granted. */
+export function McpSection({
+	agents,
+	access,
+	scope,
+	onLogin,
+	children,
+}: {
+	agents: Agent[];
+	access: ReturnType<typeof useAccess>;
+	scope?: Agent;
+	onLogin?: (server: string) => void;
+	children?: ReactNode;
+}) {
 	const { view, busy, act } = access;
 	const empty = {
 		name: '',
@@ -306,6 +386,14 @@ export function McpSection({ agents, access }: { agents: Agent[]; access: Return
 	const [form, setForm] = useState(empty);
 	const [open, setOpen] = useState(false);
 	const [editing, setEditing] = useState<AccessMcp | null>(null);
+	const servers = scope ? (view?.mcp ?? []).filter((m) => m.agents.includes(scope.id)) : (view?.mcp ?? []);
+	const grantMcp = (m: AccessMcp, on: boolean) =>
+		act(() =>
+			api(`/access/mcp/${m.id}/grants`, {
+				method: 'PUT',
+				body: { agents: on ? [...m.agents, scope!.id] : m.agents.filter((a) => a !== scope!.id) },
+			}),
+		);
 	const start = (m: AccessMcp | null) => {
 		setEditing(m);
 		setForm(
@@ -340,6 +428,27 @@ export function McpSection({ agents, access }: { agents: Agent[]; access: Return
 			<SectionHead
 				title="Servidores MCP"
 				onAdd={() => start(null)}
+				action={
+					scope && (
+						<AddMenu
+							options={(view?.mcp ?? [])
+								.filter((m) => !m.agents.includes(scope.id))
+								.map((m) => ({
+									id: m.id,
+									label: m.name,
+									detail: m.transport === 'http' ? (m.url ?? '') : `${m.command} ${m.args.join(' ')}`,
+								}))}
+							onPick={(id) =>
+								void grantMcp(
+									view!.mcp.find((x) => x.id === id)!,
+									true,
+								)
+							}
+							onNew={() => start(null)}
+							newLabel="Nuevo servidor sólo para este agente"
+						/>
+					)
+				}
 				security={
 					<>
 						Sus encabezados y variables secretos se guardan cifrados y llegan al agente como marcador que la plataforma
@@ -348,19 +457,23 @@ export function McpSection({ agents, access }: { agents: Agent[]; access: Return
 					</>
 				}
 			/>
-			<p className="muted">Herramientas externas para tus agentes; aparecen en su siguiente tarea.</p>
+			<p className="muted">
+				{scope
+					? 'Los que usa este agente: agrega uno tuyo o crea uno sólo para él; apagarlo se lo quita. Aparecen en su siguiente tarea.'
+					: 'Herramientas externas para tus agentes; aparecen en su siguiente tarea.'}
+			</p>
 			<Table>
 				<TableHeader>
 					<TableRow>
 						<TableHead>Servidor</TableHead>
-						<TableHead>Agentes</TableHead>
-						<TableHead>
-							<span className="sr-only">Acciones</span>
+						{!scope && <TableHead>Agentes</TableHead>}
+						<TableHead className={scope ? 'text-right' : undefined}>
+							{scope ? 'Acciones' : <span className="sr-only">Acciones</span>}
 						</TableHead>
 					</TableRow>
 				</TableHeader>
 				<TableBody>
-					{view?.mcp.map((m) => (
+					{servers.map((m) => (
 						<TableRow key={m.id}>
 							<TableCell className="max-w-80 whitespace-normal">
 								<div className="flex flex-wrap items-center gap-2">
@@ -373,38 +486,52 @@ export function McpSection({ agents, access }: { agents: Agent[]; access: Return
 								</div>
 								{m.description && <div className="muted small truncate">{m.description}</div>}
 							</TableCell>
-							<TableCell>
-								<AgentPicker
-									agents={agents}
-									value={m.agents}
-									disabled={busy}
-									onChange={(next) =>
-										act(() => api(`/access/mcp/${m.id}/grants`, { method: 'PUT', body: { agents: next } }))
-									}
-								/>
-							</TableCell>
+							{!scope && (
+								<TableCell>
+									<AgentPicker
+										agents={agents}
+										value={m.agents}
+										disabled={busy}
+										onChange={(next) =>
+											act(() => api(`/access/mcp/${m.id}/grants`, { method: 'PUT', body: { agents: next } }))
+										}
+									/>
+								</TableCell>
+							)}
 							<TableCell className="text-right whitespace-nowrap">
-								{m.transport === 'http' && !m.oauth && <TestButton run={() => test(m)} />}
-								<EditButton onClick={() => start(m)} />
-								<DeleteButton
-									disabled={busy}
-									onClick={() =>
-										confirm(`¿Borrar ${m.name}? Sus agentes lo pierden y se cierra su sesión en él.`) &&
-										act(() => api(`/access/mcp/${m.id}`, { method: 'DELETE' }))
-									}
-								/>
+								<div className="inline-flex items-center justify-end gap-1">
+									{scope && onLogin && m.oauth && (
+										<Button size="sm" variant="outline" disabled={busy} onClick={() => onLogin(m.name)}>
+											Iniciar sesión
+										</Button>
+									)}
+									{m.transport === 'http' && !m.oauth && <TestButton run={() => test(m)} />}
+									<EditButton onClick={() => start(m)} />
+									{!scope && (
+										<DeleteButton
+											disabled={busy}
+											onClick={() =>
+												confirm(`¿Borrar ${m.name}? Sus agentes lo pierden y se cierra su sesión en él.`) &&
+												act(() => api(`/access/mcp/${m.id}`, { method: 'DELETE' }))
+											}
+										/>
+									)}
+									{/* Assigned here: switching it off takes it away from this agent (and from the table). */}
+									{scope && <GrantToggle on what={m.name} disabled={busy} onChange={(on) => void grantMcp(m, on)} />}
+								</div>
 							</TableCell>
 						</TableRow>
 					))}
-					{view && !view.mcp.length && (
+					{view && !servers.length && (
 						<TableRow>
 							<TableCell colSpan={3} className="py-8 text-center text-muted-foreground">
-								Sin servidores MCP guardados.
+								{scope ? 'Este agente no usa servidores MCP tuyos.' : 'Sin servidores MCP guardados.'}
 							</TableCell>
 						</TableRow>
 					)}
 				</TableBody>
 			</Table>
+			{children}
 			<FormDialog
 				open={open}
 				onOpenChange={setOpen}
@@ -427,7 +554,18 @@ export function McpSection({ agents, access }: { agents: Agent[]; access: Return
 							oauth: form.oauth,
 							exposeReal: form.exposeReal,
 						};
-						if (await act(() => api('/access/mcp', { body }))) setOpen(false);
+						const saved = await act(async () => {
+							const view = await api<AccessView>('/access/mcp', { body });
+							// From an agent's settings, a new server is granted to that agent (and only to it).
+							const m = scope && view.mcp.find((x) => x.name.toLowerCase() === body.name.toLowerCase());
+							return m && !m.agents.includes(scope.id)
+								? api<AccessView>(`/access/mcp/${m.id}/grants`, {
+										method: 'PUT',
+										body: { agents: [...m.agents, scope.id] },
+									})
+								: view;
+						});
+						if (saved) setOpen(false);
 					}}
 				>
 					<div className="field-list">

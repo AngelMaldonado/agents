@@ -170,6 +170,15 @@ export function artifacts(taskId: number) {
 	);
 }
 
+/** An agent's latest outputs across its runs (initialization included: it is the agent's work too). */
+export function recentArtifacts(agentId: number, limit: number) {
+	return rows<{ id: number; name: string; mime: string; size: number; run_id: number; created_at: number }>(
+		`select f.id, f.name, f.mime, f.size, f.run_id, f.created_at from files f join runs r on r.id = f.run_id
+		 where r.agent_id = $1 and f.direction = 'out' order by f.id desc limit $2`,
+		[agentId, limit],
+	);
+}
+
 export async function file(taskId: number, name: string) {
 	const f = await row<{ path: string; mime: string }>(
 		"select path, mime from files where run_id = $1 and direction = 'out' and name = $2",

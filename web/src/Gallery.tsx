@@ -1,12 +1,12 @@
-import { useEffect, useState } from 'react';
 import { ArrowUpRight, Bot, Plus } from 'lucide-react';
-import { api, isLive, ago, type Agent, type Person, type PublicSettings } from './api';
+import { isLive, ago, type Agent, type Person, type PublicSettings } from './api';
 import { Character, STATE_LABEL, type CharState } from './Character';
 import { Browser } from './Browser';
 import { useTick } from './live';
 import { StatusIcon, type CardStatus } from '@/components/status-icon';
 import { PeopleStack } from '@/components/people-stack';
 import { Ticker } from '@/components/ticker';
+import { crewOf, usePeople, type Someone } from '@/lib/use-people';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { Card } from '@/components/ui/card';
@@ -96,19 +96,6 @@ export function Gallery({
 	);
 }
 
-type Someone = Pick<Person, 'id' | 'name'>;
-
-/** Everyone's names, to draw who works with each agent. Without it the cards just show no faces. */
-function usePeople() {
-	const [people, setPeople] = useState<Map<number, Someone>>(new Map());
-	useEffect(() => {
-		api<{ people: Someone[] }>('/people')
-			.then((r) => setPeople(new Map(r.people.map((p) => [p.id, p]))))
-			.catch(() => {});
-	}, []);
-	return people;
-}
-
 /** The card's state: the run's, or the setup's while a new agent is still initializing. */
 function cardStatus(agent: Agent, setup: boolean): { status: CardStatus; label: string } {
 	const t = agent.task;
@@ -138,7 +125,7 @@ function AgentCard({
 	const setup = !!(!showOwner && agent.setup_design_id && (!t || (t.kind === 'initialize' && t.status !== 'done')));
 	const { status, label } = cardStatus(agent, setup);
 	const work = t ? `${t.id}:${t.prompt}` : 'none'; // the footer's lines change with the run
-	const crew = [agent.person_id, ...(agent.shares ?? [])].flatMap((id) => people.get(id) ?? []);
+	const crew = crewOf(agent, people);
 	return (
 		<Card className={`agent-card relative gap-0 overflow-hidden rounded-card p-0 shadow-none state-${state}`}>
 			<a

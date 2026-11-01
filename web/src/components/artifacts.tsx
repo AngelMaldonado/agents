@@ -143,9 +143,7 @@ export function ArtifactDrawer({
 				}}
 				onCloseAutoFocus={(e) => {
 					e.preventDefault();
-					const element = opener.current?.isConnected
-						? opener.current
-						: document.querySelector<HTMLElement>('.agent-view-navigation a[aria-current="page"]');
+					const element = opener.current?.isConnected ? opener.current : document.getElementById('main-content');
 					element?.focus({ preventScroll: true });
 				}}
 			>

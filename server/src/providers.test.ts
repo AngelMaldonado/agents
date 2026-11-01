@@ -216,7 +216,7 @@ run(
 		);
 		expect(duplicate.duplicate).toBe(true);
 		expect(duplicate.message_id).toBe(ordinary.message_id);
-		expect(await conversations(a.id)).toEqual([{ ...first[0], runs: 1 }]);
+		expect(await conversations(a.id)).toEqual([{ ...first[0], runs: 1, last_at: expect.any(Number) }]);
 	},
 );
 
