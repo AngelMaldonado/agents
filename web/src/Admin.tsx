@@ -247,21 +247,38 @@ function Panel({ onChanged }: { onChanged: () => void }) {
 			{FEATURES.whatsapp && <WhatsAppAdmin />}
 			<section className="panel">
 				<h2>Límites</h2>
-				<div className="settings-grid">
-					<label>Computadoras a la vez, todos juntos (1–60){num('maxConcurrent')}</label>
-					<label>Minutos máximos por tarea{num('maxMinutes')}</label>
-					<label>Tope de costo por tarea (US$){num('maxCostUsd')}</label>
-					<label>Minutos que espera un agente atascado{num('blockedWaitMinutes')}</label>
-					<label>
-						Imagen del sandbox
+				<div className="field-list">
+					<label className="field">
+						<span>Computadoras a la vez, todos juntos (1–60)</span>
+						{num('maxConcurrent')}
+					</label>
+					<label className="field">
+						<span>Minutos máximos por tarea</span>
+						{num('maxMinutes')}
+					</label>
+					<label className="field">
+						<span>Tope de costo por tarea (US$)</span>
+						{num('maxCostUsd')}
+					</label>
+					<label className="field">
+						<span>Minutos que espera un agente atascado</span>
+						{num('blockedWaitMinutes')}
+					</label>
+					<label className="field">
+						<span>Imagen del sandbox</span>
 						<Input value={draft.sandboxImage} onChange={(e) => setDraft({ ...draft, sandboxImage: e.target.value })} />
 					</label>
 				</div>
-				<label>
-					Catálogo de modelos (uno por línea: <code>proveedor/modelo | nombre</code>)
+				<label className="field mt-3">
+					<span>
+						Catálogo de modelos{' '}
+						<span className="muted small block font-normal">
+							uno por línea: <code>proveedor/modelo | nombre</code>
+						</span>
+					</span>
 					<Textarea rows={6} value={models} onChange={(e) => setModels(e.target.value)} className="mono" />
 				</label>
-				<div className="row wrap mt-4">
+				<div className="field-actions row wrap mt-4">
 					<Button
 						onClick={async () => {
 							const list = models

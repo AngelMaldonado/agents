@@ -8,6 +8,7 @@ import { migrate, row } from './db';
 import { startDbos } from './dbos';
 import * as people from './people';
 import * as agents from './agents';
+import { search } from './search';
 import * as designs from './designs';
 import * as tasks from './tasks';
 import * as conversations from './conversations';
@@ -240,7 +241,8 @@ app.post('/api/invite/:code', async (c) => {
 	return c.json({ ok: true });
 });
 
-app.post('/api/logout', (c) => {
+app.post('/api/logout', async (c) => {
+	await people.endSession(getCookie(c, people.COOKIE));
 	deleteCookie(c, people.COOKIE, { path: '/' });
 	return c.json({ ok: true });
 });
@@ -314,6 +316,12 @@ app.delete('/api/keys/:provider', async (c) => {
 app.get('/api/agents', async (c) =>
 	c.json({ agents: (await agents.visible(c.get('me'))).map((a) => agents.forViewer(a, c.get('me'))) }),
 );
+
+// The sidebar's search over the person's own list: agents' conversations, what was said and answered.
+app.get('/api/search', async (c) => {
+	c.header('Cache-Control', 'private, no-store');
+	return c.json({ hits: await search(c.get('me'), c.req.query('q')) });
+});
 
 // Creation is now an explicit approval of a stored contract, not a form bypass.
 app.post('/api/agents', (c) => c.json({ error: 'Define y aprueba el contrato en Nuevo agente.' }, 409));

@@ -54,48 +54,21 @@
 }
 
 @layer components {
-	/* React adaptation of Nova's Sidebar.Provider + variant=inset shell. */
+	/* shadcn's SidebarProvider + Sidebar variant=inset (app-shell.tsx), at a fixed viewport height:
+	   the page scrolls inside .cuby-main, so the agent view can split the height it gets. */
 	.cuby-shell {
-		--sidebar-width: 18rem;
 		--header-height: 3rem;
-		@apply flex h-svh min-h-0 w-full overflow-hidden bg-sidebar;
-	}
-	/* Keep the sidebar mounted: display:none would skip the closing transition. */
-	.cuby-sidebar {
-		width: var(--sidebar-width);
-		transition: width 240ms cubic-bezier(0.2, 0, 0, 1);
-	}
-	.cuby-sidebar[data-state='closed'] {
-		width: 0;
-	}
-	.cuby-sidebar > aside {
-		transition:
-			transform 240ms cubic-bezier(0.2, 0, 0, 1),
-			opacity 180ms ease-out;
-	}
-	.cuby-sidebar[data-state='closed'] > aside {
-		transform: translateX(-1rem);
-		opacity: 0;
+		@apply h-svh min-h-0 overflow-hidden;
 	}
 	.cuby-inset {
-		@apply m-0 flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden bg-background md:m-2 md:ml-0 md:rounded-xl md:shadow-md md:ring-1 md:ring-sidebar-border/80;
-		transition: margin-left 240ms cubic-bezier(0.2, 0, 0, 1);
+		@apply min-h-0 min-w-0 overflow-hidden md:shadow-md md:ring-1 md:ring-sidebar-border/80;
 	}
-	.cuby-inset main {
+	.cuby-main {
 		container-type: inline-size;
 	}
 	.cuby-header {
 		height: var(--header-height);
-		@apply flex shrink-0 items-center gap-2 border-b border-shell-header-border bg-shell-header px-4 lg:gap-3 lg:px-6;
-	}
-	.cuby-nav-link {
-		@apply flex h-control-lg items-center gap-2 rounded-md px-2.5 text-xs text-sidebar-foreground outline-none transition-colors hover:bg-sidebar-accent hover:text-sidebar-accent-foreground focus-visible:ring-2 focus-visible:ring-sidebar-ring;
-	}
-	.cuby-nav-link[aria-current='page'] {
-		@apply bg-sidebar-accent font-medium text-sidebar-accent-foreground;
-	}
-	.cuby-profile {
-		@apply flex w-full min-w-0 items-center gap-2 rounded-lg p-2 text-left text-sidebar-foreground outline-none transition-colors hover:bg-sidebar-accent focus-visible:ring-2 focus-visible:ring-sidebar-ring data-[state=open]:bg-sidebar-accent;
+		@apply flex shrink-0 items-center gap-2 border-b border-shell-header-border bg-shell-header px-4 md:rounded-t-xl lg:gap-3 lg:px-6;
 	}
 
 	.page {
@@ -515,6 +488,25 @@
 	.agent-settings-scroll [data-slot='scroll-area-viewport'] > div {
 		display: block !important;
 	}
+	/* Configuración (app-settings.tsx): the old pages, as sections. Their own padding and width
+	   go (the panel has them); their title reads as the section's, not a page's. */
+	.app-settings .page {
+		@apply max-w-none p-0;
+	}
+	.app-settings .page-head h1,
+	.app-settings .page > h1 {
+		@apply text-lg;
+	}
+	.app-settings .agent-settings-nav {
+		@apply w-52;
+	}
+	/* No cards inside Configuración: plain sections divided by a rule. */
+	.app-settings .panel {
+		@apply mb-0 rounded-none border-0 bg-transparent p-0 lg:p-0;
+	}
+	.app-settings .panel + .panel {
+		@apply mt-6 border-t pt-6;
+	}
 	.automejora-action:hover svg,
 	.automejora-action:focus-visible svg {
 		animation: brain-activate 550ms ease-out;
@@ -696,9 +688,28 @@
 		@apply mb-3 flex min-w-0 flex-col gap-2;
 	}
 
+	/* On :root, not the shell: dialogs render in a portal outside it. */
+	:root {
+		--field-label: 12rem;
+	}
+	/* Settings forms: the label on the left, its field on the right (stacked on a phone). The
+	   key row (KeyRowForm) shares the label column, so every field lines up. */
+	.field-list {
+		@apply grid gap-3;
+	}
+	label.field {
+		@apply grid items-center gap-x-3 gap-y-1.5;
+		grid-template-columns: var(--field-label) minmax(0, 1fr);
+	}
+	label.field:has(textarea) {
+		@apply items-start;
+	}
+	.field-actions {
+		padding-left: calc(var(--field-label) + 0.75rem);
+	}
 	.key-row {
 		display: grid;
-		grid-template-columns: 11.25rem minmax(0, 1fr) auto auto;
+		grid-template-columns: var(--field-label) minmax(0, 1fr) auto auto;
 		gap: 0.75rem;
 		align-items: center;
 		padding: 1rem 0;
@@ -1182,6 +1193,12 @@
 	.agent-settings-content {
 		padding: 0.875rem;
 	}
+	label.field {
+		grid-template-columns: minmax(0, 1fr);
+	}
+	.field-actions {
+		padding-left: 0;
+	}
 	.key-row {
 		grid-template-columns: minmax(0, 1fr) auto;
 	}
@@ -1206,13 +1223,37 @@
 		animation-duration: 0.01ms !important;
 		transition-duration: 0.01ms !important;
 	}
-	.cuby-sidebar,
-	.cuby-sidebar > aside,
-	.cuby-inset,
+	[data-slot='sidebar-gap'],
+	[data-slot='sidebar-container'],
+	[data-slot='sidebar-inset'],
 	.work-sidebar-frame,
 	.work-sidebar,
 	.work-chat-backdrop,
 	.work-split > [data-panel] {
 		transition: none !important;
 	}
+}
+
+/* Resizing the sidebar (sidebar-resizer.tsx), as in Nova: the affordance is the main panel's own
+   left border, lit. Drawn over the panel with its radius, it bends round the rounded corners and
+   thins out along them, like the border it is; a straight line beside it would cut across them.
+   Dragging: brand colour, no width transition (the edge follows the pointer), no text selected. */
+html[data-sidebar-resize] [data-slot='sidebar-inset']::before {
+	content: '';
+	position: absolute;
+	inset: 0;
+	z-index: 50;
+	border-left: 2px solid color-mix(in oklab, var(--primary) 40%, var(--sidebar-border));
+	border-radius: inherit;
+	pointer-events: none;
+}
+html[data-sidebar-resize='drag'] [data-slot='sidebar-inset']::before {
+	border-left-color: var(--primary);
+}
+html[data-sidebar-resize='drag'] [data-slot='sidebar-gap'],
+html[data-sidebar-resize='drag'] [data-slot='sidebar-container'] {
+	transition: none;
+}
+html[data-sidebar-resize='drag'] {
+	user-select: none;
 }

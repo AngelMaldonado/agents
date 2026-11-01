@@ -32,16 +32,17 @@ export async function defaultConversation(agentId: number, c: Exec) {
 	}
 	return conv!;
 }
-const title = `coalesce(c.title,case when c.is_default then 'Principal' else (select left(m.text,60) from messages m left join runs r on r.id=m.run_id where m.conversation_id=c.id and (r.kind is null or r.kind<>'initialize') order by m.id limit 1) end,'Nueva conversación')`;
+/** A conversation's title, for a query that has it as `c`. */
+export const titleSql = `coalesce(c.title,case when c.is_default then 'Principal' else (select left(m.text,60) from messages m left join runs r on r.id=m.run_id where m.conversation_id=c.id and (r.kind is null or r.kind<>'initialize') order by m.id limit 1) end,'Nueva conversación')`;
 export function list(agentId: number) {
 	return rows<Conversation>(
-		`select c.id,c.agent_id,${title} as title,c.started_at,c.archived_at,c.is_default,(select count(*) from runs r where r.conversation_id=c.id) as runs from conversations c where c.agent_id=$1 order by c.is_default desc,c.id desc`,
+		`select c.id,c.agent_id,${titleSql} as title,c.started_at,c.archived_at,c.is_default,(select count(*) from runs r where r.conversation_id=c.id) as runs from conversations c where c.agent_id=$1 order by c.is_default desc,c.id desc`,
 		[agentId],
 	);
 }
 export function get(agentId: number, id: number, on?: Exec) {
 	return row<Conversation>(
-		`select c.id,c.agent_id,${title} as title,c.started_at,c.archived_at,c.is_default,(select count(*) from runs r where r.conversation_id=c.id) as runs from conversations c where c.agent_id=$1 and c.id=$2`,
+		`select c.id,c.agent_id,${titleSql} as title,c.started_at,c.archived_at,c.is_default,(select count(*) from runs r where r.conversation_id=c.id) as runs from conversations c where c.agent_id=$1 and c.id=$2`,
 		[agentId, id],
 		on,
 	);

@@ -61,6 +61,17 @@ export type Agent = {
 	setup_design_id?: string | null;
 	harness?: Harness;
 	shares?: number[]; // the people it is shared with (they run tasks; configuration is the owner's)
+	managed?: boolean; // made from the admin's catalog (not built yet: always false for now)
+};
+/** GET /api/search: a match in what someone said to an agent, or what it answered. */
+export type SearchHit = {
+	kind: 'message' | 'answer';
+	agent_id: number;
+	conversation_id: number;
+	conversation_title: string;
+	run_id: number | null;
+	snippet: string;
+	at: number;
 };
 export type Contract = { name: string; prompt: string };
 export type AgentTool = { id: string; name: string; description: string };

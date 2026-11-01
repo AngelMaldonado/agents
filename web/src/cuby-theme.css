@@ -7,7 +7,7 @@
 :root {
 	color-scheme: light;
 	--radius: 0.625rem;
-	--ui-scale: 1.125;
+	--ui-scale: 1;
 	--background: #fafbfc;
 	--foreground: #141a24;
 	--card: #ffffff;

@@ -122,6 +122,11 @@ export async function whoIs(token: string | undefined): Promise<Person | null> {
 	return { ...person, admin: (admin_until ?? 0) > Date.now() };
 }
 
+/** Logging out: the session stops working here and anywhere its cookie was copied. */
+export async function endSession(token: string | undefined) {
+	if (token) await exec('delete from sessions where token_hash = $1', [hash(token)]);
+}
+
 export function pinIsSet() {
 	return Boolean(process.env.AGENTS_ADMIN_PIN);
 }

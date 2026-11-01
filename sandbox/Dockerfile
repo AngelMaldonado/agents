@@ -1,5 +1,5 @@
 # A task's mini-computer: Linux, a shell, Chromium driven by agent-browser, and pi in RPC mode.
-# Built on reko-3: just sandbox build
+# Dev (arm64, reko-2): just sandbox build. Prod (amd64) is built on reko-3 by the release.
 FROM node:24-bookworm-slim
 
 ENV DEBIAN_FRONTEND=noninteractive
@@ -19,11 +19,21 @@ RUN npm install -g --ignore-scripts @earendil-works/pi-coding-agent@${PI_VERSION
     && npm install -g agent-browser@${AGENT_BROWSER_VERSION} \
     && npm cache clean --force
 
-# Chrome for agent-browser, readable by the unprivileged user.
-RUN HOME=/tmp/abhome agent-browser install \
-    && mv /tmp/abhome/.agent-browser/browsers /opt/browsers && rm -rf /tmp/abhome \
-    && chmod -R a+rX /opt/browsers \
-    && ln -s "$(find /opt/browsers -name chrome -type f -perm -u+x | head -1)" /usr/local/bin/agents-chrome
+# Chrome for agent-browser, readable by the unprivileged user. Chrome for Testing has no Linux
+# arm64 build, so the arm64 image (dev on reko-2) uses Debian's Chromium; amd64 (prod) keeps Chrome.
+RUN set -eu; \
+    case "$(dpkg --print-architecture)" in \
+      amd64) \
+        HOME=/tmp/abhome agent-browser install; \
+        mv /tmp/abhome/.agent-browser/browsers /opt/browsers && rm -rf /tmp/abhome; \
+        chmod -R a+rX /opt/browsers; \
+        ln -s "$(find /opt/browsers -name chrome -type f -perm -u+x | head -1)" /usr/local/bin/agents-chrome ;; \
+      arm64) \
+        apt-get update && apt-get install -y --no-install-recommends chromium && rm -rf /var/lib/apt/lists/*; \
+        ln -s /usr/bin/chromium /usr/local/bin/agents-chrome ;; \
+      *) echo 'Unsupported browser architecture' >&2; exit 1 ;; \
+    esac; \
+    test -x /usr/local/bin/agents-chrome
 
 RUN useradd -m -u 1001 -s /bin/bash agent
 # The agent's state volume mounts here; an empty volume takes this owner on its first mount.

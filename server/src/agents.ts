@@ -43,7 +43,9 @@ export async function visible(viewer: Person) {
 	const byAgent = new Map(last.map((t) => [t.agent_id, t]));
 	return list.map((a) => {
 		const t = byAgent.get(a.id);
-		return { ...a, task: t ? publicTask(t) : null };
+		// managed: made from the admin's catalog. The catalog does not exist yet (Bubble, agents #22),
+		// so no agent is managed; the sidebar already shows the mark.
+		return { ...a, managed: false, task: t ? publicTask(t) : null };
 	});
 }
 

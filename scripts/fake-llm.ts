@@ -180,11 +180,13 @@ function sse(events: unknown[]) {
 	return events.map((e: any) => `event: ${e.type}\ndata: ${JSON.stringify(e)}\n\n`).join('');
 }
 
+// `just dev` runs it next to the real CLIProxyAPI (which keeps 8317), on FAKE_LLM_PORT.
+const PORT = Number(process.env.FAKE_LLM_PORT ?? 8317);
 let seq = 0;
 Bun.serve({
-	port: 8317,
+	port: PORT,
 	async fetch(req) {
-		// Also plays a person's own CLIProxyAPI in Ajustes: URL http://fake-llm:8317, key fake-proxy-key.
+		// Also plays a person's own CLIProxyAPI in Ajustes: URL http://127.0.0.1:8318 in `just dev`, key fake-proxy-key.
 		if (req.url.endsWith('/v1/models')) {
 			if (req.headers.get('authorization') !== 'Bearer fake-proxy-key')
 				return Response.json({ error: 'bad key' }, { status: 401 });
@@ -272,4 +274,4 @@ Bun.serve({
 		return new Response(sse(ev), { headers: { 'content-type': 'text/event-stream' } });
 	},
 });
-console.log('fake LLM (OpenAI Responses) on :8317');
+console.log(`fake LLM (OpenAI Responses) on :${PORT}`);

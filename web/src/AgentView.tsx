@@ -43,6 +43,7 @@ import { Button } from '@/components/ui/button';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { WorkChat } from '@/components/work-chat';
 import { useWorkConversations } from '@/lib/use-work-conversations';
+import { onConversationRequest, pendingConversation, takeConversation } from '@/lib/conversation-request';
 import { ArtifactCards, ArtifactDrawer, ArtifactMarkdown, type ArtifactTarget } from '@/components/artifacts';
 
 import {
@@ -337,6 +338,19 @@ export function AgentView({
 		await conversationState.archive(id, archived);
 		focusConversation();
 	};
+	// A search result asked for one of this agent's conversations: open it (a closed tab reopens,
+	// like picking it from Recientes). Waits for the list; the request is consumed once applied.
+	const [requested, setRequested] = useState(() => pendingConversation(agent.id));
+	useEffect(() => onConversationRequest((r) => r.agentId === agent.id && setRequested(r)), [agent.id]);
+	useEffect(() => {
+		if (!requested || !conversationsLoaded || improving) return;
+		takeConversation(requested);
+		setRequested(null);
+		const c = conversations.find((c) => c.id === requested.conversationId);
+		if (!c) return;
+		setChatOpen(true); // on a narrow canvas the chat is an overlay that starts closed
+		void (canUse && c.archived_at ? archiveConversation(c.id, false) : selectConversation(c.id));
+	}, [requested, conversationsLoaded, improving]);
 	const refreshConversation = async () => {
 		await conversationState.refresh();
 		setRefresh((v) => v + 1);

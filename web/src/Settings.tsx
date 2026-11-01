@@ -1,6 +1,6 @@
 // Each person's own: provider keys (write-only) and site logins for their agents (write-only).
 import { useEffect, useState } from 'react';
-import { api, ago, type Agent, type Credential, type Person } from './api';
+import { api, ago, type Agent, type Credential } from './api';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
@@ -9,20 +9,43 @@ type KeyRow = { provider: 'openai'; last4: string; updated_at: number };
 type ProxyRow = { url: string; last4: string; updated_at: number };
 type Check = { total: number; catalog: { id: string; label: string; served: boolean }[] };
 
-export function Settings({ me, agents }: { me: Person; agents: Agent[] }) {
-	const mine = agents.filter((a) => a.person_id === me.id);
+/** Configuración → GPT: the person's own CLIProxyAPI, or their OpenAI key. Secrets are stored encrypted. */
+export function ProviderSettings() {
 	return (
-		<div className="page">
-			<div className="page-head">
-				<div>
-					<h1>Ajustes</h1>
-					<p className="muted">Credenciales y accesos de {me.name}. Los secretos se guardan cifrados.</p>
-				</div>
-			</div>
+		<>
 			<Proxy />
 			<Keys />
-			<Vault agents={mine} />
-		</div>
+		</>
+	);
+}
+
+/**
+ * Configuración → Accesos, in three clear kinds: logins for web pages (the person's vault, granted
+ * to agents), MCP servers, and API keys for CLI tools. The last two are still each agent's own
+ * (its harness and its secrets); making them the person's, granted like the vault, is Bubble
+ * agents #24.
+ */
+export function Accesses({ agents }: { agents: Agent[] }) {
+	return (
+		<>
+			<Vault agents={agents} />
+			<section className="panel">
+				<h2>Servidores MCP</h2>
+				<p className="muted">
+					Herramientas externas que un agente usa por MCP (tickets, repositorios, documentos…). Por ahora cada agente
+					tiene los suyos: se agregan en su Automejora y se inicia sesión en su Configuración → Herramientas.
+					Registrarlos aquí una vez y concederlos a tus agentes, como los accesos a sitios, viene después.
+				</p>
+			</section>
+			<section className="panel">
+				<h2>API Keys</h2>
+				<p className="muted">
+					Tokens para las herramientas de línea de comandos de un agente (por ejemplo <code>GITHUB_TOKEN</code>). Por
+					ahora son de cada agente: se guardan en su Configuración → Herramientas y le llegan como variables de entorno.
+					Guardarlas aquí una vez y concederlas a tus agentes viene después.
+				</p>
+			</section>
+		</>
 	);
 }
 
@@ -69,13 +92,13 @@ function Proxy() {
 					});
 				}}
 			>
-				<div className="grid items-end gap-4 xl:grid-cols-[minmax(0,1.3fr)_minmax(0,1fr)_auto]">
-					<label>
-						URL del proxy
+				<div className="field-list">
+					<label className="field">
+						<span>URL del proxy</span>
 						<Input value={url} onChange={(e) => setUrl(e.target.value)} placeholder="https://proxy.ejemplo.com" />
 					</label>
-					<label>
-						API key del proxy
+					<label className="field">
+						<span>API key del proxy</span>
 						<Input
 							type="password"
 							value={key}
@@ -84,7 +107,7 @@ function Proxy() {
 							autoComplete="off"
 						/>
 					</label>
-					<div className="row wrap">
+					<div className="field-actions row wrap">
 						<Button disabled={busy || !url.trim() || !key.trim()}>
 							{busy ? 'Probando…' : proxy ? 'Reemplazar' : 'Guardar'}
 						</Button>
@@ -251,8 +274,9 @@ function Vault({ agents }: { agents: Agent[] }) {
 		<section className="panel">
 			<h2>Accesos a sitios</h2>
 			<p className="muted">
-				El agente conoce sólo el nombre: <code>agents-login nombre</code> llena el formulario sin mostrar el secreto al
-				modelo. Sólo los agentes autorizados pueden usar el acceso, y sólo en su dominio.
+				Usuarios y contraseñas de páginas web. El agente conoce sólo el nombre: <code>agents-login nombre</code> llena
+				el formulario sin mostrar el secreto al modelo. Sólo los agentes autorizados pueden usar el acceso, y sólo en su
+				dominio.
 			</p>
 			<Table className="vault">
 				<TableHeader>
@@ -318,33 +342,33 @@ function Vault({ agents }: { agents: Agent[] }) {
 				}}
 			>
 				<h3 className="!mt-0 !mb-0">Agregar o reemplazar un acceso</h3>
-				<div className="grid gap-4 md:grid-cols-2 2xl:grid-cols-4">
-					<label>
-						Nombre del acceso
+				<div className="field-list">
+					<label className="field">
+						<span>Nombre del acceso</span>
 						<Input
 							placeholder="p. ej. proveedor"
 							value={form.name}
 							onChange={(e) => setForm({ ...form, name: e.target.value })}
 						/>
 					</label>
-					<label>
-						URL de inicio de sesión
+					<label className="field">
+						<span>URL de inicio de sesión</span>
 						<Input
 							placeholder="https://sitio.com/login"
 							value={form.loginUrl}
 							onChange={(e) => setForm({ ...form, loginUrl: e.target.value })}
 						/>
 					</label>
-					<label>
-						Usuario
+					<label className="field">
+						<span>Usuario</span>
 						<Input
 							value={form.username}
 							onChange={(e) => setForm({ ...form, username: e.target.value })}
 							autoComplete="off"
 						/>
 					</label>
-					<label>
-						Contraseña
+					<label className="field">
+						<span>Contraseña</span>
 						<Input
 							type="password"
 							value={form.password}
@@ -353,7 +377,7 @@ function Vault({ agents }: { agents: Agent[] }) {
 						/>
 					</label>
 				</div>
-				<div>
+				<div className="field-actions">
 					<Button>Guardar acceso</Button>
 				</div>
 				{error && (

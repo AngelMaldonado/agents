@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Egress check for the sandbox network, run inside a container on it (just sandbox egress).
+# Egress check for the sandbox network, run inside a container on it (the deploy scripts run it on the production sandbox network).
 # The rule itself lives in ~/dev/work/reko-3: docker_egress_lock_interfaces + firewall_deny_interfaces.
 # The LAN and tailnet addresses are reko-3's own.
 set -u
