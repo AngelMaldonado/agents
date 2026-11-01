@@ -4,6 +4,7 @@ import { useEffect, useRef, useState } from 'react';
 import { FEATURES } from '../../sandbox/features';
 import { api, ago } from './api';
 import { Button } from '@/components/ui/button';
+import { DeleteButton } from '@/components/actions';
 import { Input } from '@/components/ui/input';
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
 
@@ -182,16 +183,14 @@ function WhatsApp({
 							<input type="checkbox" checked={c.notify} onChange={(e) => edit(i, { notify: e.target.checked })} />{' '}
 							Avisos
 						</label>
-						<Button
-							variant="ghost"
-							size="sm"
+						<DeleteButton
+							label="Quitar"
+
 							onClick={() => {
 								setSaved(false);
 								setContacts((cs) => cs.filter((_, j) => j !== i));
 							}}
-						>
-							Quitar
-						</Button>
+						/>
 					</div>
 				))}
 				{!contacts.length && <p className="muted small">Sin números: nadie puede escribirle por WhatsApp.</p>}

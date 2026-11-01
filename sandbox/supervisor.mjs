@@ -332,7 +332,7 @@ async function purgeOrigins(purges) {
 // ---------- pi ----------
 
 async function start(msg) {
-	const prepared = prepareHarness(msg.harness ?? defaultHarness(), mkdtempSync('/tmp/agents-harness-'));
+	const prepared = prepareHarness(msg.harness ?? defaultHarness(), mkdtempSync('/tmp/agents-harness-'), msg.grantedMcp);
 	if (msg.harnessDigest && msg.harnessDigest !== prepared.digest)
 		throw new Error('El manifiesto no coincide con la revisión fijada a la corrida.');
 	expectedHarness = prepared;
@@ -344,6 +344,7 @@ async function start(msg) {
 	if (prepared.mcpConfig)
 		writeFileSync(join(PI_DIR, 'mcp.json'), JSON.stringify(prepared.mcpConfig, null, 1), { mode: 0o600 });
 	else rmSync(join(PI_DIR, 'mcp.json'), { force: true });
+	signOut(msg.mcpLogouts);
 	// The agent's own credentials (owner-set, per agent): environment of pi, its shell and MCP servers.
 	const secrets =
 		msg.secrets && typeof msg.secrets === 'object'
@@ -428,6 +429,7 @@ async function start(msg) {
 	const env = {
 		...process.env,
 		...secrets,
+		...proxyEnvironment(msg.proxy),
 		...prepared.env,
 		PATH: toolPath,
 		OPENAI_API_KEY: LLM_TOKEN,
@@ -488,6 +490,60 @@ async function start(msg) {
 	pi.stdin.write(JSON.stringify({ id: 'task', type: 'prompt', message: msg.prompt }) + '\n');
 	piReady = true;
 	for (const cmd of piQueue.splice(0)) pi.stdin.write(JSON.stringify(cmd) + '\n');
+}
+
+/**
+ * Granted MCP servers the owner revoked or deleted (#24, Q6): their OAuth sessions leave this
+ * agent's volume. pi keys them `mcp__<server>|<url>` in mcp-auth.json; `pi mcp logout` would need the
+ * server still configured, which a revoked one no longer is.
+ */
+function signOut(logouts) {
+	if (!Array.isArray(logouts) || !logouts.length) return;
+	const file = join(PI_DIR, 'mcp-auth.json');
+	try {
+		const auth = JSON.parse(readFileSync(file, 'utf8'));
+		for (const { server } of logouts) {
+			const ns = `mcp__${String(server).replace(/-/g, '_')}|`;
+			for (const key of Object.keys(auth)) if (key.startsWith(ns)) delete auth[key];
+		}
+		writeFileSync(file, JSON.stringify(auth, null, 1), { mode: 0o600 });
+	} catch {
+		// No sessions stored, or unreadable: nothing to sign out of.
+	}
+	send({ t: 'mcp_logouts', ids: logouts.map((l) => l.id) });
+}
+
+// ---------- the egress proxy (#24) ----------
+
+/**
+ * The owner's API keys reach this computer as placeholders; the backend's egress proxy swaps each
+ * for its value only towards that key's domains. Everything of pi's (its shell, CLIs, MCP servers)
+ * goes out through it, trusting its CA; the backend itself is reached directly. A tool that ignores
+ * the proxy just sends the placeholder: it fails, it leaks nothing. Chrome never uses it.
+ */
+function proxyEnvironment(proxy) {
+	if (!proxy || typeof proxy.url !== 'string' || typeof proxy.ca !== 'string') return {};
+	let system = '';
+	try {
+		system = readFileSync('/etc/ssl/certs/ca-certificates.crt', 'utf8');
+	} catch {}
+	const bundle = '/tmp/agents-ca.pem';
+	writeFileSync(bundle, `${system.trimEnd()}\n${proxy.ca.trim()}\n`, { mode: 0o644 });
+	const direct = ['localhost', '127.0.0.1', '::1', new URL(SERVER).hostname].join(',');
+	return {
+		HTTP_PROXY: proxy.url,
+		HTTPS_PROXY: proxy.url,
+		http_proxy: proxy.url,
+		https_proxy: proxy.url,
+		NO_PROXY: direct,
+		no_proxy: direct,
+		NODE_USE_ENV_PROXY: '1',
+		NODE_EXTRA_CA_CERTS: bundle,
+		SSL_CERT_FILE: bundle,
+		REQUESTS_CA_BUNDLE: bundle,
+		CURL_CA_BUNDLE: bundle,
+		GIT_SSL_CAINFO: bundle,
+	};
 }
 
 // ---------- CLI tools and MCP sign-in ----------

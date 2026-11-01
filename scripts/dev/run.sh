@@ -4,6 +4,7 @@
 #   db       the dev Postgres cluster (data/dev/pg, 127.0.0.1:5433)
 #   cliproxy CLIProxyAPI with the config the server writes
 #   fake     the scripted fake LLM (scripts/fake-llm.ts) and the test webhook receiver
+#   proxy    the egress proxy of API keys (#24), a container on reko-2's sandbox network
 #   server   the backend, bun --watch
 #   web      Vite with local HMR, proxying /api, /hooks and /ws to the backend
 set -euo pipefail
@@ -43,6 +44,18 @@ case "${1:-}" in
 	fake)
 		FAKE_LLM_PORT="$FAKE_LLM_PORT" exec bun scripts/fake-llm.ts
 		;;
+	proxy)
+		# Secrets go by name (-e NAME): docker reads them from this environment, never a command line.
+		set -a
+		. "$ENV_FILE"
+		set +a
+		AGENTS_PROXY_CA_PEM="$(cat "$PROXY_DIR/mitmproxy-ca.pem")"
+		AGENTS_BACKEND_URL="http://$(host_ip):$SERVER_PORT"
+		export AGENTS_PROXY_CA_PEM AGENTS_BACKEND_URL
+		docker --context "$SBX_CTX" rm -f "$PROXY_NAME" >/dev/null 2>&1 || true
+		exec docker --context "$SBX_CTX" run --rm --name "$PROXY_NAME" --network "$SBX_NETWORK" \
+			-e AGENTS_PROXY_CA_PEM -e AGENTS_BACKEND_URL -e AGENTS_PROXY_SECRET "$PROXY_IMAGE"
+		;;
 	server)
 		server_env
 		wait_for "Postgres on :$PG_PORT" pg_ready
@@ -57,7 +70,7 @@ case "${1:-}" in
 		exec bun --bun vite --port 5173 --strictPort
 		;;
 	*)
-		echo "usage: scripts/dev/run.sh tunnel|db|cliproxy|fake|server|web" >&2
+		echo "usage: scripts/dev/run.sh tunnel|db|cliproxy|fake|proxy|server|web" >&2
 		exit 2
 		;;
 esac

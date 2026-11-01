@@ -6,7 +6,12 @@ export const harnessDigest = (h) =>
 	createHash('sha256')
 		.update(JSON.stringify(validateHarness(h)))
 		.digest('hex');
-export function prepareHarness(value, dir) {
+/**
+ * granted: MCP servers the owner granted to the agent (#24), already resolved by the backend (their
+ * secrets replaced by placeholders the egress proxy swaps). They join the approved ones in mcp.json
+ * and in --tools, but not the digest: a harness server with the same name wins.
+ */
+export function prepareHarness(value, dir, granted = []) {
 	const h = validateHarness(value);
 	mkdirSync(dir, { recursive: true });
 	const skillArgs = [];
@@ -21,8 +26,12 @@ export function prepareHarness(value, dir) {
 		);
 		skillArgs.push('--skill', path);
 	}
-	// Approved MCP servers only, declared to the model (direct) and limited by --tools to their prefix.
-	const mcp = h.mcp ?? [];
+	// Approved MCP servers plus granted ones, declared to the model (direct) and limited by --tools to their prefix.
+	const approved = h.mcp ?? [];
+	const extra = (Array.isArray(granted) ? granted : []).filter(
+		(g) => g && typeof g.name === 'string' && !approved.some((s) => s.name === g.name),
+	);
+	const mcp = [...approved, ...extra];
 	const pairs = (list) => Object.fromEntries(list.map((p) => [p.name, p.value]));
 	const mcpConfig = mcp.length
 		? {
@@ -51,7 +60,7 @@ export function prepareHarness(value, dir) {
 	return {
 		harness: h,
 		digest: harnessDigest(h),
-		env: { AGENTS_HARNESS: JSON.stringify(h) },
+		env: { AGENTS_HARNESS: JSON.stringify(h), AGENTS_GRANTED_MCP: JSON.stringify(extra.map((g) => g.name)) },
 		mcpConfig,
 		// -ne keeps every discovered extension out (the agent can write to pi's directory in its volume);
 		// MCP is one of pi's built-in extensions, so it is loaded by name when the harness has servers.

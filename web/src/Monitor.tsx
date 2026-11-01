@@ -4,7 +4,7 @@ import { api, ago, type Person } from './api';
 import { useMonitorFeed, useTick } from './live';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
-import { Card, CardContent } from '@/components/ui/card';
+import { Gauge } from '@/components/gauge';
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
 
 type Row = {
@@ -30,6 +30,9 @@ type Row = {
 		netTx: number;
 	} | null;
 };
+// What one computer is estimated to take: the server's SANDBOX_BYTES (monitor.ts), 1.5 GiB.
+const SANDBOX_BYTES = 1536 * 1024 * 1024;
+const SANDBOX_GB = 1.5;
 type Host = { cpus: number; memoryTotal: number; memoryAvailable: number; load1: number; fits: number };
 type Orphan = { id: string; name: string; run: string | null; state: string; created: number };
 type Snapshot = { at: number; rows: Row[]; orphans: Orphan[]; host: Host | null };
@@ -87,21 +90,27 @@ export function Monitor({ me }: { me: Person }) {
 				</p>
 			)}
 			{snap.host && (
-				<div className="mb-7 grid gap-4 md:grid-cols-3">
-					<Metric
-						label="reko-3 · CPU"
-						value={`${snap.host.cpus} núcleos`}
-						detail={`Carga actual: ${snap.host.load1.toFixed(2)}`}
+				<div className="mb-7 grid grid-cols-1 gap-6 sm:grid-cols-3">
+					<Gauge
+						label="CPU del host"
+						value={snap.host.load1}
+						max={snap.host.cpus}
+						display={`${Math.round((snap.host.load1 / Math.max(1, snap.host.cpus)) * 100)}%`}
+						detail={`Carga ${snap.host.load1.toFixed(2)} de ${snap.host.cpus} núcleos`}
 					/>
-					<Metric
-						label="Memoria disponible"
-						value={gb(snap.host.memoryAvailable)}
-						detail={`De ${gb(snap.host.memoryTotal)} en el host`}
+					<Gauge
+						label="Memoria en uso"
+						value={snap.host.memoryTotal - snap.host.memoryAvailable}
+						max={snap.host.memoryTotal}
+						display={`${Math.round((1 - snap.host.memoryAvailable / Math.max(1, snap.host.memoryTotal)) * 100)}%`}
+						detail={`${gb(snap.host.memoryAvailable)} libres de ${gb(snap.host.memoryTotal)}`}
 					/>
-					<Metric
+					<Gauge
 						label="Capacidad disponible"
-						value={`~${snap.host.fits} agentes`}
-						detail="Estimación de 1.5 GB por computadora"
+						value={snap.host.fits}
+						max={Math.max(1, Math.floor(snap.host.memoryTotal / SANDBOX_BYTES))}
+						display={`~${snap.host.fits}`}
+						detail={`Computadoras más, a ${SANDBOX_GB} GB cada una`}
 					/>
 				</div>
 			)}
@@ -270,17 +279,5 @@ export function Monitor({ me }: { me: Person }) {
 				</section>
 			)}
 		</div>
-	);
-}
-
-function Metric({ label, value, detail }: { label: string; value: string; detail: string }) {
-	return (
-		<Card className="gap-0 py-5 shadow-none">
-			<CardContent>
-				<p className="text-xs text-muted-foreground">{label}</p>
-				<p className="mt-3 text-2xl font-semibold tracking-tight tabular-nums">{value}</p>
-				<p className="mt-1 text-xs text-muted-foreground">{detail}</p>
-			</CardContent>
-		</Card>
 	);
 }

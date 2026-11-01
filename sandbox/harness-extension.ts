@@ -10,6 +10,16 @@ import { fileDenial, jsonInfo, textStats } from './harness-policy.ts';
 const exec = promisify(execFile);
 export default function (pi: ExtensionAPI) {
 	const h = validateHarness(JSON.parse(process.env.AGENTS_HARNESS ?? 'null'));
+	// MCP servers the owner granted to this agent (#24): outside the harness (its digest stays), the
+	// supervisor wrote them into mcp.json next to the approved ones. Names only; no secrets here.
+	const granted: string[] = (() => {
+		try {
+			const v = JSON.parse(process.env.AGENTS_GRANTED_MCP ?? '[]');
+			return Array.isArray(v) ? v.filter((n) => typeof n === 'string' && /^[a-z][a-z0-9-]{0,30}$/.test(n)) : [];
+		} catch {
+			return [];
+		}
+	})();
 	const workspace = join(process.env.HOME!, 'work');
 	const result = (value: unknown) => ({
 		content: [{ type: 'text' as const, text: typeof value === 'string' ? value : JSON.stringify(value) }],
@@ -109,7 +119,7 @@ export default function (pi: ExtensionAPI) {
 			execute: async (_id, p) => result(jsonInfo(p.text)),
 		});
 	pi.on('tool_call', (event, ctx) => {
-		if (!runtimeToolNames(h).includes(event.toolName) && !mcpAllowed(h, event.toolName))
+		if (!runtimeToolNames(h).includes(event.toolName) && !mcpAllowed(h, event.toolName, granted))
 			return { block: true, reason: 'Herramienta fuera del harness aprobado.' };
 		const denied = fileDenial(h, event.toolName, event.input, ctx.cwd, workspace);
 		if (denied) return { block: true, reason: denied };
@@ -124,7 +134,7 @@ export default function (pi: ExtensionAPI) {
 			...pi
 				.getAllTools()
 				.map((t) => t.name)
-				.filter((n) => mcpAllowed(h, n)),
+				.filter((n) => mcpAllowed(h, n, granted)),
 		]);
 		const skills = pi
 			.getCommands()
@@ -135,7 +145,7 @@ export default function (pi: ExtensionAPI) {
 			throw new Error('No coincide la carga efectiva de skills.');
 		const active = pi
 			.getActiveTools()
-			.filter((n) => !mcpAllowed(h, n))
+			.filter((n) => !mcpAllowed(h, n, granted))
 			.sort();
 		if (JSON.stringify(active) !== JSON.stringify(names))
 			throw new Error('No coincide el conjunto efectivo de herramientas.');

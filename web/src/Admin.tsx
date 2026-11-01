@@ -4,6 +4,8 @@ import { FEATURES } from '../../sandbox/features';
 import { api, ago, type Person } from './api';
 import { UsesTable } from './Settings';
 import { Button } from '@/components/ui/button';
+import { DeleteButton, IconButton } from '@/components/actions';
+import { Link2 } from 'lucide-react';
 import { Input } from '@/components/ui/input';
 import { Textarea } from '@/components/ui/textarea';
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
@@ -343,19 +345,16 @@ function Panel({ onChanged }: { onChanged: () => void }) {
 								<TableCell className="text-xs">{ago(p.created_at)}</TableCell>
 								<TableCell>
 									<div className="row">
-										<Button
-											variant="ghost"
-											size="sm"
+										<IconButton
+											icon={Link2}
+											label="Crear enlace de acceso"
+
 											onClick={async () => {
 												const { code } = await api(`/admin/people/${p.id}/invite`, { method: 'POST' });
 												setLink(`${location.origin}/#/invite/${code}`);
 											}}
-										>
-											Enlace
-										</Button>
-										<Button
-											variant="danger-ghost"
-											size="sm"
+										/>
+										<DeleteButton
 											onClick={async () => {
 												if (confirm(`¿Borrar a ${p.name} con sus agentes, tareas, keys y accesos?`)) {
 													await api(`/admin/people/${p.id}`, { method: 'DELETE' });
@@ -363,9 +362,7 @@ function Panel({ onChanged }: { onChanged: () => void }) {
 													onChanged();
 												}
 											}}
-										>
-											Borrar
-										</Button>
+										/>
 									</div>
 								</TableCell>
 							</TableRow>

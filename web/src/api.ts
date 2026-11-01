@@ -160,6 +160,34 @@ export type ConversationPage = {
 	hasEarlier: boolean;
 	before: number | null;
 };
+/** A person's API Key (#24): the variable, where the proxy may put it, and who has it. */
+export type AccessKey = {
+	id: number;
+	name: string;
+	domains: string[];
+	expose_real: boolean;
+	updated_at: number;
+	agents: number[];
+};
+export type AccessPair = { name: string; secret: boolean; value: string | null };
+/** A person's MCP server (#24); secret values never come back. */
+export type AccessMcp = {
+	id: number;
+	name: string;
+	description: string;
+	transport: 'http' | 'stdio';
+	url: string | null;
+	command: string | null;
+	args: string[];
+	headers: AccessPair[];
+	env: AccessPair[];
+	domains: string[];
+	expose_real: boolean;
+	oauth: boolean;
+	updated_at: number;
+	agents: number[];
+};
+export type AccessView = { keys: AccessKey[]; mcp: AccessMcp[]; proxyReady: boolean };
 export type Credential = {
 	id: number;
 	name: string;

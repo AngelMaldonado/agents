@@ -11,6 +11,9 @@ SBX_REMOTE_SOCK=/Users/reko/.colima/default/docker.sock
 DOCKER_SOCK="$DEV/docker.sock"                        # the tunnel's local end; the server uses it
 SBX_NETWORK=agents-dev-sandbox
 SBX_IMAGE=agents-sandbox:dev
+PROXY_IMAGE=agents-proxy:dev    # the egress proxy of API keys (#24), on reko-2 next to the sandboxes
+PROXY_NAME=agents-dev-proxy
+PROXY_DIR="$DEV/proxy"          # its dev CA (key + certificate), from just dev init
 
 PG_PORT=5433 # 5432 is usually taken by a Homebrew Postgres of other projects
 PG_DATA="$DEV/pg"
@@ -65,6 +68,9 @@ server_env() {
 	export AGENTS_PUBLIC_URL="$WEB_URL"
 	export AGENTS_COOKIE_SECURE=0
 	export DOCKER_SOCKET="$DOCKER_SOCK"
+	# The egress proxy (#24): sandboxes reach it by name on their network; it asks this backend.
+	export AGENTS_PROXY_URL="http://$PROXY_NAME:8080"
+	export AGENTS_PROXY_CA_CERT="$(cat "$PROXY_DIR/ca.crt")"
 	export PORT="$SERVER_PORT"
 	# No AGENTS_WHATSAPP_URL: the bridge is off in dev (and FEATURES.whatsapp is false).
 	unset AGENTS_WHATSAPP_URL

@@ -7,6 +7,7 @@
 //   [blocked]     gets stuck and asks for help        [vault]       logs in with "local-test"
 //   [cookie-set]  leaves a cookie on example.com      [cookie-get]  shows example.com's cookies
 //   [texto]       answers without tools or files    [lento]       ~20 s of work (to get messages mid-run)
+//   [proxy]       curls httpbin.org with $TEST_KEY (the egress proxy of API keys, #24)
 //   [adjunto]     reads the attachments in ~/work/in/
 //   "anota el número N"  writes N to ~/work/nota.txt
 //   "qué número anotaste"  reads it back and quotes what the conversation says
@@ -29,6 +30,16 @@ const SCRIPTS: { match: RegExp; steps: Step[] }[] = [
 				bash: `mkdir -p ~/site && printf '%s' '<html><body style="margin:0;background:#123"><div style="width:200px;height:200px;margin:100px;background:#e84;animation:s 1s linear infinite"></div><style>@keyframes s{to{transform:rotate(360deg)}}</style></body></html>' > ~/site/anim.html && (cd ~/site && nohup python3 -m http.server 8001 >/dev/null 2>&1 &) && sleep 1 && agent-browser open http://localhost:8001/anim.html && sleep 40 && echo listo`,
 			},
 			{ text: 'Miré la animación 40 s.' },
+		],
+	},
+	{
+		// The egress proxy (#24): a granted TEST_KEY bound to httpbin.org; httpbin echoes what arrived.
+		match: /\[proxy\]/,
+		steps: [
+			{
+				bash: 'echo "variable: ${TEST_KEY:0:4}…"; [ -n "$HTTPS_PROXY" ] && echo "con proxy"; curl -s https://httpbin.org/headers -H "Authorization: Bearer $TEST_KEY" | grep -i \'"authorization"\'',
+			},
+			{ text: (c) => `Resultado del proxy:\n\n\`\`\`\n${c.lastOutput.trim()}\n\`\`\`` },
 		],
 	},
 	{

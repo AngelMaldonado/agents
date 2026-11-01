@@ -12,6 +12,22 @@ if [ ! -f "$ENV_FILE" ]; then
 	echo "created .env.dev"
 fi
 chmod 600 "$ENV_FILE"
+# The egress proxy's shared secret with the backend (#24).
+grep -q '^AGENTS_PROXY_SECRET=' "$ENV_FILE" || {
+	printf 'AGENTS_PROXY_SECRET=%s\n' "$(openssl rand -hex 24)" >> "$ENV_FILE"
+	echo "added AGENTS_PROXY_SECRET"
+}
+
+# The proxy's dev CA: sandboxes trust its certificate; its key stays here and in the proxy.
+if [ ! -f "$PROXY_DIR/mitmproxy-ca.pem" ]; then
+	mkdir -p "$PROXY_DIR" && chmod 700 "$PROXY_DIR"
+	(umask 077
+	 openssl req -x509 -newkey rsa:2048 -nodes -days 3650 -subj "/CN=Agents dev egress proxy" \
+		-addext "basicConstraints=critical,CA:TRUE" -addext "keyUsage=critical,keyCertSign,cRLSign" \
+		-keyout "$PROXY_DIR/ca.key" -out "$PROXY_DIR/ca.crt" 2>/dev/null
+	 cat "$PROXY_DIR/ca.key" "$PROXY_DIR/ca.crt" > "$PROXY_DIR/mitmproxy-ca.pem")
+	echo "created the proxy's dev CA in data/dev/proxy"
+fi
 
 if [ ! -f "$PG_DATA/PG_VERSION" ]; then
 	command -v initdb >/dev/null || { echo "initdb not found: brew install postgresql@18" >&2; exit 1; }
@@ -43,3 +59,5 @@ docker --context "$SBX_CTX" network inspect "$SBX_NETWORK" >/dev/null 2>&1 ||
 
 docker --context "$SBX_CTX" image inspect "$SBX_IMAGE" >/dev/null 2>&1 ||
 	echo "warning: $SBX_IMAGE is not on $SBX_CTX yet: just sandbox build" >&2
+docker --context "$SBX_CTX" image inspect "$PROXY_IMAGE" >/dev/null 2>&1 ||
+	echo "warning: $PROXY_IMAGE is not on $SBX_CTX yet: just proxy build" >&2

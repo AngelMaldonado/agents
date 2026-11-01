@@ -2,8 +2,11 @@
 import { useEffect, useState } from 'react';
 import { api, ago, type Agent, type Credential } from './api';
 import { Button } from '@/components/ui/button';
+import { DeleteButton, EditButton, FormActions } from '@/components/actions';
 import { Input } from '@/components/ui/input';
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
+import { KeysSection, McpSection, useAccess } from './Access';
+import { AgentPicker, FormDialog, SectionHead } from '@/components/access-ui';
 
 type KeyRow = { provider: 'openai'; last4: string; updated_at: number };
 type ProxyRow = { url: string; last4: string; updated_at: number };
@@ -20,31 +23,21 @@ export function ProviderSettings() {
 }
 
 /**
- * Configuración → Accesos, in three clear kinds: logins for web pages (the person's vault, granted
- * to agents), MCP servers, and API keys for CLI tools. The last two are still each agent's own
- * (its harness and its secrets); making them the person's, granted like the vault, is Bubble
- * agents #24.
+ * Configuración → Accesos, in three clear kinds, all the person's own and granted to their agents:
+ * logins for web pages (the vault), MCP servers and API Keys for CLI tools (Access.tsx, #24).
  */
 export function Accesses({ agents }: { agents: Agent[] }) {
+	const access = useAccess();
 	return (
 		<>
 			<Vault agents={agents} />
-			<section className="panel">
-				<h2>Servidores MCP</h2>
-				<p className="muted">
-					Herramientas externas que un agente usa por MCP (tickets, repositorios, documentos…). Por ahora cada agente
-					tiene los suyos: se agregan en su Automejora y se inicia sesión en su Configuración → Herramientas.
-					Registrarlos aquí una vez y concederlos a tus agentes, como los accesos a sitios, viene después.
+			{access.error && (
+				<p role="alert" className="error mb-4">
+					{access.error}
 				</p>
-			</section>
-			<section className="panel">
-				<h2>API Keys</h2>
-				<p className="muted">
-					Tokens para las herramientas de línea de comandos de un agente (por ejemplo <code>GITHUB_TOKEN</code>). Por
-					ahora son de cada agente: se guardan en su Configuración → Herramientas y le llegan como variables de entorno.
-					Guardarlas aquí una vez y concederlas a tus agentes viene después.
-				</p>
-			</section>
+			)}
+			<McpSection agents={agents} access={access} />
+			<KeysSection agents={agents} access={access} />
 		</>
 	);
 }
@@ -75,11 +68,11 @@ function Proxy() {
 	};
 	return (
 		<section className="panel">
-			<h2>Tu CLIProxyAPI</h2>
-			<p className="muted">
-				Si tienes un CLIProxyAPI con tu cuenta de GPT, todas tus tareas saldrán por él y la key de abajo no hace falta.
-				La key no se vuelve a mostrar; los agentes nunca la ven.
-			</p>
+			<SectionHead
+				title="Tu CLIProxyAPI"
+				security="La key se guarda cifrada y no se vuelve a mostrar. La usa el servidor; los agentes nunca la ven."
+			/>
+			<p className="muted">Si lo tienes, todas tus tareas salen por él y la key de OpenAI no hace falta.</p>
 			<form
 				className="form"
 				onSubmit={(e) => {
@@ -121,9 +114,10 @@ function Proxy() {
 								>
 									Probar
 								</Button>
-								<Button
+								<DeleteButton
+									label="Quitar"
 									type="button"
-									variant="ghost"
+
 									disabled={busy}
 									onClick={() =>
 										run(async () => {
@@ -132,9 +126,7 @@ function Proxy() {
 											setCheck(null);
 										})
 									}
-								>
-									Quitar
-								</Button>
+								/>
 							</>
 						)}
 					</div>
@@ -176,11 +168,11 @@ function Keys() {
 	}, []);
 	return (
 		<section className="panel">
-			<h2>O tu API key de OpenAI</h2>
-			<p className="muted">
-				Se usa sólo si no tienes un CLIProxyAPI propio. Las tareas consumen tu cuenta. La key no se vuelve a mostrar, ni
-				siquiera al admin.
-			</p>
+			<SectionHead
+				title="O tu API key de OpenAI"
+				security="Se guarda cifrada y no se vuelve a mostrar, ni siquiera al admin. Los agentes nunca la ven."
+			/>
+			<p className="muted">Sólo si no tienes CLIProxyAPI; las tareas consumen tu cuenta.</p>
 			<KeyRowForm
 				provider="openai"
 				label="OpenAI (GPT)"
@@ -236,13 +228,12 @@ function KeyRowForm({
 			/>
 			<Button disabled={!value.trim()}>{row ? 'Reemplazar' : 'Guardar'}</Button>
 			{row && (
-				<Button
+				<DeleteButton
+					label="Quitar"
 					type="button"
-					variant="ghost"
+
 					onClick={async () => onSaved((await api(`/keys/${provider}`, { method: 'DELETE' })).keys)}
-				>
-					Quitar
-				</Button>
+				/>
 			)}
 			{error && (
 				<p role="alert" className="error">
@@ -256,7 +247,9 @@ function KeyRowForm({
 function Vault({ agents }: { agents: Agent[] }) {
 	const [creds, setCreds] = useState<Credential[]>([]);
 	const [uses, setUses] = useState<any[]>([]);
-	const [form, setForm] = useState({ name: '', loginUrl: '', username: '', password: '' });
+	const empty = { name: '', loginUrl: '', username: '', password: '' };
+	const [form, setForm] = useState(empty);
+	const [adding, setAdding] = useState(false);
 	const [error, setError] = useState('');
 	const load = () =>
 		api('/vault').then((r) => {
@@ -266,24 +259,33 @@ function Vault({ agents }: { agents: Agent[] }) {
 	useEffect(() => {
 		void load();
 	}, []);
-	const toggle = async (c: Credential, agentId: number) => {
-		const next = c.agents.includes(agentId) ? c.agents.filter((a) => a !== agentId) : [...c.agents, agentId];
+	const grant = async (c: Credential, next: number[]) =>
 		setCreds((await api(`/vault/${c.id}/grants`, { method: 'PUT', body: { agents: next } })).credentials);
+	const open = (c: Credential | null) => {
+		setError('');
+		setForm(c ? { ...empty, name: c.name, loginUrl: c.login_url } : empty);
+		setAdding(true);
 	};
 	return (
 		<section className="panel">
-			<h2>Accesos a sitios</h2>
-			<p className="muted">
-				Usuarios y contraseñas de páginas web. El agente conoce sólo el nombre: <code>agents-login nombre</code> llena
-				el formulario sin mostrar el secreto al modelo. Sólo los agentes autorizados pueden usar el acceso, y sólo en su
-				dominio.
-			</p>
+			<SectionHead
+				title="Accesos a sitios"
+				onAdd={() => open(null)}
+				security={
+					<>
+						Usuario y contraseña se guardan cifrados. El agente sólo conoce el nombre: <code>agents-login nombre</code>{' '}
+						llena el formulario sin mostrarle el secreto, y sólo en el dominio del acceso. Quitárselo borra sus cookies
+						de ese sitio. Sin segundo factor por ahora: si un sitio lo pide, el agente pide ayuda.
+					</>
+				}
+			/>
+			<p className="muted">Usuarios y contraseñas de páginas web para tus agentes.</p>
 			<Table className="vault">
 				<TableHeader>
 					<TableRow>
 						<TableHead>Nombre</TableHead>
 						<TableHead>Sitio</TableHead>
-						<TableHead>Agentes con acceso</TableHead>
+						<TableHead>Agentes</TableHead>
 						<TableHead>
 							<span className="sr-only">Acciones</span>
 						</TableHead>
@@ -297,25 +299,16 @@ function Vault({ agents }: { agents: Agent[] }) {
 							</TableCell>
 							<TableCell className="text-xs">{c.origin}</TableCell>
 							<TableCell>
-								{agents.map((a) => (
-									<label key={a.id} className="chip">
-										<input type="checkbox" checked={c.agents.includes(a.id)} onChange={() => toggle(c, a.id)} />
-										{a.name}
-									</label>
-								))}
-								{!agents.length && <span className="muted small">Crea un agente primero</span>}
+								<AgentPicker agents={agents} value={c.agents} onChange={(next) => void grant(c, next)} />
 							</TableCell>
-							<TableCell>
-								<Button
-									variant="danger-ghost"
-									size="sm"
+							<TableCell className="text-right whitespace-nowrap">
+								<EditButton onClick={() => open(c)} />
+								<DeleteButton
 									onClick={async () =>
 										confirm(`¿Borrar ${c.name}?`) &&
 										setCreds((await api(`/vault/${c.id}`, { method: 'DELETE' })).credentials)
 									}
-								>
-									Borrar
-								</Button>
+								/>
 							</TableCell>
 						</TableRow>
 					))}
@@ -328,67 +321,68 @@ function Vault({ agents }: { agents: Agent[] }) {
 					)}
 				</TableBody>
 			</Table>
-			<form
-				className="form mt-6 border-t pt-5"
-				onSubmit={async (e) => {
-					e.preventDefault();
-					setError('');
-					try {
-						setCreds((await api('/vault', { body: form })).credentials);
-						setForm({ name: '', loginUrl: '', username: '', password: '' });
-					} catch (err) {
-						setError((err as Error).message);
-					}
-				}}
+			<FormDialog
+				open={adding}
+				onOpenChange={setAdding}
+				title={creds.some((c) => c.name === form.name) ? `Reemplazar ${form.name}` : 'Agregar un acceso'}
+				description="Guardar con un nombre existente lo reemplaza; el usuario y la contraseña se vuelven a escribir."
 			>
-				<h3 className="!mt-0 !mb-0">Agregar o reemplazar un acceso</h3>
-				<div className="field-list">
-					<label className="field">
-						<span>Nombre del acceso</span>
-						<Input
-							placeholder="p. ej. proveedor"
-							value={form.name}
-							onChange={(e) => setForm({ ...form, name: e.target.value })}
-						/>
-					</label>
-					<label className="field">
-						<span>URL de inicio de sesión</span>
-						<Input
-							placeholder="https://sitio.com/login"
-							value={form.loginUrl}
-							onChange={(e) => setForm({ ...form, loginUrl: e.target.value })}
-						/>
-					</label>
-					<label className="field">
-						<span>Usuario</span>
-						<Input
-							value={form.username}
-							onChange={(e) => setForm({ ...form, username: e.target.value })}
-							autoComplete="off"
-						/>
-					</label>
-					<label className="field">
-						<span>Contraseña</span>
-						<Input
-							type="password"
-							value={form.password}
-							onChange={(e) => setForm({ ...form, password: e.target.value })}
-							autoComplete="new-password"
-						/>
-					</label>
-				</div>
-				<div className="field-actions">
-					<Button>Guardar acceso</Button>
-				</div>
-				{error && (
-					<p role="alert" className="error">
-						{error}
-					</p>
-				)}
-				<p className="muted small">
-					Sin segundo factor por ahora: si un sitio lo pide, el agente se declara atascado y lo salta.
-				</p>
-			</form>
+				<form
+					className="form"
+					onSubmit={async (e) => {
+						e.preventDefault();
+						setError('');
+						try {
+							setCreds((await api('/vault', { body: form })).credentials);
+							setAdding(false);
+						} catch (err) {
+							setError((err as Error).message);
+						}
+					}}
+				>
+					<div className="field-list">
+						<label className="field">
+							<span>Nombre del acceso</span>
+							<Input
+								placeholder="p. ej. proveedor"
+								value={form.name}
+								onChange={(e) => setForm({ ...form, name: e.target.value })}
+							/>
+						</label>
+						<label className="field">
+							<span>URL de inicio de sesión</span>
+							<Input
+								placeholder="https://sitio.com/login"
+								value={form.loginUrl}
+								onChange={(e) => setForm({ ...form, loginUrl: e.target.value })}
+							/>
+						</label>
+						<label className="field">
+							<span>Usuario</span>
+							<Input
+								value={form.username}
+								onChange={(e) => setForm({ ...form, username: e.target.value })}
+								autoComplete="off"
+							/>
+						</label>
+						<label className="field">
+							<span>Contraseña</span>
+							<Input
+								type="password"
+								value={form.password}
+								onChange={(e) => setForm({ ...form, password: e.target.value })}
+								autoComplete="new-password"
+							/>
+						</label>
+					</div>
+					{error && (
+						<p role="alert" className="error">
+							{error}
+						</p>
+					)}
+					<FormActions submitLabel="Guardar acceso" disabled={false} onCancel={() => setAdding(false)} />
+				</form>
+			</FormDialog>
 			<h3>Últimos usos</h3>
 			<UsesTable uses={uses} />
 		</section>

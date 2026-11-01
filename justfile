@@ -17,7 +17,7 @@ dev verb="session" arg="":
     set -euo pipefail
     . scripts/dev/env.sh
     s="{{session}}"
-    wins="tunnel db cliproxy fake server web"
+    wins="tunnel db cliproxy fake proxy server web"
     attach() { if [ -t 0 ] && [ -t 1 ] && [ -z "${TMUX:-}" ]; then exec tmux attach -t "$s"; fi; echo "tmux attach -t $s"; }
     case "{{verb}}" in
       init) scripts/dev/init.sh ;;
@@ -25,6 +25,7 @@ dev verb="session" arg="":
         if tmux has-session -t "$s" 2>/dev/null; then echo "$s already running"; attach; exit 0; fi
         scripts/dev/init.sh
         docker --context "$SBX_CTX" image inspect "$SBX_IMAGE" >/dev/null 2>&1 || just sandbox build
+        docker --context "$SBX_CTX" image inspect "$PROXY_IMAGE" >/dev/null 2>&1 || just proxy build
         first=1
         for w in $wins; do
           if [ $first = 1 ]; then tmux new-session -d -s "$s" -n "$w" -c "$ROOT" "scripts/dev/run.sh $w"; first=0
@@ -94,6 +95,19 @@ sandbox verb="build":
       *) echo "unknown: just sandbox {{verb}}"; exit 1 ;;
     esac
 
+# ---- the egress proxy of API keys (#24; dev: arm64 on reko-2) ----
+
+# proxy: build | logs
+proxy verb="build":
+    #!/usr/bin/env bash
+    set -euo pipefail
+    . scripts/dev/env.sh
+    case "{{verb}}" in
+      build) docker --context "$SBX_CTX" build -t "$PROXY_IMAGE" proxy/ ;;
+      logs) tail -n 100 -f "$DEV/logs/proxy.log" ;;
+      *) echo "unknown: just proxy {{verb}}"; exit 1 ;;
+    esac
+
 # ---- checks ----
 
 # Types here; the database tests skip without Postgres: `just dev test` runs them against the dev Postgres.
@@ -105,6 +119,7 @@ check:
     bun test scripts/release
     bun test scripts/deploy
     python3 -B scripts/backup/s3_test.py
+    python3 -B proxy/swap_test.py
     python3 -B scripts/deploy/cutover_test.py
     python3 -B scripts/deploy/transfer_test.py
 

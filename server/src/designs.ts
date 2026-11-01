@@ -9,6 +9,7 @@ import * as tasks from './tasks';
 import { settings } from './settings';
 import { prefixOf, proxyCredentials } from './providers';
 import { grantedNames } from './vault';
+import { grantedTo } from './accesses';
 import { systemPrompt } from './prompt';
 import {
 	validateContract,
@@ -332,12 +333,18 @@ export async function message(
 	try {
 		checkModel(claimed.model);
 		const access = claimed.agent_id ? await grantedNames(claimed.agent_id) : [];
+		// The variables the agent has: its granted keys (#24) and any leftover of its own.
 		const secretNames = claimed.agent_id
-			? (
-					await rows<{ name: string }>('select name from agent_secrets where agent_id = $1 order by name', [
-						claimed.agent_id,
-					])
-				).map((s) => s.name)
+			? [
+					...new Set([
+						...(await grantedTo(claimed.agent_id)).keys.map((k) => k.name),
+						...(
+							await rows<{ name: string }>('select name from agent_secrets where agent_id = $1 order by name', [
+								claimed.agent_id,
+							])
+						).map((s) => s.name),
+					]),
+				].sort()
 			: [];
 		const current = claimed.agent_id
 			? (await channels.schedulesIfRunning(claimed.agent_id)).map((s) => ({
@@ -698,7 +705,7 @@ export async function configuration(viewer: Person, agentId: number) {
 		harness: agent.harness,
 		revisions,
 		credentialNames: names,
-		effectivePrompt: withHarnessPrompt(systemPrompt(agent, names), agent.harness),
+		effectivePrompt: withHarnessPrompt(systemPrompt(agent, names, await grantedTo(agent.id)), agent.harness),
 		draftId: draft?.id ?? null,
 		setupDesignId: agent.person_id === viewer.id ? (setup?.id ?? null) : null,
 	};

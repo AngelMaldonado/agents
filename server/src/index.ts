@@ -8,6 +8,7 @@ import { migrate, row } from './db';
 import { startDbos } from './dbos';
 import * as people from './people';
 import * as agents from './agents';
+import * as accesses from './accesses';
 import { search } from './search';
 import * as designs from './designs';
 import * as tasks from './tasks';
@@ -46,6 +47,12 @@ await loadSettings();
 await writeProxyConfig();
 await startDbos();
 await agents.loadShares();
+// Each agent's own secrets become its owner's keys (#24); conflicts stay on the agent to resolve.
+{
+	const moved = await accesses.migrateAgentSecrets();
+	if (moved.migrated || moved.conflicts)
+		console.log(`agent secrets -> person keys: ${moved.migrated} migrated, ${moved.conflicts} to resolve`);
+}
 await tasks.recover();
 await inbox.startRouter();
 monitor.startMonitor();
@@ -154,6 +161,16 @@ app.post('/hooks/:token', async (c) => {
 	} catch (err) {
 		return fail(c, err);
 	}
+});
+
+// ---------- the egress proxy (#24; sandbox network, shared secret + the run's token; no login) ----------
+
+app.get('/internal/proxy/rules', async (c) => {
+	if (!accesses.proxySecretOk(c.req.header('x-agents-proxy-secret'))) return c.json({ error: 'forbidden' }, 403);
+	const token = c.req.header('x-agents-run-token') ?? '';
+	const rules = token ? await accesses.rulesFor(token) : null;
+	c.header('Cache-Control', 'no-store');
+	return rules ? c.json({ rules }) : c.json({ error: 'not a live run' }, 404);
 });
 
 // ---------- the WhatsApp bridge (internal network, shared secret; no login) ----------
@@ -644,14 +661,36 @@ app.get('/api/agents/:id/secrets', async (c) => {
 	if (!a) return c.json({ error: 'Sólo el dueño ve las credenciales de su agente.' }, 403);
 	return c.json({ secrets: await secrets.list(a.id) });
 });
-app.put('/api/agents/:id/secrets/:name', async (c) => {
+// An agent no longer gets secrets of its own (#24): what is left is a conflict of the migration.
+app.put('/api/agents/:id/secrets/:name', (c) =>
+	c.json(
+		{ error: 'Las API Keys ahora son tuyas: guárdala en Configuración → Accesos y concédela a este agente.' },
+		410,
+	),
+);
+// The person keeps this agent's value for that name: it becomes their key, granted where it was.
+app.post('/api/agents/:id/secrets/:name/resolve', async (c) => {
 	const a = await ownAgent(c);
-	if (!a) return c.json({ error: 'Sólo el dueño cambia las credenciales de su agente.' }, 403);
+	if (!a) return c.json({ error: 'Sólo el dueño resuelve las credenciales de su agente.' }, 403);
 	try {
-		return c.json({ secrets: await secrets.set(a.id, c.req.param('name'), (await c.req.json()).value) });
+		await accesses.resolveConflict(c.get('me').id, c.req.param('name'), a.id);
+		return c.json({ secrets: await secrets.list(a.id) });
 	} catch (err) {
 		return fail(c, err);
 	}
+});
+// What the owner has and what this agent was granted (values never leave the server).
+app.get('/api/agents/:id/access', async (c) => {
+	const a = await ownAgent(c);
+	if (!a) return c.json({ error: 'Sólo el dueño ve los accesos de su agente.' }, 403);
+	const me = c.get('me').id;
+	c.header('Cache-Control', 'private, no-store');
+	return c.json({
+		keys: await accesses.listKeys(me),
+		mcp: await accesses.listMcp(me),
+		conflicts: await accesses.conflictsOf(a.id),
+		proxyReady: !!accesses.proxyConfig(),
+	});
 });
 app.delete('/api/agents/:id/secrets/:name', async (c) => {
 	const a = await ownAgent(c);
@@ -662,7 +701,9 @@ app.delete('/api/agents/:id/secrets/:name', async (c) => {
 app.post('/api/agents/:id/mcp/:server/login', async (c) => {
 	const a = await ownAgent(c);
 	if (!a) return c.json({ error: 'Sólo el dueño inicia sesión por su agente.' }, 403);
-	const server = (a.harness?.mcp ?? []).find((s) => s.name === c.req.param('server') && s.oauth);
+	const server =
+		(a.harness?.mcp ?? []).find((s) => s.name === c.req.param('server') && s.oauth) ??
+		(await accesses.grantedOauth(a.id, c.req.param('server')));
 	if (!server)
 		return c.json({ error: 'Ese servidor MCP no está aprobado para este agente o no usa inicio de sesión.' }, 404);
 	try {
@@ -892,6 +933,65 @@ app.post('/api/agents/:id/profile/reset', async (c) => {
 });
 
 // ---------- vault ----------
+
+// ---------- a person's API Keys and MCP servers, granted to their agents (#24) ----------
+
+const accessView = async (personId: number) => ({
+	keys: await accesses.listKeys(personId),
+	mcp: await accesses.listMcp(personId),
+	proxyReady: !!accesses.proxyConfig(),
+});
+app.get('/api/access', async (c) => {
+	c.header('Cache-Control', 'private, no-store');
+	return c.json(await accessView(c.get('me').id));
+});
+app.post('/api/access/keys', async (c) => {
+	try {
+		await accesses.saveKey(c.get('me').id, await c.req.json());
+		return c.json(await accessView(c.get('me').id));
+	} catch (err) {
+		return fail(c, err);
+	}
+});
+app.delete('/api/access/keys/:id', async (c) => {
+	await accesses.removeKey(c.get('me').id, Number(c.req.param('id')));
+	return c.json(await accessView(c.get('me').id));
+});
+app.put('/api/access/keys/:id/grants', async (c) => {
+	try {
+		await accesses.grantKey(c.get('me').id, Number(c.req.param('id')), (await c.req.json()).agents);
+		return c.json(await accessView(c.get('me').id));
+	} catch (err) {
+		return fail(c, err);
+	}
+});
+app.post('/api/access/mcp', async (c) => {
+	try {
+		await accesses.saveMcp(c.get('me').id, await c.req.json());
+		return c.json(await accessView(c.get('me').id));
+	} catch (err) {
+		return fail(c, err);
+	}
+});
+app.delete('/api/access/mcp/:id', async (c) => {
+	await accesses.removeMcp(c.get('me').id, Number(c.req.param('id')));
+	return c.json(await accessView(c.get('me').id));
+});
+app.put('/api/access/mcp/:id/grants', async (c) => {
+	try {
+		await accesses.grantMcp(c.get('me').id, Number(c.req.param('id')), (await c.req.json()).agents);
+		return c.json(await accessView(c.get('me').id));
+	} catch (err) {
+		return fail(c, err);
+	}
+});
+app.post('/api/access/mcp/:id/test', async (c) => {
+	try {
+		return c.json(await accesses.testMcp(c.get('me').id, Number(c.req.param('id'))));
+	} catch (err) {
+		return fail(c, err);
+	}
+});
 
 app.get('/api/vault', async (c) =>
 	c.json({ credentials: await vault.list(c.get('me').id), uses: await vault.uses(c.get('me').id) }),

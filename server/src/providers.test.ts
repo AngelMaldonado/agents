@@ -24,7 +24,7 @@ const waBridge = Bun.serve({
 process.env.AGENTS_WHATSAPP_URL = waBridge.url.origin;
 process.env.AGENTS_WHATSAPP_SECRET = 'wa-test';
 process.env.AGENTS_MASTER_KEY = Buffer.alloc(32, 7).toString('base64');
-const { pool, migrate, exec, row, DATABASE_URL } = await import('./db');
+const { migrate, exec, row, DATABASE_URL } = await import('./db');
 const { assertTestDatabase } = await import('./test-database');
 const { setProxy, checkProxyModel } = await import('./providers');
 const { enqueue } = await import('./tasks');
@@ -89,7 +89,7 @@ beforeAll(async () => {
 afterAll(async () => {
 	proxy.stop(true);
 	waBridge.stop(true);
-	await pool.end();
+	// The pool stays open: other test files share this process and its pool (bun runs them in one).
 });
 
 test('default catalog offers the two verified Sol model IDs', () => {

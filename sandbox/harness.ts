@@ -96,6 +96,11 @@ const pairs = (v: unknown, label: string): Pair[] => {
 		return { name: p.name, value: p.value };
 	});
 };
+/** One MCP server, checked and normalized (also a person's own server, outside any harness). */
+export function validateMcpServer(s: unknown): McpServer {
+	return (validateMcp([s]) as McpServer[])[0];
+}
+
 function validateMcp(v: unknown): McpServer[] {
 	if (!Array.isArray(v) || v.length > 8) throw new Error('Harness: hasta 8 servidores MCP.');
 	const servers = v
@@ -287,7 +292,9 @@ export function validateHarness(value: unknown): Harness {
 }
 /** The prefix of an approved MCP server's tools, as pi names them (mcp__<server>__<tool>). */
 export const mcpPrefix = (server: string) => `mcp__${server.replace(/[^A-Za-z0-9_]/g, '_')}__`;
-export const mcpAllowed = (h: Harness, tool: string) => (h.mcp ?? []).some((s) => tool.startsWith(mcpPrefix(s.name)));
+/** An MCP tool of an approved server, or of one granted to the agent (the person's own, #24). */
+export const mcpAllowed = (h: Harness, tool: string, granted: readonly string[] = []) =>
+	[...(h.mcp ?? []).map((s) => s.name), ...granted].some((name) => tool.startsWith(mcpPrefix(name)));
 export function effectiveTools(h: Harness) {
 	return [
 		...h.tools.map((id) => TOOLS.find((t) => t.id === id)!),

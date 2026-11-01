@@ -70,13 +70,14 @@ COPY supervisor.mjs harness*.mjs harness*.ts /opt/agents/
 RUN ln -s /usr/local/lib/node_modules/@earendil-works/pi-coding-agent/node_modules /opt/agents/node_modules
 
 # --no-sandbox: the container is the sandbox (no new privileges, all capabilities dropped).
+# --no-proxy-server: Chrome browses directly; the egress proxy of API keys (#24) is only for pi's tools.
 # Headed on a virtual display (agent-browser starts Xvfb) and without the automation flag:
 # headless Chrome says "HeadlessChrome" and webdriver=true, and sites like MercadoLibre block it.
 # The profile (cookies, logins, storage) lives in the agent's volume; its cache does not.
 ENV AGENT_BROWSER_EXECUTABLE_PATH=/usr/local/bin/agents-chrome \
     AGENT_BROWSER_HEADED=1 \
     AGENT_BROWSER_PROFILE=/home/agent/state/browser \
-    AGENT_BROWSER_ARGS=--no-sandbox,--disable-blink-features=AutomationControlled,--lang=es-MX,--disk-cache-dir=/tmp/chrome-cache \
+    AGENT_BROWSER_ARGS=--no-sandbox,--no-proxy-server,--disable-blink-features=AutomationControlled,--lang=es-MX,--disk-cache-dir=/tmp/chrome-cache \
     AGENT_BROWSER_STREAM_PORT=9223 \
     AGENT_BROWSER_STREAM_QUALITY=60 \
     AGENT_BROWSER_PLUGINS='[{"name":"agents","command":"agents-vault","capabilities":["credential.read"]}]' \
