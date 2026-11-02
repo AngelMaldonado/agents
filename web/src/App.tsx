@@ -114,6 +114,7 @@ export function App() {
 			connected={connected}
 			hash={hash}
 			agentName={agent?.name}
+			onAgentsChanged={() => void loadAgents()}
 			onSettings={() => setSettingsTab('ai')}
 			onLogout={async () => {
 				await api('/logout', { method: 'POST' });

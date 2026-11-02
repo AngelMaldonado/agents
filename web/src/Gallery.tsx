@@ -11,6 +11,18 @@ import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { Card } from '@/components/ui/card';
 
+/** When it last worked: now (it is working), its last work's end, start or creation; or when it was made. */
+const lastActivity = (a: Agent) =>
+	isLive(a.task)
+		? Number.MAX_SAFE_INTEGER
+		: Math.max(
+				a.task?.ended_at ?? 0,
+				a.task?.started_at ?? 0,
+				a.task?.created_at ?? 0,
+				// never worked: after every agent that did, newest first
+				(a.created_at ?? 0) - 1e13,
+			);
+
 export function stateOf(a: Agent): CharState {
 	if (!a.task || a.task.status === 'queued') return 'idle';
 	return a.task.state;
@@ -30,9 +42,11 @@ export function Gallery({
 }) {
 	useTick(5000);
 	const people = usePeople();
-	const mine = agents.filter((a) => a.person_id === me.id);
-	const shared = agents.filter((a) => a.person_id !== me.id && a.shares?.includes(me.id));
-	const others = agents.filter((a) => a.person_id !== me.id && !a.shares?.includes(me.id));
+	// The ones with recent activity first: working now, then by their last work; never-used last.
+	const byActivity = [...agents].sort((x, y) => lastActivity(y) - lastActivity(x));
+	const mine = byActivity.filter((a) => a.person_id === me.id);
+	const shared = byActivity.filter((a) => a.person_id !== me.id && a.shares?.includes(me.id));
+	const others = byActivity.filter((a) => a.person_id !== me.id && !a.shares?.includes(me.id));
 	const running = agents.filter((a) => isLive(a.task) && a.task!.status !== 'queued').length;
 	return (
 		<div className="page">

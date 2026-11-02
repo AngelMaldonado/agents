@@ -1,7 +1,7 @@
 // The chat view's breadcrumb title, like Claude's «Proyecto / Chat ⌄»: its menu renames the chat,
 // closes or reopens it, and switches to another of the agent's chats.
 import { useState } from 'react';
-import { Archive, ArchiveRestore, Check, ChevronDown, List, Pencil } from 'lucide-react';
+import { Archive, ArchiveRestore, BrainCircuit, Check, ChevronDown, List, Pencil } from 'lucide-react';
 import type { Conversation } from '@/api';
 import { Button } from '@/components/ui/button';
 import {
@@ -25,6 +25,7 @@ export function ConversationMenu({
 	canManage,
 	onRename,
 	onArchive,
+	onImprove,
 }: {
 	agentId: number;
 	conversation: Conversation | undefined;
@@ -32,6 +33,8 @@ export function ConversationMenu({
 	canManage: boolean;
 	onRename: (title: string) => Promise<void>;
 	onArchive: (archived: boolean) => Promise<void>;
+	/** «Usar para mejorar»: Automejora with this chat cited (the owner's agents only). */
+	onImprove?: () => void;
 }) {
 	const [renaming, setRenaming] = useState(false);
 	const [title, setTitle] = useState('');
@@ -69,6 +72,12 @@ export function ConversationMenu({
 								{conversation.archived_at ? <ArchiveRestore aria-hidden="true" /> : <Archive aria-hidden="true" />}
 								{conversation.archived_at ? 'Reabrir chat' : 'Cerrar chat'}
 							</DropdownMenuItem>
+							{onImprove && (
+								<DropdownMenuItem onSelect={onImprove}>
+									<BrainCircuit aria-hidden="true" />
+									Usar para mejorar
+								</DropdownMenuItem>
+							)}
 							<DropdownMenuSeparator />
 						</>
 					)}

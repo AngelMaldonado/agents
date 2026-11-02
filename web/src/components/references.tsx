@@ -3,7 +3,9 @@
 // server recognizes: @[#62 Revisa noticias](run:62) or @[Principal](conversation:3).
 import { useEffect, useMemo, useState } from 'react';
 import { ComposerPrimitive, unstable_useMentionAdapter, type Unstable_DirectiveFormatter } from '@assistant-ui/react';
+import { Briefcase, MessageSquare } from 'lucide-react';
 import { api, type Conversation, type Task } from '@/api';
+import { Badge } from '@/components/ui/badge';
 
 const REF = /@\[([^\]\n]{1,120})\]\(((run|conversation):(\d+))\)/g;
 export const referenceFormatter: Unstable_DirectiveFormatter = {
@@ -20,6 +22,54 @@ export const referenceFormatter: Unstable_DirectiveFormatter = {
 		return out;
 	},
 };
+
+/** In a sent message, each reference becomes a markdown link to its id (no «@»), drawn as a chip. */
+export const referenceLinks = (text: string) => text.replace(REF, (_m, label, id) => `[${label}](${id})`);
+export const isReference = (href: string | undefined) => !!href && /^(run|conversation):\d+$/.test(href);
+
+/** A cited job or conversation as an outline chip (like assistant-ui's DirectiveText, outline). A
+ * conversation opens its chat; a job has no page of its own, so it only names itself. */
+export function ReferenceChip({ id, children }: { id: string; children: React.ReactNode }) {
+	const [type, n] = id.split(':');
+	const agent = location.hash.match(/^#\/agent\/(\d+)/)?.[1];
+	const Icon = type === 'run' ? Briefcase : MessageSquare;
+	const body = (
+		<>
+			<Icon aria-hidden="true" />
+			<span className="min-w-0 truncate">{children}</span>
+		</>
+	);
+	const className = 'reference-chip';
+	return type === 'conversation' && agent ? (
+		<Badge asChild variant="outline" className={className}>
+			<a href={`#/agent/${agent}/chat/${n}`} title="Abrir la conversación">
+				{body}
+			</a>
+		</Badge>
+	) : (
+		<Badge variant="outline" className={className} title={`Trabajo #${n}`}>
+			{body}
+		</Badge>
+	);
+}
+
+/** The same chip inside the composer (Lexical's directive node): atomic, deleted as a whole. */
+export function ComposerReferenceChip({
+	directiveType,
+	label,
+}: {
+	directiveId: string;
+	directiveType: string;
+	label: string;
+}) {
+	const Icon = directiveType === 'run' ? Briefcase : MessageSquare;
+	return (
+		<Badge variant="outline" className="reference-chip">
+			<Icon aria-hidden="true" />
+			<span className="min-w-0 truncate">{label}</span>
+		</Badge>
+	);
+}
 
 const STATUS: Record<string, string> = {
 	done: 'terminó',

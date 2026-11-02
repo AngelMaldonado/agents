@@ -12,6 +12,8 @@ export type RecentConversation = {
 	archived_at: number | null;
 	is_default: boolean;
 	last_at: number;
+	/** It has a run in the queue or working now. */
+	live: boolean;
 };
 
 /** The agents someone uses: theirs and the ones shared with them (an admin's view of others' is not "use"). */
@@ -38,6 +40,7 @@ export function recentConversations(personId: number, limit = 30) {
 		   select c.id, c.agent_id, ${titleSql} as title, c.archived_at, c.is_default,
 		     greatest(c.started_at, (select max(r.created_at) from runs r where r.conversation_id = c.id),
 		       (select max(m.received_at) from messages m where m.conversation_id = c.id)) as last_at,
+		     exists(select 1 from runs r where r.conversation_id=c.id and r.status in ('queued','starting','running','blocked')) as live,
 		     exists (select 1 from pins p where p.person_id = $1 and p.kind = 'conversation' and p.ref_id = c.id) as pinned
 		   from conversations c join agents a on a.id = c.agent_id
 		   where ${USES} and c.deleted_at is null

@@ -1,15 +1,69 @@
-import Markdown from 'react-markdown';
+import { isValidElement, type ReactNode } from 'react';
+import { MermaidDiagram } from './mermaid-diagram';
+import Markdown, { defaultUrlTransform, type Components } from 'react-markdown';
+import { ReferenceChip, isReference, referenceLinks } from './references';
 import remarkGfm from 'remark-gfm';
 import type { AgentTool } from '@/api';
-import { Files, Globe, Hand, KeyRound, Terminal, Wrench } from 'lucide-react';
+import {
+	FileText,
+	FilePen,
+	FilePlus,
+	Files,
+	FolderSearch,
+	FolderTree,
+	Globe,
+	Hand,
+	KeyRound,
+	TextSearch,
+	Terminal,
+	Wrench,
+} from 'lucide-react';
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip';
-const toolIcons = { files: Files, bash: Terminal, browser: Globe, help: Hand, login: KeyRound };
+const toolIcons = {
+	files: Files,
+	read: FileText,
+	write: FilePlus,
+	edit: FilePen,
+	grep: TextSearch,
+	find: FolderSearch,
+	ls: FolderTree,
+	bash: Terminal,
+	browser: Globe,
+	help: Hand,
+	request_help: Hand,
+	login: KeyRound,
+};
+
+// ```mermaid blocks are drawn (the contract's flows); every other block stays code.
+const components: Components = {
+	pre({ children, node: _node, ...rest }) {
+		const code = isValidElement<{ className?: string; children?: ReactNode }>(children) ? children.props : null;
+		if (code?.className?.split(' ').includes('language-mermaid'))
+			return <MermaidDiagram chart={String(code.children ?? '').trim()} />;
+		return <pre {...rest}>{children}</pre>;
+	},
+	// A cited job or conversation (Automejora): a chip, not a link.
+	a({ href, children, node: _node, ...rest }) {
+		if (isReference(href)) return <ReferenceChip id={href!}>{children}</ReferenceChip>;
+		return (
+			<a href={href} {...rest}>
+				{children}
+			</a>
+		);
+	},
+};
+const keepReferences = (url: string) => (isReference(url) ? url : defaultUrlTransform(url));
 
 export function ContractMarkdown({ text }: { text: string }) {
 	return (
 		<div className="markdown contract-markdown">
-			<Markdown remarkPlugins={[remarkGfm]} disallowedElements={['img']}>
-				{text}
+			<Markdown
+				remarkPlugins={[remarkGfm]}
+				disallowedElements={['img']}
+				components={components}
+				urlTransform={keepReferences}
+			>
+				{referenceLinks(text)}
 			</Markdown>
 		</div>
 	);

@@ -1,5 +1,7 @@
 import { lazy, Suspense, useEffect, useRef, useState } from 'react';
 import { Check, CheckCheck, Circle, LoaderCircle, RefreshCw, MonitorCheck } from 'lucide-react';
+import { sidebarChanged } from '@/lib/sidebar-events';
+import { AccessSuggestions } from '@/components/access-suggestions';
 import { api, isLive, type Agent, type Design, type PublicSettings, type InterviewAnswers } from './api';
 import { Button } from '@/components/ui/button';
 const DesignChat = lazy(() => import('@/components/design-chat').then((module) => ({ default: module.DesignChat })));
@@ -132,6 +134,24 @@ export function AgentDesigner({
 			clearTimeout(timer);
 		};
 	}, [design?.id, design?.status, design?.busy_until, design?.initialization?.task?.status]);
+	// While a reply is on its way (the POST answers only at the end), read what the designer is doing.
+	useEffect(() => {
+		if (!busy || testing || !design?.id) return;
+		const designId = design.id;
+		let alive = true;
+		const timer = setInterval(async () => {
+			try {
+				const r = await api<{ design: Design }>(`/designs/${designId}`);
+				if (alive) setDesign((d) => (d && d.id === designId ? { ...d, progress: r.design.progress } : d));
+			} catch {
+				// a missed reading is fine; the next one comes in a second
+			}
+		}, 1000);
+		return () => {
+			alive = false;
+			clearInterval(timer);
+		};
+	}, [busy, testing, design?.id]);
 	const sendMessage = async (input: {
 		text?: string;
 		answers?: InterviewAnswers;
@@ -153,6 +173,7 @@ export function AgentDesigner({
 			onDraft?.(d.id);
 			const r = await api<{ design: Design }>(`/designs/${d.id}/messages`, { body: { ...input, version: d.version } });
 			if (current(token)) setDesign(r.design);
+			if (!agent) sidebarChanged(); // a new agent's draft: listed (and named) in the sidebar's Borradores
 		} catch (err) {
 			if (current(token)) setError((err as Error).message);
 			throw err;
@@ -203,6 +224,51 @@ export function AgentDesigner({
 			}
 		}
 	};
+	// The owner renames the proposal from the contract's header; a passed test of the same harness still holds.
+	const rename = async (name: string) => {
+		if (!design || active.current || working) return;
+		setError('');
+		try {
+			const r = await api<{ design: Design }>(`/designs/${design.id}`, {
+				method: 'PATCH',
+				body: { name, version: design.version },
+			});
+			setDesign(r.design);
+			if (!agent) sidebarChanged();
+		} catch (err) {
+			setError((err as Error).message);
+		}
+	};
+	// Cards in the chat: a found tool added or skipped, a requested secret saved (errors stay on the card).
+	const decideFinding = async (
+		message: number,
+		finding: string,
+		choice: 'added' | 'skipped',
+		values?: Record<string, string>,
+		domains?: string[],
+	) => {
+		if (!design) return;
+		const r = await api<{ design: Design }>(`/designs/${design.id}/findings`, {
+			body: { message, finding, choice, values, domains },
+		});
+		setDesign(r.design);
+	};
+	const saveSecret = async (message: number, name: string, value: string, domains: string[]) => {
+		if (!design) return;
+		const r = await api<{ design: Design }>(`/designs/${design.id}/secrets`, {
+			body: { message, name, value, domains },
+		});
+		setDesign(r.design);
+	};
+	const grant = async (kind: string, id: number) => {
+		if (!design) return;
+		setError('');
+		try {
+			setDesign((await api<{ design: Design }>(`/designs/${design.id}/grant`, { body: { kind, id } })).design);
+		} catch (err) {
+			setError((err as Error).message);
+		}
+	};
 	const reload = async () => {
 		if ((!designId && !design) || active.current) return;
 		const token = Symbol();
@@ -237,6 +303,7 @@ export function AgentDesigner({
 				</div>
 				<Initialization
 					design={design}
+					onGrant={grant}
 					busy={busy}
 					onRetry={async () => {
 						if (active.current) return;
@@ -309,6 +376,10 @@ export function AgentDesigner({
 				onAnswer={(answers) => sendMessage({ answers })}
 				onApprove={() => void approve()}
 				onValidate={() => void testHarness()}
+				onRename={rename}
+				onFinding={decideFinding}
+				onGrant={grant}
+				onSecret={saveSecret}
 				validating={testing}
 				onBack={onBack}
 				notice={notice}
@@ -318,7 +389,17 @@ export function AgentDesigner({
 	);
 }
 
-function Initialization({ design, busy, onRetry }: { design: Design; busy: boolean; onRetry: () => void }) {
+function Initialization({
+	design,
+	busy,
+	onRetry,
+	onGrant,
+}: {
+	design: Design;
+	busy: boolean;
+	onRetry: () => void;
+	onGrant: (kind: string, id: number) => Promise<void>;
+}) {
 	const init = design.initialization;
 	const complete = init?.task?.status === 'done';
 	const failed = !init?.task || (!isLive(init.task) && !complete);
@@ -389,6 +470,11 @@ function Initialization({ design, busy, onRetry }: { design: Design; busy: boole
 			<p role="status" className="sr-only">
 				{complete ? 'Agente inicializado.' : `${count} de ${steps.length} pasos completados.`}
 			</p>
+			{!!design.accessSuggestions?.length && (
+				<div className="mt-6 border-t pt-5">
+					<AccessSuggestions heading suggestions={design.accessSuggestions} onGrant={onGrant} />
+				</div>
+			)}
 		</section>
 	);
 }

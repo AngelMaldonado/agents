@@ -358,6 +358,47 @@ app.get('/api/designs/:id', async (c) => {
 		return fail(c, err, 404);
 	}
 });
+// Renames the proposal (the contract's name) from the contract panel's header.
+app.patch('/api/designs/:id', async (c) => {
+	try {
+		return c.json({ design: await designs.rename(c.get('me').id, c.req.param('id'), await c.req.json()) });
+	} catch (err) {
+		return fail(c, err);
+	}
+});
+// The owner adds or skips a tool the designer found (an MCP server with its secrets, a skill, a CLI).
+app.post('/api/designs/:id/findings', async (c) => {
+	try {
+		return c.json({ design: await designs.decideFinding(c.get('me').id, c.req.param('id'), await c.req.json()) });
+	} catch (err) {
+		return fail(c, err);
+	}
+});
+// The owner saves a secret the designer asked for, as an API key of theirs (never through the model).
+app.post('/api/designs/:id/secrets', async (c) => {
+	try {
+		return c.json({ design: await designs.saveSecret(c.get('me').id, c.req.param('id'), await c.req.json()) });
+	} catch (err) {
+		return fail(c, err);
+	}
+});
+// Grants one of the accesses the designer suggested to the agent (initialization, or the improved agent).
+app.post('/api/designs/:id/grant', async (c) => {
+	try {
+		return c.json({ design: await designs.grantSuggested(c.get('me').id, c.req.param('id'), await c.req.json()) });
+	} catch (err) {
+		return fail(c, err);
+	}
+});
+// Discards a draft of a new agent (sidebar → Borradores).
+app.delete('/api/designs/:id', async (c) => {
+	try {
+		await designs.remove(c.get('me').id, c.req.param('id'));
+		return c.json({ ok: true });
+	} catch (err) {
+		return fail(c, err);
+	}
+});
 app.post('/api/designs/:id/messages', async (c) => {
 	try {
 		return c.json({
@@ -796,7 +837,11 @@ app.delete('/api/agents/:id/schedules/:name', async (c) => {
 app.get('/api/sidebar', async (c) => {
 	const me = c.get('me');
 	c.header('Cache-Control', 'private, no-store');
-	return c.json({ pins: await pins.list(me.id), conversations: await pins.recentConversations(me.id) });
+	return c.json({
+		pins: await pins.list(me.id),
+		conversations: await pins.recentConversations(me.id),
+		drafts: await designs.drafts(me.id),
+	});
 });
 
 app.put('/api/pins', async (c) => {

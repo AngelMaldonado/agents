@@ -9,16 +9,20 @@ import {
 	ChevronsUpDown,
 	LayoutGrid,
 	Loader2,
+	LoaderCircle,
+	Clock,
 	LogOut,
 	MessageSquare,
 	MessageSquareText,
 	MoreHorizontal,
 	Pencil,
+	BrainCircuit,
+	Share2,
+	FilePen,
 	Moon,
 	Palette,
 	Pin,
 	PinOff,
-	Save,
 	Search,
 	Settings2,
 	SquarePen,
@@ -32,6 +36,8 @@ import { onTask } from '@/live';
 import { CubyBot } from '@/components/cuby-bot';
 import wordmarkUrl from '@/assets/cuby-agents-wordmark.png';
 import { useVersion } from '@/lib/use-version';
+import { ChatDialog } from '@/components/chat-dialog';
+import { SIDEBAR_CHANGED, improveWith, requestShare } from '@/lib/sidebar-events';
 import { useTheme } from '@/lib/theme';
 import { cn } from '@/lib/utils';
 import {
@@ -102,7 +108,18 @@ function Highlight({ text, query }: { text: string; query: string }) {
 }
 
 /** Shared and managed marks, each with a tooltip that says what it means for this person. */
+/** A run of it (or of this chat) is working now: a small spinner; in the queue, a clock. */
+function Working({ queued = false, label }: { queued?: boolean; label: string }) {
+	const Icon = queued ? Clock : LoaderCircle;
+	return (
+		<span role="img" aria-label={label} title={label} className="inline-flex shrink-0 text-primary">
+			<Icon className={cn('size-3.5', !queued && 'animate-spin')} aria-hidden="true" />
+		</span>
+	);
+}
+
 function AgentMarks({ agent, me }: { agent: Agent; me: Person }) {
+	const live = isLive(agent.task);
 	const marks: { icon: typeof Users; label: string }[] = [];
 	if (agent.person_id !== me.id) marks.push({ icon: Users, label: `Compartido contigo por ${agent.owner}` });
 	else if (agent.shares?.length)
@@ -111,9 +128,15 @@ function AgentMarks({ agent, me }: { agent: Agent; me: Person }) {
 			label: `Lo compartes con ${agent.shares.length} ${agent.shares.length === 1 ? 'persona' : 'personas'}`,
 		});
 	if (agent.managed) marks.push({ icon: BadgeCheck, label: 'Administrado: viene del catálogo del admin' });
-	if (!marks.length) return null;
+	if (!marks.length && !live) return null;
 	return (
 		<span className="ml-auto flex shrink-0 items-center gap-1 text-muted-foreground">
+			{live && (
+				<Working
+					queued={agent.task!.status === 'queued'}
+					label={agent.task!.status === 'queued' ? 'Trabajo en cola' : 'Trabajando'}
+				/>
+			)}
 			{marks.map(({ icon: Icon, label }) => (
 				<Tooltip key={label}>
 					<TooltipTrigger asChild>
@@ -169,18 +192,24 @@ type RecentConversation = {
 	archived_at: number | null;
 	is_default: boolean;
 	last_at: number;
+	/** It has a run in the queue or working now. */
+	live?: boolean;
 };
+/** A draft of a new agent: its conversation lives in «Nuevo agente» until approved. */
+type Draft = { id: string; name: string; updated_at: number };
 
-/** The sidebar's pins and recent conversations; reloaded on navigation and when a run ends. */
+/** The sidebar's pins, recent conversations and drafts; reloaded on navigation and when a run ends. */
 function useSidebarData(hash: string) {
 	const [pins, setPins] = useState<PinRef[]>([]);
 	const [conversations, setConversations] = useState<RecentConversation[]>([]);
+	const [drafts, setDrafts] = useState<Draft[]>([]);
 	const load = useCallback(
 		() =>
-			api<{ pins: PinRef[]; conversations: RecentConversation[] }>('/sidebar')
+			api<{ pins: PinRef[]; conversations: RecentConversation[]; drafts?: Draft[] }>('/sidebar')
 				.then((r) => {
 					setPins(r.pins);
 					setConversations(r.conversations);
+					setDrafts(r.drafts ?? []);
 				})
 				.catch(() => {}),
 		[],
@@ -188,7 +217,23 @@ function useSidebarData(hash: string) {
 	useEffect(() => {
 		void load();
 	}, [hash, load]);
-	useEffect(() => onTask((t) => !isLive(t) && void load()), [load]);
+	// A run that starts or ends changes which chats are working (and the recent ones): reload then.
+	const statuses = useRef(new Map<number, string>());
+	useEffect(
+		() =>
+			onTask((t) => {
+				if (statuses.current.get(t.id) === t.status) return;
+				statuses.current.set(t.id, t.status);
+				void load();
+			}),
+		[load],
+	);
+	// Something the sidebar lists changed elsewhere (a draft got its first reply or a new name).
+	useEffect(() => {
+		const reload = () => void load();
+		window.addEventListener(SIDEBAR_CHANGED, reload);
+		return () => window.removeEventListener(SIDEBAR_CHANGED, reload);
+	}, [load]);
 	const isPinned = (kind: PinRef['kind'], id: number) => pins.some((p) => p.kind === kind && p.ref_id === id);
 	const toggle = async (kind: PinRef['kind'], id: number) => {
 		const pinned = !isPinned(kind, id);
@@ -200,30 +245,56 @@ function useSidebarData(hash: string) {
 			void load();
 		}
 	};
-	return { pins, conversations, isPinned, toggle, reload: load };
+	return { pins, conversations, drafts, isPinned, toggle, reload: load };
 }
 
-function PinAction({
-	pinned,
-	what,
-	onToggle,
-	className,
+function DraftItem({
+	draft,
+	active,
+	query,
+	onNavigate,
+	onDiscard,
 }: {
-	pinned: boolean;
-	what: string;
-	onToggle: () => void;
-	className?: string;
+	draft: Draft;
+	active: boolean;
+	query: string;
+	onNavigate: () => void;
+	onDiscard: () => void;
 }) {
 	return (
-		<SidebarMenuAction
-			showOnHover
-			className={cn('text-muted-foreground', className)}
-			onClick={onToggle}
-			aria-label={pinned ? `Desfijar ${what}` : `Fijar ${what}`}
-			title={pinned ? 'Desfijar' : 'Fijar'}
-		>
-			{pinned ? <PinOff aria-hidden="true" /> : <Pin aria-hidden="true" />}
-		</SidebarMenuAction>
+		<SidebarMenuItem>
+			<SidebarMenuButton asChild isActive={active}>
+				<a
+					href={`#/new/${draft.id}`}
+					onClick={onNavigate}
+					aria-current={active ? 'page' : undefined}
+					title={`${draft.name} · borrador, ${ago(draft.updated_at)}`}
+				>
+					<FilePen aria-hidden="true" className="text-muted-foreground" />
+					<span className="min-w-0 flex-1 truncate">
+						<Highlight text={draft.name} query={query} />
+					</span>
+				</a>
+			</SidebarMenuButton>
+			<DropdownMenu>
+				<DropdownMenuTrigger asChild>
+					<SidebarMenuAction
+						showOnHover
+						className="text-muted-foreground data-[state=open]:opacity-100"
+						aria-label={`Acciones de ${draft.name}`}
+						title="Más"
+					>
+						<MoreHorizontal aria-hidden="true" />
+					</SidebarMenuAction>
+				</DropdownMenuTrigger>
+				<DropdownMenuContent side="right" align="start" className="w-44">
+					<DropdownMenuItem variant="destructive" onSelect={onDiscard}>
+						<Trash2 aria-hidden="true" />
+						Descartar
+					</DropdownMenuItem>
+				</DropdownMenuContent>
+			</DropdownMenu>
+		</SidebarMenuItem>
 	);
 }
 
@@ -234,6 +305,9 @@ function AgentItem({
 	query,
 	pinned,
 	onPin,
+	onRename,
+	onShare,
+	onDelete,
 	onNavigate,
 	badge = false,
 }: {
@@ -243,9 +317,14 @@ function AgentItem({
 	query: string;
 	pinned: boolean;
 	onPin: () => void;
+	onRename: () => void;
+	onShare: () => void;
+	onDelete: () => void;
 	onNavigate: () => void;
 	badge?: boolean;
 }) {
+	const mine = agent.person_id === me.id;
+	const live = isLive(agent.task);
 	return (
 		<SidebarMenuItem>
 			<SidebarMenuButton asChild isActive={active} className="h-9">
@@ -258,13 +337,61 @@ function AgentItem({
 					<span className="min-w-0 flex-1 truncate">
 						<Highlight text={agent.name} query={query} />
 					</span>
-					{/* The marks give way to the pin action while hovering. */}
-					<span className="contents md:group-hover/menu-item:[&>*]:invisible md:group-focus-within/menu-item:[&>*]:invisible">
+					{/* The marks stay while hovering: the row keeps room for the «…» menu on its right (pr-8). */}
+					<span className="contents">
 						<AgentMarks agent={agent} me={me} />
 					</span>
 				</a>
 			</SidebarMenuButton>
-			<PinAction pinned={pinned} what={agent.name} onToggle={onPin} className="top-2" />
+			<DropdownMenu>
+				<DropdownMenuTrigger asChild>
+					<SidebarMenuAction
+						showOnHover
+						className="top-2 text-muted-foreground data-[state=open]:opacity-100"
+						aria-label={`Acciones de ${agent.name}`}
+						title="Más"
+					>
+						<MoreHorizontal aria-hidden="true" />
+					</SidebarMenuAction>
+				</DropdownMenuTrigger>
+				<DropdownMenuContent side="right" align="start" className="w-44">
+					{/* Renaming, sharing and deleting are the owner's; a shared agent can only be pinned. */}
+					{mine && (
+						<DropdownMenuItem
+							onSelect={onRename}
+							disabled={live}
+							title={live ? 'Espera a que termine su trabajo.' : undefined}
+						>
+							<Pencil aria-hidden="true" />
+							Renombrar
+						</DropdownMenuItem>
+					)}
+					<DropdownMenuItem onSelect={onPin}>
+						{pinned ? <PinOff aria-hidden="true" /> : <Pin aria-hidden="true" />}
+						{pinned ? 'Desfijar' : 'Fijar'}
+					</DropdownMenuItem>
+					{mine && (
+						<DropdownMenuItem onSelect={onShare}>
+							<Share2 aria-hidden="true" />
+							Compartir
+						</DropdownMenuItem>
+					)}
+					{mine && (
+						<>
+							<DropdownMenuSeparator />
+							<DropdownMenuItem
+								variant="destructive"
+								disabled={live}
+								title={live ? 'Termina o cancela su trabajo antes de eliminarlo.' : undefined}
+								onSelect={onDelete}
+							>
+								<Trash2 aria-hidden="true" />
+								Eliminar
+							</DropdownMenuItem>
+						</>
+					)}
+				</DropdownMenuContent>
+			</DropdownMenu>
 		</SidebarMenuItem>
 	);
 }
@@ -278,6 +405,7 @@ function ConversationItem({
 	onPin,
 	onRename,
 	onDelete,
+	onImprove,
 	onNavigate,
 	badge = false,
 }: {
@@ -289,6 +417,8 @@ function ConversationItem({
 	onPin: () => void;
 	onRename: () => void;
 	onDelete: () => void;
+	/** «Usar para mejorar»: only for the person's own agents (Automejora is the owner's). */
+	onImprove?: () => void;
 	onNavigate: () => void;
 	badge?: boolean;
 }) {
@@ -308,6 +438,12 @@ function ConversationItem({
 					<span className={cn('min-w-0 flex-1 truncate', chat.archived_at && 'text-muted-foreground')}>
 						<Highlight text={chat.title} query={query} />
 					</span>
+					{chat.live && (
+						// Stays while hovering: the «…» menu has its own room on the right.
+						<span className="contents">
+							<Working label="Este chat está trabajando" />
+						</span>
+					)}
 				</a>
 			</SidebarMenuButton>
 			<DropdownMenu>
@@ -330,6 +466,12 @@ function ConversationItem({
 						{pinned ? <PinOff aria-hidden="true" /> : <Pin aria-hidden="true" />}
 						{pinned ? 'Desfijar' : 'Fijar'}
 					</DropdownMenuItem>
+					{onImprove && (
+						<DropdownMenuItem onSelect={onImprove}>
+							<BrainCircuit aria-hidden="true" />
+							Usar para mejorar
+						</DropdownMenuItem>
+					)}
 					<DropdownMenuSeparator />
 					<DropdownMenuItem
 						variant="destructive"
@@ -346,96 +488,88 @@ function ConversationItem({
 	);
 }
 
-/** Renaming or deleting a chat from the sidebar: one dialog, over the page. */
-function ChatDialog({
+/** Renaming or deleting (retiring) an agent from the sidebar: one dialog, over the page. */
+function AgentDialog({
 	edit,
 	onClose,
 	onDone,
 }: {
-	edit: { chat: RecentConversation; action: 'rename' | 'delete' } | null;
+	edit: { agent: Agent; action: 'rename' | 'delete' } | null;
 	onClose: () => void;
-	onDone: (deleted: RecentConversation | null) => void;
+	onDone: (deleted: Agent | null) => void;
 }) {
-	const [title, setTitle] = useState('');
+	const [value, setValue] = useState('');
 	const [busy, setBusy] = useState(false);
 	const [error, setError] = useState('');
 	useEffect(() => {
-		setTitle(edit?.chat.title ?? '');
+		setValue(edit?.action === 'rename' ? edit.agent.name : '');
 		setError('');
 	}, [edit]);
-	const chat = edit?.chat;
-	const path = chat && `/agents/${chat.agent_id}/conversations/${chat.id}`;
-	const run = async (fn: () => Promise<void>) => {
-		setBusy(true);
-		setError('');
-		try {
-			await fn();
-		} catch (e) {
-			setError((e as Error).message);
-		} finally {
-			setBusy(false);
-		}
-	};
+	const agent = edit?.agent;
+	const deleting = edit?.action === 'delete';
 	return (
 		<FormDialog
 			open={!!edit}
 			onOpenChange={(open) => !open && !busy && onClose()}
-			title={edit?.action === 'delete' ? '¿Eliminar este chat?' : 'Renombrar chat'}
+			title={deleting ? `¿Eliminar a ${agent?.name}?` : 'Renombrar agente'}
 			description={
-				edit?.action === 'delete'
-					? `«${chat?.title}» desaparece de tus listas y de la búsqueda. Sus mensajes, trabajos y archivos se conservan.`
-					: undefined
+				deleting
+					? 'Se retira de la galería y se eliminan sus horarios; sus conversaciones y trabajos no se purgan. Para confirmar, escribe su nombre exacto.'
+					: 'Cambia sólo el nombre (queda como una revisión nueva de su definición).'
 			}
 		>
 			<form
 				className="form"
-				onSubmit={(e) => {
+				onSubmit={async (e) => {
 					e.preventDefault();
-					if (!path) return;
-					void run(async () => {
-						if (edit?.action === 'delete') {
-							await api(path, { method: 'DELETE' });
-							onDone(chat!);
+					if (!agent || busy || (deleting && value !== agent.name)) return;
+					setBusy(true);
+					setError('');
+					try {
+						if (deleting) {
+							await api(`/agents/${agent.id}`, { method: 'DELETE', body: { confirmName: value } });
+							onDone(agent);
 						} else {
-							await api(path, { method: 'PATCH', body: { title } });
+							await api(`/agents/${agent.id}`, {
+								method: 'PATCH',
+								body: { name: value.trim(), revision: agent.config_revision },
+							});
 							onDone(null);
 						}
-					});
+					} catch (err) {
+						setError((err as Error).message);
+					} finally {
+						setBusy(false);
+					}
 				}}
 			>
-				{edit?.action === 'rename' && (
-					<label>
-						Título
-						<Input
-							value={title}
-							onChange={(e) => setTitle(e.target.value)}
-							maxLength={80}
-							autoFocus
-							placeholder="Vacío: vuelve al título automático"
-						/>
-					</label>
-				)}
+				<label>
+					{deleting ? `Escribe ${agent?.name}` : 'Nombre'}
+					<Input
+						value={value}
+						onChange={(e) => setValue(e.target.value)}
+						maxLength={40}
+						autoFocus
+						autoComplete="off"
+						spellCheck={false}
+						disabled={busy}
+					/>
+				</label>
 				{error && (
 					<p role="alert" className="error">
 						{error}
 					</p>
 				)}
-				<div className="flex flex-wrap justify-end gap-2 border-t pt-4">
-					<Button type="button" variant="outline" onClick={onClose} disabled={busy}>
-						<X aria-hidden="true" />
+				<div className="flex justify-end gap-2">
+					<Button type="button" variant="ghost" onClick={onClose} disabled={busy}>
 						Cancelar
 					</Button>
-					{edit?.action === 'delete' ? (
-						<Button type="submit" variant="destructive" disabled={busy}>
-							<Trash2 aria-hidden="true" />
-							Eliminar
-						</Button>
-					) : (
-						<Button type="submit" disabled={busy}>
-							<Save aria-hidden="true" />
-							Guardar
-						</Button>
-					)}
+					<Button
+						variant={deleting ? 'destructive' : 'default'}
+						disabled={busy || (deleting ? value !== agent?.name : !value.trim() || value.trim() === agent?.name)}
+					>
+						{deleting ? 'Eliminar agente' : 'Guardar'}
+					</Button>
 				</div>
 			</form>
 		</FormDialog>
@@ -614,6 +748,7 @@ export function AppSidebar({
 	agents,
 	hash,
 	width,
+	onAgentsChanged,
 	onSettings,
 	onLogout,
 }: {
@@ -621,11 +756,13 @@ export function AppSidebar({
 	agents: Agent[];
 	hash: string;
 	width: SidebarWidth;
+	onAgentsChanged: () => void;
 	onSettings: () => void;
 	onLogout: () => Promise<void>;
 }) {
 	const { isMobile, setOpenMobile, state, setOpen } = useSidebar();
 	const [query, setQuery] = useState('');
+	const [agentEdit, setAgentEdit] = useState<{ agent: Agent; action: 'rename' | 'delete' } | null>(null);
 	const input = useRef<HTMLInputElement>(null);
 	const version = useVersion();
 	const listed = useMemo(() => listedAgents(agents, me), [agents, me]);
@@ -636,6 +773,19 @@ export function AppSidebar({
 	const activeAgent = Number(hash.match(/^\/agent\/(\d+)/)?.[1]);
 	const activeChat = Number(hash.match(/^\/agent\/\d+\/chat\/(\d+)/)?.[1]);
 	const side = useSidebarData(hash);
+	const activeDraft = hash.match(/^\/new\/([\w-]+)/)?.[1];
+	const shownDrafts = q ? side.drafts.filter((d) => fold(d.name).includes(fold(q))) : side.drafts;
+	// Nothing was created from a draft: discarding it deletes its conversation for good.
+	const discardDraft = async (d: Draft) => {
+		if (!confirm(`¿Descartar el borrador «${d.name}»? Se borra su conversación.`)) return;
+		try {
+			await api(`/designs/${d.id}`, { method: 'DELETE' });
+			if (activeDraft === d.id) location.hash = '/new';
+			void side.reload();
+		} catch (err) {
+			alert((err as Error).message);
+		}
+	};
 	const byId = useMemo(() => new Map(agents.map((a) => [a.id, a])), [agents]);
 	// Pinned first (in the order they were pinned), then the rest.
 	const pinnedAgents = side.pins.flatMap((p) => (p.kind === 'agent' ? shown.filter((a) => a.id === p.ref_id) : []));
@@ -659,6 +809,13 @@ export function AppSidebar({
 			query={q}
 			pinned={side.isPinned('agent', a.id)}
 			onPin={() => void side.toggle('agent', a.id)}
+			onRename={() => setAgentEdit({ agent: a, action: 'rename' })}
+			onShare={() => {
+				close();
+				location.hash = `/agent/${a.id}`;
+				requestShare(a.id);
+			}}
+			onDelete={() => setAgentEdit({ agent: a, action: 'delete' })}
 			onNavigate={close}
 		/>
 	);
@@ -674,6 +831,14 @@ export function AppSidebar({
 			onPin={() => void side.toggle('conversation', c.id)}
 			onRename={() => setChatEdit({ chat: c, action: 'rename' })}
 			onDelete={() => setChatEdit({ chat: c, action: 'delete' })}
+			onImprove={
+				byId.get(c.agent_id)?.person_id === me.id
+					? () => {
+							close();
+							improveWith(c.agent_id, { id: c.id, title: c.title });
+						}
+					: undefined
+			}
 			onNavigate={close}
 		/>
 	);
@@ -819,6 +984,25 @@ export function AppSidebar({
 							)}
 						</SidebarGroupContent>
 					</SidebarGroup>
+					{shownDrafts.length > 0 && (
+						<SidebarGroup className="group-data-[collapsible=icon]:hidden">
+							<SidebarGroupLabel>Borradores</SidebarGroupLabel>
+							<SidebarGroupContent>
+								<SidebarMenu aria-label="Borradores de agentes nuevos">
+									{shownDrafts.map((d) => (
+										<DraftItem
+											key={d.id}
+											draft={d}
+											active={activeDraft === d.id}
+											query={q}
+											onNavigate={close}
+											onDiscard={() => void discardDraft(d)}
+										/>
+									))}
+								</SidebarMenu>
+							</SidebarGroupContent>
+						</SidebarGroup>
+					)}
 					{recentChats.length > 0 && (
 						<SidebarGroup className="group-data-[collapsible=icon]:hidden">
 							<SidebarGroupLabel>Conversaciones</SidebarGroupLabel>
@@ -878,6 +1062,17 @@ export function AppSidebar({
 					onLogout={onLogout}
 				/>
 			</SidebarFooter>
+			<AgentDialog
+				edit={agentEdit}
+				onClose={() => setAgentEdit(null)}
+				onDone={(deleted) => {
+					setAgentEdit(null);
+					onAgentsChanged();
+					void side.reload();
+					// The open agent was deleted: back to the gallery.
+					if (deleted && deleted.id === activeAgent) location.hash = '/';
+				}}
+			/>
 			<ChatDialog
 				edit={chatEdit}
 				onClose={() => setChatEdit(null)}

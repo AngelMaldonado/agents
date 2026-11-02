@@ -8,6 +8,8 @@ export type Conversation = {
 	is_default: boolean;
 	runs: number;
 	last_at: number;
+	/** It has a run in the queue or working now. */
+	live: boolean;
 };
 export const requestKey = (value: unknown) => {
 	if (typeof value !== 'string' || !/^[0-9a-f]{8}-(?:[0-9a-f]{4}-){3}[0-9a-f]{12}$/i.test(value))
@@ -36,7 +38,7 @@ export async function defaultConversation(agentId: number, c: Exec) {
 /** A conversation's title, for a query that has it as `c`. */
 export const titleSql = `coalesce(c.title,case when c.is_default then 'Principal' else (select left(m.text,60) from messages m left join runs r on r.id=m.run_id where m.conversation_id=c.id and (r.kind is null or r.kind<>'initialize') order by m.id limit 1) end,'Nueva conversación')`;
 // last_at: its latest message or run, for «Recientes» (the hub's history).
-const COLUMNS = `c.id,c.agent_id,${titleSql} as title,c.started_at,c.archived_at,c.is_default,(select count(*) from runs r where r.conversation_id=c.id) as runs,greatest(c.started_at,(select max(r.created_at) from runs r where r.conversation_id=c.id),(select max(m.received_at) from messages m where m.conversation_id=c.id)) as last_at`;
+const COLUMNS = `c.id,c.agent_id,${titleSql} as title,c.started_at,c.archived_at,c.is_default,(select count(*) from runs r where r.conversation_id=c.id) as runs,greatest(c.started_at,(select max(r.created_at) from runs r where r.conversation_id=c.id),(select max(m.received_at) from messages m where m.conversation_id=c.id)) as last_at,exists(select 1 from runs r where r.conversation_id=c.id and r.status in ('queued','starting','running','blocked')) as live`;
 export function list(agentId: number) {
 	return rows<Conversation>(
 		`select ${COLUMNS} from conversations c where c.agent_id=$1 and c.deleted_at is null order by c.is_default desc,c.id desc`,

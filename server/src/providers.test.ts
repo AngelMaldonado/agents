@@ -35,6 +35,7 @@ let calls = 0;
 let replyStatus = 200;
 let waitReply: Promise<void> | null = null;
 const modelRequests: any[] = [];
+const queuedReplies: unknown[] = []; // served before designerReply, one per request
 const designerReply = {
 	message: 'Contrato listo para tu revisión.',
 	contract: {
@@ -62,7 +63,7 @@ const proxy = Bun.serve({
 						{
 							type: 'message',
 							role: 'assistant',
-							content: [{ type: 'output_text', text: JSON.stringify(designerReply) }],
+							content: [{ type: 'output_text', text: JSON.stringify(queuedReplies.shift() ?? designerReply) }],
 						},
 					],
 				},
@@ -216,7 +217,8 @@ run(
 		);
 		expect(duplicate.duplicate).toBe(true);
 		expect(duplicate.message_id).toBe(ordinary.message_id);
-		expect(await conversations(a.id)).toEqual([{ ...first[0], runs: 1, last_at: expect.any(Number) }]);
+		// Its queued run makes it «live» (working or waiting).
+		expect(await conversations(a.id)).toEqual([{ ...first[0], runs: 1, last_at: expect.any(Number), live: true }]);
 	},
 );
 
@@ -705,6 +707,23 @@ run('plain chat help is durable, exact-round-bound and cannot race structured or
 	expect((await tasks.answerHelpText(r.id, round, 'Guadalajara', key)).duplicate).toBe(true);
 });
 
+/** The platform's last round (deliverable, and for a new agent the confirmation): Markdown and «Sí». */
+async function confirmed(d: Awaited<ReturnType<typeof import('./designs').get>>) {
+	const designs = await import('./designs');
+	const pending = d.interview.pending;
+	const ids = pending?.questions.map((q) => q.id) ?? [];
+	if (!ids.length || ids.some((id) => id !== 'entregable' && id !== 'confirmar')) return d;
+	const answer = { entregable: ['markdown'], confirmar: ['si'] } as const;
+	return designs.message(person, d.id, {
+		version: d.version,
+		answers: {
+			round: pending!.round,
+			values: Object.fromEntries(
+				ids.map((id) => [id, { selected: [...answer[id as keyof typeof answer]], other: '' }]),
+			),
+		},
+	});
+}
 async function proposal(agentId?: number) {
 	const designs = await import('./designs');
 	const d = await designs.create(person, { model: 'openai/gpt-6-sol', ...(agentId ? { agentId } : {}) });
@@ -713,35 +732,237 @@ async function proposal(agentId?: number) {
 		version: d.version,
 	});
 	const pending = asked.interview.pending!;
-	return designs.message(person, d.id, {
-		version: asked.version,
-		answers: {
-			round: pending.round,
-			values: Object.fromEntries(pending.questions.map((q) => [q.id, { selected: [q.options.at(-1)!.id], other: '' }])),
-		},
-	});
+	return confirmed(
+		await designs.message(person, d.id, {
+			version: asked.version,
+			answers: {
+				round: pending.round,
+				values: Object.fromEntries(
+					pending.questions.map((q) => [q.id, { selected: [q.options.at(-1)!.id], other: '' }]),
+				),
+			},
+		}),
+	);
 }
 run('interview persists a structured draft but creates no agent or run', async () => {
 	const designs = await import('./designs');
 	const before = await row('select count(*) as n from agents');
 	const d = await proposal();
 	expect(d.ready).toBe(true);
-	expect(d.version).toBe(2);
-	expect(d.messages.length).toBe(4);
-	expect(d.tokens).toBe(246);
-	expect(d.interview).toMatchObject({ phase: 'review', completed: 1, pending: null });
+	expect(d.version).toBe(3); // question round, confirmation, proposal
+	expect(d.messages.length).toBe(6);
+	expect(d.tokens).toBe(369);
+	expect(d.interview).toMatchObject({ phase: 'review', completed: 2, pending: null });
 	expect(d.contract).toEqual(designerReply.contract);
 	expect(await row('select count(*) as n from agents')).toEqual(before);
 	expect((await designs.get(person, d.id)).messages).toEqual(d.messages);
 	const request = modelRequests.at(-1);
 	expect(request.model).toBe('gpt-6-sol');
 	expect(request.store).toBe(false);
-	expect(request.tools).toEqual([]);
+	expect(request.tools.map((t: any) => t.name)).toEqual(['buscar_mcp', 'buscar_cli', 'buscar_skills']); // searches only, read only
 	expect(request.input[0].content).toContain('frontera');
+	expect(request.input[0].content).toContain('Canales de entrega de esta versión'); // what a deliverable can use
 	expect(request.text.format.type).toBe('json_schema');
 	expect(request.input[1].questions).toBeUndefined(); // provider messages carry only role/content, not UI metadata
 	expect(request.input.some((m: any) => m.content.includes('Preguntas de esta ronda'))).toBe(true);
 	expect(d.effectivePrompt).toContain('Nunca pagas');
+});
+run('drafts are listed, renamed without losing a passed harness test, and discarded', async () => {
+	const designs = await import('./designs'),
+		{ proposalDigest } = await import('./harnesses');
+	const d = await proposal();
+	expect((await designs.drafts(person)).find((x) => x.id === d.id)?.name).toBe('Diseñado');
+	const stored = (await row<any>('select * from agent_designs where id = $1', [d.id]))!;
+	await exec('update agent_designs set harness_validation = $2 where id = $1', [
+		d.id,
+		JSON.stringify({
+			status: 'passed',
+			version: d.version,
+			digest: proposalDigest(stored),
+			harnessDigest: 'h',
+			imageId: `sha256:${'a'.repeat(64)}`,
+			at: 0,
+			checks: [],
+			tools: [],
+		}),
+	]);
+	const renamed = await designs.rename(person, d.id, { name: 'Comparador', version: d.version });
+	expect(renamed.contract?.name).toBe('Comparador');
+	expect(renamed.version).toBe(d.version + 1);
+	const after = (await row<any>('select * from agent_designs where id = $1', [d.id]))!;
+	expect(renamed.harness_validation).toMatchObject({
+		status: 'passed',
+		version: renamed.version,
+		digest: proposalDigest(after),
+	});
+	await expect(designs.rename(person, d.id, { name: 'Otro', version: d.version })).rejects.toThrow('cambió');
+	await expect(designs.rename(person, d.id, { name: 'x'.repeat(41), version: renamed.version })).rejects.toThrow('40');
+	expect((await designs.drafts(person)).find((x) => x.id === d.id)?.name).toBe('Comparador');
+	await designs.remove(person, d.id);
+	expect((await designs.drafts(person)).some((x) => x.id === d.id)).toBe(false);
+	await expect(designs.get(person, d.id)).rejects.toThrow();
+});
+run("suggested accesses are only the person's, and granting one adds the agent to it", async () => {
+	const designs = await import('./designs'),
+		agents = await import('./agents'),
+		accesses = await import('./accesses');
+	const agent = await agents.create(person, { name: 'Con accesos', role: 'Inicial', model: 'openai/gpt-6-sol' });
+	const other = await agents.create(person, { name: 'Otro', role: 'Inicial', model: 'openai/gpt-6-sol' });
+	const key = (await accesses.saveKey(person, { name: 'DOCS_TOKEN', value: 'x', domains: 'api.example.com' })).find(
+		(k) => k.name === 'DOCS_TOKEN',
+	)!;
+	await accesses.grantKey(person, key.id, [other.id]);
+	const reply = designerReply as typeof designerReply & { accesses?: unknown };
+	reply.accesses = [
+		{ kind: 'key', name: 'docs_token', reason: 'Lee la documentación privada' },
+		{ kind: 'key', name: 'NO_EXISTE', reason: '' },
+		{ kind: 'mcp', name: 'DOCS_TOKEN', reason: 'otro tipo' },
+	];
+	try {
+		const d = await proposal(agent.id);
+		expect(d.accessSuggestions).toEqual([
+			{
+				kind: 'key',
+				id: key.id,
+				name: 'DOCS_TOKEN',
+				detail: 'api.example.com',
+				reason: 'Lee la documentación privada',
+				granted: false,
+				accepted: false,
+			},
+		]);
+		const granted = await designs.grantSuggested(person, d.id, { kind: 'key', id: key.id });
+		expect(granted.accessSuggestions?.[0].granted).toBe(true);
+		expect((await accesses.listKeys(person)).find((k) => k.id === key.id)?.agents.sort()).toEqual(
+			[agent.id, other.id].sort(),
+		);
+		const stranger = (await accesses.saveKey(person, { name: 'OTRA', value: 'y', domains: 'x.example.com' })).find(
+			(k) => k.name === 'OTRA',
+		)!;
+		await expect(designs.grantSuggested(person, d.id, { kind: 'key', id: stranger.id })).rejects.toThrow('sugeridos');
+	} finally {
+		delete reply.accesses;
+	}
+});
+run("found tools: an MCP becomes the owner's access with its secret, and secrets never reach the model", async () => {
+	const designs = await import('./designs'),
+		accesses = await import('./accesses');
+	const d = await proposal();
+	const at = d.messages.length - 1;
+	await exec(
+		`update agent_designs set messages = jsonb_set(jsonb_set(messages, $2, $3::jsonb), $4, $5::jsonb) where id = $1`,
+		[
+			d.id,
+			`{${at},findings}`,
+			JSON.stringify([
+				{
+					id: 'mcp:io.example/docs',
+					kind: 'mcp',
+					name: 'io.example/docs',
+					title: 'docs',
+					description: 'Documentación por MCP',
+					version: '1.0.0',
+					url: null,
+					fields: [
+						{
+							name: 'Authorization',
+							description: 'Token',
+							secret: true,
+							target: 'header',
+							template: 'Bearer {token}',
+							value: null,
+						},
+					],
+					mcp: { transport: 'http', url: 'https://mcp.example.com/mcp' },
+					status: 'pending',
+				},
+				{
+					id: 'cli:pdf-tool',
+					kind: 'cli',
+					name: 'pdf-tool',
+					title: 'pdf-tool',
+					description: '',
+					version: '2.0.0',
+					url: null,
+					fields: [],
+					status: 'pending',
+				},
+			]),
+			`{${at},secrets}`,
+			JSON.stringify([{ name: 'DOCS_TOKEN', description: 'Para la API de documentos', domains: ['api.example.com'] }]),
+		],
+	);
+	const card = { message: at, finding: 'mcp:io.example/docs', choice: 'added' };
+	await expect(designs.decideFinding(person, d.id, { ...card, values: {} })).rejects.toThrow('Falta Authorization');
+	const added = await designs.decideFinding(person, d.id, { ...card, values: { Authorization: 'secreto-123' } });
+	expect(added.messages[at].findings?.[0]).toMatchObject({ status: 'added', added: { access: 'docs' } });
+	const mcp = (await accesses.listMcp(person)).find((m) => m.name === 'docs')!;
+	expect(mcp.url).toBe('https://mcp.example.com/mcp');
+	expect(mcp.headers).toEqual([{ name: 'Authorization', secret: true, value: null }]);
+	expect(added.accessSuggestions?.some((x) => x.kind === 'mcp' && x.name === 'docs')).toBe(true);
+	const skipped = await designs.decideFinding(person, d.id, {
+		message: at,
+		finding: 'cli:pdf-tool',
+		choice: 'skipped',
+	});
+	expect(skipped.messages[at].findings?.[1].status).toBe('skipped');
+	await expect(designs.decideFinding(person, d.id, card)).rejects.toThrow('Ya lo agregaste');
+	const saved = await designs.saveSecret(person, d.id, {
+		message: at,
+		name: 'DOCS_TOKEN',
+		value: 'valor-del-token',
+		domains: ['api.example.com'],
+	});
+	expect(saved.messages[at].secrets?.[0].saved).toBe(true);
+	expect((await accesses.listKeys(person)).some((k) => k.name === 'DOCS_TOKEN')).toBe(true);
+	// The next reply: the designer reads the decisions, the added accesses stay suggested, no secret is sent.
+	const next = await designs.message(person, d.id, { text: 'Ajusta el alcance.', version: saved.version });
+	const sent = JSON.stringify(modelRequests.at(-1));
+	expect(sent).toContain('Hallazgos de tus búsquedas');
+	expect(sent).toContain('descartado por el dueño');
+	expect(sent).not.toContain('secreto-123');
+	expect(sent).not.toContain('valor-del-token');
+	expect(JSON.stringify(next)).not.toContain('secreto-123');
+	expect(next.accessSuggestions?.map((x) => `${x.kind}:${x.name}`).sort()).toEqual(['key:DOCS_TOKEN', 'mcp:docs']);
+	expect(modelRequests.at(-1).tools.map((t: any) => t.name)).toEqual(['buscar_mcp', 'buscar_cli', 'buscar_skills']);
+	await accesses.removeMcp(person, mcp.id);
+	await accesses.removeKey(person, (await accesses.listKeys(person)).find((k) => k.name === 'DOCS_TOKEN')!.id);
+});
+run('a reply the server refuses gets one corrective turn with the reason', async () => {
+	const designs = await import('./designs'),
+		{ defaultHarness } = await import('../../sandbox/harness');
+	const d = await proposal();
+	queuedReplies.push({
+		...designerReply,
+		harness: { ...defaultHarness(), skills: [{ name: 'larga', description: 'd', instructions: 'z'.repeat(9000) }] },
+	});
+	const before = modelRequests.length;
+	const fixed = await designs.message(person, d.id, { text: 'Agrega una skill de resumen.', version: d.version });
+	expect(modelRequests.length).toBe(before + 2);
+	const retry = JSON.stringify(modelRequests.at(-1).input.slice(-2));
+	expect(retry).toContain('El servidor rechazó tu respuesta anterior');
+	expect(retry).toContain('skill inválida');
+	expect(fixed.last_error).toBeNull();
+	expect(fixed.contract).toEqual(designerReply.contract);
+});
+run("a ready draft from before the platform's last round gets it instead of losing its proposal", async () => {
+	const designs = await import('./designs');
+	const d = await proposal();
+	// As drafts were before: question round, answers, contract (no deliverable, no confirmation).
+	await exec(
+		`update agent_designs set messages = jsonb_build_array(messages->0, messages->1, messages->2, messages->5), ready = true where id = $1`,
+		[d.id],
+	);
+	const opened = await designs.get(person, d.id);
+	expect(opened.version).toBe(d.version + 1);
+	expect(opened.ready).toBe(false);
+	expect(opened.contract).toEqual(designerReply.contract); // the proposal is still there
+	expect(opened.interview.pending?.questions.map((q) => q.id)).toEqual(['entregable', 'confirmar']);
+	expect(opened.messages.at(-1)?.content).toContain('Antes de aprobar esta propuesta');
+	expect((await designs.get(person, d.id)).version).toBe(opened.version); // only once
+	const ready = await confirmed(opened);
+	expect(ready.ready).toBe(true);
+	expect(ready.interview.pending).toBeNull();
 });
 run('draft ownership and GPT catalog are enforced before model calls', async () => {
 	const designs = await import('./designs');
@@ -895,6 +1116,30 @@ async function attest(d: Awaited<ReturnType<typeof proposal>>) {
 		}),
 	]);
 }
+run('a suggested access granted before the agent exists is granted when it is approved', async () => {
+	const designs = await import('./designs'),
+		accesses = await import('./accesses');
+	const key = (await accesses.saveKey(person, { name: 'PRE_TOKEN', value: 'x', domains: 'api.example.com' })).find(
+		(k) => k.name === 'PRE_TOKEN',
+	)!;
+	const reply = designerReply as typeof designerReply & { accesses?: unknown };
+	reply.accesses = [{ kind: 'key', name: 'PRE_TOKEN', reason: 'Para la API' }];
+	try {
+		const d = await proposal();
+		const accepted = await designs.grantSuggested(person, d.id, { kind: 'key', id: key.id });
+		expect(accepted.accessSuggestions?.[0]).toMatchObject({ name: 'PRE_TOKEN', granted: false, accepted: true });
+		expect((await accesses.listKeys(person)).find((k) => k.id === key.id)?.agents).toEqual([]);
+		await attest(accepted as any);
+		const approved = await designs.approve(person, d.id, accepted.version);
+		expect((await accesses.listKeys(person)).find((k) => k.id === key.id)?.agents).toEqual([
+			approved.applied_agent_id!,
+		]);
+		expect(approved.accessSuggestions?.[0]).toMatchObject({ granted: true });
+	} finally {
+		delete reply.accesses;
+		await accesses.removeKey(person, key.id);
+	}
+});
 run('approval creates exactly one agent, preserves the full contract and is idempotent', async () => {
 	const designs = await import('./designs');
 	const d = await proposal();
@@ -1050,18 +1295,23 @@ run('provider structured questions override premature contract/harness and persi
 		expect(asked.interview.pending?.questions).toEqual(designerReply.questions);
 		expect((await designs.get(person, d.id)).messages[1].questions?.map((q) => q.id)).toEqual(['goal', 'sources']);
 		designerReply.questions = [];
-		const ready = await designs.message(person, d.id, {
-			version: 1,
-			answers: {
-				round: 1,
-				values: {
-					goal: { selected: ['specified'], other: '' },
-					sources: { selected: ['clarify', 'other'], other: 'Archivos propios.' },
+		const ready = await confirmed(
+			await designs.message(person, d.id, {
+				version: 1,
+				answers: {
+					round: 1,
+					values: {
+						goal: { selected: ['specified'], other: '' },
+						sources: { selected: ['clarify', 'other'], other: 'Archivos propios.' },
+					},
 				},
-			},
-		});
+			}),
+		);
 		expect(ready.ready).toBe(true);
-		expect(ready.messages.at(-2)?.answers?.values.sources.selected).toEqual(['clarify', 'other']);
+		expect(ready.messages.find((m) => m.answers?.round === 1)?.answers?.values.sources.selected).toEqual([
+			'clarify',
+			'other',
+		]);
 	} finally {
 		designerReply.questions = [];
 	}
@@ -1086,13 +1336,15 @@ run(
 			expect(pending.questions.map((q) => q.id)).toEqual(['question-1', 'question-2']);
 			expect((await designs.get(person, d.id)).interview.pending).toEqual(pending);
 			designerReply.questions = [];
-			const ready = await designs.message(person, d.id, {
-				version: asked.version,
-				answers: {
-					round: pending.round,
-					values: Object.fromEntries(pending.questions.map((q) => [q.id, { selected: ['specified'], other: '' }])),
-				},
-			});
+			const ready = await confirmed(
+				await designs.message(person, d.id, {
+					version: asked.version,
+					answers: {
+						round: pending.round,
+						values: Object.fromEntries(pending.questions.map((q) => [q.id, { selected: ['specified'], other: '' }])),
+					},
+				}),
+			);
 			expect(ready.ready).toBe(true);
 			expect(ready.messages[1].questions).toEqual(pending.questions);
 		} finally {
@@ -1123,16 +1375,23 @@ run(
 		expect(prose.contract).toBeNull();
 		expect(prose.interview.completed).toBe(0);
 		const pending = prose.interview.pending!;
-		const ready = await designs.message(person, d.id, {
+		const first = await designs.message(person, d.id, {
 			version: prose.version,
 			answers: {
 				round: pending.round,
 				values: { scope: { selected: ['other'], other: 'Inventario es requisito; no reduzcas el objetivo.' } },
 			},
 		});
+		// A new agent: one answered round is not enough; the model's ready reply becomes a confirmation.
+		expect(first.ready).toBe(false);
+		expect(first.contract).toBeNull();
+		expect(first.interview.pending?.questions.map((q) => q.id)).toEqual(['entregable', 'confirmar']);
+		const ready = await confirmed(first);
 		expect(ready.ready).toBe(true);
-		expect(ready.interview.completed).toBe(1);
-		expect(ready.messages.at(-2)?.answers?.values.scope.other).toContain('Inventario es requisito');
+		expect(ready.interview.completed).toBe(2);
+		expect(ready.messages.find((m) => m.answers?.round === pending.round)?.answers?.values.scope.other).toContain(
+			'Inventario es requisito',
+		);
 	},
 );
 run(

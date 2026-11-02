@@ -1,308 +1,263 @@
-import type { Agent, Design, Harness, HarnessValidation } from '@/api';
-import { defaultHarness, effectiveTools, PLUGINS } from '../../../sandbox/harness';
+import { useState } from 'react';
+import { BookOpen, MessageSquare, Plug, Puzzle, SquareTerminal } from 'lucide-react';
+import type { AccessSuggestion, Design, Harness, HarnessValidation } from '@/api';
+import { effectiveTools, PLUGINS } from '../../../sandbox/harness';
 import { ContractMarkdown, ToolsPanel } from './design-content';
-import { nextRuns, SCHEDULE_TZ, zoneLabel } from '@/lib/schedules';
-export function HarnessPanel({ value }: { value: Harness }) {
+import { Tile } from './harness-tile';
+import { AccessSuggestions } from './access-suggestions';
+import { ScheduleCalendar } from './schedule-calendar';
+import { PlanCompact, type PlanTodo } from './tool-ui/plan';
+import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from '@/components/ui/dialog';
+import { SCHEDULE_TZ, zoneLabel } from '@/lib/schedules';
+
+function Category({ title, hint, children }: { title: string; hint?: string; children: React.ReactNode }) {
+	return (
+		<section className="grid min-w-0 gap-2">
+			<h3 className="text-xs font-semibold text-muted-foreground">{title}</h3>
+			{children}
+			{hint && <p className="text-2xs text-muted-foreground">{hint}</p>}
+		</section>
+	);
+}
+const Empty = ({ children }: { children: React.ReactNode }) => (
+	<p className="text-xs text-muted-foreground">{children}</p>
+);
+
+/** The proposed harness as tiles (icon + name; what it is in the tooltip), like Configuración → Harness. */
+export function HarnessPanel({
+	value,
+	accesses,
+	onGrant,
+	newAgent = false,
+}: {
+	value: Harness;
+	accesses?: AccessSuggestion[];
+	/** «Conceder» from the panel: right away when improving, on approval for a new agent. */
+	onGrant?: (kind: string, id: number) => Promise<void>;
+	newAgent?: boolean;
+}) {
+	const [skill, setSkill] = useState<Harness['skills'][number] | null>(null);
 	return (
 		<div className="grid min-w-0 gap-5" aria-label="Harness propuesto">
 			<p className="text-xs text-muted-foreground">
-				Manifiesto v{value.version}. Políticas, cuotas, red y accesos de plataforma no son autoeditables. Sólo se activa
-				tras probar y aprobar esta revisión, en corridas nuevas.
+				Manifiesto v{value.version}. Sólo se activa tras probar y aprobar esta revisión, en corridas nuevas. Políticas,
+				cuotas, red y accesos de plataforma no son autoeditables.
 			</p>
-			<section className="min-w-0">
-				<h3 className="mb-3 text-sm font-semibold">Herramientas efectivas</h3>
-				<ToolsPanel tools={effectiveTools(value)} />
-			</section>
-			<section className="grid gap-2 text-xs">
-				<h3 className="text-sm font-semibold">Restricciones de archivos</h3>
-				<p>
-					{value.restrictions.workspaceFilesOnly
-						? 'Rutas limitadas a ~/work, comprobando destinos reales de enlaces.'
-						: 'Archivos dentro de la computadora aislada; sin límite adicional a ~/work.'}
-				</p>
-				<p>
-					{value.restrictions.readOnlyFiles
-						? 'Sólo lectura: no write/edit ni capturas en disco.'
-						: 'Escritura según herramientas seleccionadas.'}
-				</p>
-				{value.tools.includes('bash') && (
-					<p className="text-muted-foreground">
-						Bash habilitado: puede reproducir operaciones de otras herramientas. Su selección no es una frontera de
-						seguridad.
-					</p>
+			<Category title="Herramientas">
+				<ToolsPanel tools={effectiveTools(value)} compact />
+			</Category>
+			<Category title="Skills" hint="Instrucciones versionadas; no ejecutan código durante la entrevista.">
+				{value.skills.length ? (
+					<div className="harness-tiles">
+						{value.skills.map((s) => (
+							<Tile key={s.name} icon={BookOpen} title={s.name} hint={s.description} onClick={() => setSkill(s)} />
+						))}
+					</div>
+				) : (
+					<Empty>Sin skills adicionales.</Empty>
 				)}
-				<p className="text-muted-foreground">
-					Estos controles cubren las operaciones de archivos del harness confiable; no son un sandbox para código
-					arbitrario. La navegación y los accesos mantienen su estado gestionado por la plataforma.
-				</p>
-			</section>
-			<section className="min-w-0">
-				<h3 className="mb-2 text-sm font-semibold">Pautas de trabajo</h3>
-				{value.restrictions.guidelines.length ? (
-					<ul className="list-disc space-y-2 pl-4 text-xs">
+			</Category>
+			<Category title="MCP">
+				{value.mcp?.length ? (
+					<div className="harness-tiles">
+						{value.mcp.map((s) => (
+							<Tile
+								key={s.name}
+								icon={Plug}
+								title={s.name}
+								detail={s.transport === 'http' ? (s.url ?? '') : [s.command, ...s.args].join(' ')}
+								hint={`${s.description}${s.oauth ? ' Inicia sesión con OAuth.' : ''}${
+									[...s.headers, ...s.env].length
+										? ` Usa: ${[...s.headers, ...s.env].map((p) => `${p.name}=${p.value}`).join(' · ')}.`
+										: ''
+								}`}
+							/>
+						))}
+					</div>
+				) : (
+					<Empty>Sin servidores MCP.</Empty>
+				)}
+			</Category>
+			<Category title="CLI">
+				{value.installs?.length ? (
+					<div className="harness-tiles">
+						{value.installs.map((i) => (
+							<Tile
+								key={`${i.kind}:${i.spec}`}
+								icon={SquareTerminal}
+								title={i.kind === 'binary' ? (i.name ?? i.spec) : i.spec}
+								detail={i.kind === 'npm' ? 'npm' : i.kind === 'uv' ? 'Python (uv)' : 'binario'}
+								hint={`Versión fija: se instala en la computadora del agente al arrancar y queda en su PATH.${
+									i.kind === 'binary' ? ` sha256 ${i.sha256}` : ''
+								}`}
+							/>
+						))}
+					</div>
+				) : (
+					<Empty>Sin herramientas de línea de comandos.</Empty>
+				)}
+			</Category>
+			{!!value.plugins.length && (
+				<Category title="Plugins">
+					<div className="harness-tiles">
+						{value.plugins.map((p) => (
+							<Tile
+								key={p.id}
+								icon={Puzzle}
+								title={p.id}
+								detail={`v${p.version}`}
+								hint={PLUGINS.find((c) => c.id === p.id)?.description ?? ''}
+							/>
+						))}
+					</div>
+				</Category>
+			)}
+			{!!accesses?.length && (
+				<Category
+					title="Accesos sugeridos"
+					hint={
+						newAgent
+							? 'Son tuyos. Lo que concedas aquí se le concede a este agente al aprobarlo; también puedes hacerlo durante la inicialización.'
+							: 'Son tuyos. «Conceder» se lo concede a este agente ahora (se administra en Configuración → Accesos).'
+					}
+				>
+					<AccessSuggestions suggestions={accesses} onGrant={onGrant} />
+				</Category>
+			)}
+			{!!value.restrictions.guidelines.length && (
+				<Category title="Pautas de trabajo" hint="Instrucciones para el modelo, no permisos ni garantías técnicas.">
+					<ul className="list-disc space-y-1.5 pl-4 text-xs">
 						{value.restrictions.guidelines.map((g, i) => (
 							<li key={i} className="break-words">
 								{g}
 							</li>
 						))}
 					</ul>
-				) : (
-					<p className="text-xs text-muted-foreground">Sin pautas adicionales.</p>
-				)}
-				<p className="mt-2 text-2xs text-muted-foreground">
-					Son instrucciones para el modelo, no permisos ni garantías técnicas.
-				</p>
-			</section>
-			<section className="min-w-0">
-				<h3 className="mb-2 text-sm font-semibold">Skills generadas</h3>
-				{value.skills.length ? (
-					value.skills.map((s) => (
-						<details key={s.name} className="min-w-0 border-t py-3">
-							<summary className="cursor-pointer break-words text-xs font-medium">
-								{s.name} — {s.description}
-							</summary>
-							<div className="mt-3">
-								<ContractMarkdown text={s.instructions} />
-							</div>
-						</details>
-					))
-				) : (
-					<p className="text-xs text-muted-foreground">Sin skills adicionales.</p>
-				)}
-				<p className="mt-2 text-2xs text-muted-foreground">
-					Sólo instrucciones versionadas; no ejecutan código durante la entrevista.
-				</p>
-			</section>
-			<section className="min-w-0">
-				<h3 className="mb-2 text-sm font-semibold">Servidores MCP</h3>
-				{value.mcp?.length ? (
-					<ul className="space-y-3 text-xs">
-						{value.mcp.map((s) => (
-							<li key={s.name}>
-								<strong className="break-all">{s.name}</strong> ·{' '}
-								{s.transport === 'http' ? (
-									<code className="break-all">{s.url}</code>
-								) : (
-									<code className="break-all">{[s.command, ...s.args].join(' ')}</code>
-								)}
-								{s.oauth && <span className="text-muted-foreground"> · inicio de sesión (OAuth)</span>}
-								<p className="mt-1 text-muted-foreground">{s.description}</p>
-								{[...s.headers, ...s.env].length > 0 && (
-									<p className="mt-1 break-all text-2xs text-muted-foreground">
-										{[...s.headers, ...s.env].map((p) => `${p.name}=${p.value}`).join(' · ')}
-									</p>
-								)}
-							</li>
-						))}
-					</ul>
-				) : (
-					<p className="text-xs text-muted-foreground">Sin servidores MCP.</p>
-				)}
-				<p className="mt-2 text-2xs text-muted-foreground">
-					Sus herramientas se declaran al modelo como mcp__servidor__herramienta. Las credenciales se guardan aparte, en
-					Configuración → Herramientas.
-				</p>
-			</section>
-			<section className="min-w-0">
-				<h3 className="mb-2 text-sm font-semibold">Herramientas por instalar</h3>
-				{value.installs?.length ? (
-					<ul className="space-y-1 text-xs">
-						{value.installs.map((i) => (
-							<li key={`${i.kind}:${i.spec}`}>
-								<code className="break-all">{i.kind === 'binary' ? `${i.name} ← ${i.spec}` : i.spec}</code>{' '}
-								<span className="text-muted-foreground">
-									{i.kind === 'npm' ? 'npm' : i.kind === 'uv' ? 'Python (uv)' : `sha256 ${i.sha256}`}
-								</span>
-							</li>
-						))}
-					</ul>
-				) : (
-					<p className="text-xs text-muted-foreground">Sin herramientas adicionales.</p>
-				)}
-				<p className="mt-2 text-2xs text-muted-foreground">
-					Versiones fijas; se instalan en la computadora del agente al arrancar y quedan en su PATH.
-				</p>
-			</section>
-			<section className="min-w-0">
-				<h3 className="mb-2 text-sm font-semibold">Plugins fijados</h3>
-				{value.plugins.length ? (
-					<ul className="space-y-3 text-xs">
-						{value.plugins.map((p) => (
-							<li key={p.id}>
-								<strong className="break-all">
-									{p.id}@{p.version}
-								</strong>
-								<p className="mt-1 text-muted-foreground">{PLUGINS.find((c) => c.id === p.id)?.description}</p>
-							</li>
-						))}
-					</ul>
-				) : (
-					<p className="text-xs text-muted-foreground">Sin plugins adicionales.</p>
-				)}
-				<p className="mt-3 text-2xs text-muted-foreground">
-					Sólo catálogo revisado. Código de plugins generado, paquetes externos y nuevas concesiones de acceso no están
-					habilitados.
-				</p>
-			</section>
+				</Category>
+			)}
+			<p className="text-2xs text-muted-foreground">
+				Archivos: {value.restrictions.workspaceFilesOnly ? 'limitados a ~/work' : 'dentro de la computadora aislada'} ·{' '}
+				{value.restrictions.readOnlyFiles ? 'sólo lectura' : 'escritura según herramientas'}
+				{value.tools.includes('bash') ? ' · con bash (puede reproducir operaciones de otras herramientas)' : ''}.
+			</p>
+			<Dialog open={!!skill} onOpenChange={(open) => !open && setSkill(null)}>
+				<DialogContent className="sm:max-w-2xl">
+					<DialogHeader>
+						<DialogTitle>{skill?.name}</DialogTitle>
+						<DialogDescription>{skill?.description}</DialogDescription>
+					</DialogHeader>
+					{skill && (
+						<div className="max-h-[60vh] overflow-y-auto">
+							<ContractMarkdown text={skill.instructions} />
+						</div>
+					)}
+				</DialogContent>
+			</Dialog>
 		</div>
 	);
 }
-type ProposedSchedule = { cron: string; message: string; status?: string };
-const when = (d: Date, timezone: string) =>
-	d.toLocaleString('es-MX', {
-		timeZone: timezone,
-		weekday: 'short',
-		day: 'numeric',
-		month: 'short',
-		hour: '2-digit',
-		minute: '2-digit',
-	});
-/** What the approval leaves: the proposed list, or the current one when the design keeps it. */
+
+/** What the approval leaves: the proposed schedules (or the current ones it keeps) as an agenda, with
+ * each prompt below. Read only: they change by asking in the chat. */
 export function SchedulesPanel({ design }: { design: Design }) {
 	const timezone = design.scheduleTimezone ?? SCHEDULE_TZ,
 		current = design.currentSchedules ?? [];
-	const kept = design.schedules == null,
-		list: ProposedSchedule[] = kept ? current : design.schedules!;
+	const kept = design.schedules == null;
+	const list = kept
+		? current
+		: design.schedules!.map((s, i) => ({
+				name: `propuesto-${i + 1}`,
+				cron: s.cron,
+				message: s.message,
+				status: 'ACTIVE',
+			}));
 	return (
 		<div className="grid min-w-0 gap-4" aria-label="Horarios">
+			{design.status === 'draft' && (
+				<p className="flex items-start gap-2 rounded-md border bg-muted/40 px-3 py-2 text-2xs text-muted-foreground">
+					<MessageSquare className="mt-px size-3.5 shrink-0 text-primary" aria-hidden="true" />
+					Para agregar, cambiar o quitar un horario (o su prompt), pídelo en el chat.
+				</p>
+			)}
 			<p className="text-xs text-muted-foreground">
 				{kept
 					? current.length
 						? 'Esta propuesta no cambia los horarios: se conservan los vigentes.'
 						: 'Sin horarios: el agente sólo trabaja cuando le escriben o por webhook.'
-					: 'Al aprobar, el agente queda con exactamente estos horarios. Los vigentes iguales se conservan (también si están en pausa); los demás se quitan.'}{' '}
+					: list.length
+						? 'Al aprobar, el agente queda con exactamente estos horarios. Los vigentes iguales se conservan (también si están en pausa); los demás se quitan.'
+						: 'La propuesta quita todos los horarios.'}{' '}
 				{zoneLabel(timezone)}.
 			</p>
-			{list.length ? (
-				<ul className="grid gap-3">
-					{list.map((s, i) => (
-						<li key={`${s.cron}-${i}`} className="min-w-0 rounded-md border p-3 text-xs">
-							<p className="font-mono font-medium">
-								{s.cron}
-								{s.status === 'PAUSED' && <span className="ml-2 font-sans text-muted-foreground">(en pausa)</span>}
-							</p>
-							<p className="mt-1 text-2xs text-muted-foreground">
-								Próximas:{' '}
-								{nextRuns(s.cron, 3, timezone)
-									.map((d) => when(d, timezone))
-									.join(' · ') || 'no se pudo calcular'}
-							</p>
-							<p className="mt-2 whitespace-pre-wrap break-words">{s.message}</p>
-						</li>
-					))}
-				</ul>
-			) : (
-				!kept && <p className="text-xs">La propuesta quita todos los horarios.</p>
-			)}
+			{list.length > 0 && <ScheduleCalendar readOnly schedules={list} timezone={timezone} height={380} />}
 		</div>
 	);
 }
-const scheduleText = (list: ProposedSchedule[]) => list.map((s) => `${s.cron}  ${s.message}`).join('\n');
-export function HarnessChanges({ design, agent }: { design: Design; agent?: Agent }) {
-	const before = design.currentHarness ?? agent?.harness ?? defaultHarness(),
-		after = design.harness ?? before;
-	const rows = [
-		['Nombre', design.currentContract?.name ?? agent?.name ?? '', design.contract?.name ?? ''],
-		['Contrato', design.currentContract?.prompt ?? agent?.role ?? '', design.contract?.prompt ?? ''],
-		['Modelo', agent?.model ?? '', design.model],
-		['Herramientas', before.tools.join(', '), after.tools.join(', ')],
-		['Restricciones', JSON.stringify(before.restrictions, null, 2), JSON.stringify(after.restrictions, null, 2)],
-		['Skills', JSON.stringify(before.skills, null, 2), JSON.stringify(after.skills, null, 2)],
-		['Plugins', JSON.stringify(before.plugins, null, 2), JSON.stringify(after.plugins, null, 2)],
-		['Servidores MCP', JSON.stringify(before.mcp ?? [], null, 2), JSON.stringify(after.mcp ?? [], null, 2)],
-		[
-			'Herramientas por instalar',
-			JSON.stringify(before.installs ?? [], null, 2),
-			JSON.stringify(after.installs ?? [], null, 2),
-		],
-		[
-			'Horarios',
-			scheduleText(design.currentSchedules ?? []),
-			scheduleText(design.schedules ?? design.currentSchedules ?? []),
-		],
-	].filter(([, old, next]) => old !== next);
-	return (
-		<section aria-label="Cambios de la definición" className="grid min-w-0 gap-4">
-			<p className="text-xs text-muted-foreground">
-				{agent
-					? `Comparado con la revisión vigente ${agent.config_revision ?? ''}.`
-					: 'Definición inicial comparada con las capacidades predeterminadas.'}{' '}
-				La aprobación incluye contrato, modelo, harness y horarios completos.
-			</p>
-			{rows.length ? (
-				rows.map(([name, old, next]) => (
-					<details key={name} className="min-w-0 border-t pt-3">
-						<summary className="cursor-pointer text-xs font-semibold">{name}</summary>
-						<div className="mt-3 grid min-w-0 gap-3 text-2xs">
-							<div>
-								<p className="mb-1 font-medium">Antes</p>
-								<pre className="whitespace-pre-wrap break-words text-muted-foreground">{old || 'No existía'}</pre>
-							</div>
-							<div>
-								<p className="mb-1 font-medium">Propuesto</p>
-								<pre className="whitespace-pre-wrap break-words">{next || 'Vacío'}</pre>
-							</div>
-						</div>
-					</details>
-				))
-			) : (
-				<p className="text-xs text-muted-foreground">Sin cambios en la definición.</p>
-			)}
-		</section>
-	);
-}
+
+/** Everything the isolated test checks, as a checklist that runs and ticks (Tool UI's Plan). */
 export function HarnessTests({
 	report,
 	version,
 	pending,
+	checks,
 }: {
 	report?: HarnessValidation | null;
 	version: number;
 	pending?: boolean;
+	checks: string[];
 }) {
-	const current = report?.version === version;
+	const current = report?.version === version ? report : null;
+	// No step-by-step progress comes from the server: while it runs every check is running, and a
+	// failed test does not say which one failed (its error does).
+	const status: PlanTodo['status'] = pending ? 'in_progress' : current?.status === 'passed' ? 'completed' : 'pending';
+	const todos: PlanTodo[] = checks.map((label, i) => ({
+		id: `check-${i}`,
+		label,
+		status,
+		...(label === 'Herramientas efectivas exactas' && current?.tools.length
+			? { description: `Confirmadas: ${current.tools.join(', ')}.` }
+			: {}),
+	}));
 	return (
 		<section aria-label="Pruebas del harness" className="grid min-w-0 gap-4 text-xs">
-			<h3 className="text-sm font-semibold">
-				{pending
-					? 'Prueba aislada en curso…'
-					: !current
-						? 'Esta revisión todavía no se ha probado'
-						: report.status === 'passed'
-							? 'Harness comprobado en pi'
-							: 'La prueba del harness falló'}
-			</h3>
-			<p className="text-muted-foreground">
-				Arranca pi real sin red, credenciales, volúmenes del agente ni peticiones GPT. No prueba calidad del modelo ni
-				garantiza el cumplimiento de instrucciones semánticas.
-			</p>
-			{current && (
-				<>
-					<p className="break-all text-2xs">
-						Revisión del borrador: {report.version}
-						<br />
-						Hash del harness: {report.harnessDigest}
-						<br />
-						Imagen exacta: {report.imageId || 'No disponible'}
-					</p>
-					{report.error && (
-						<p role="alert" className="error break-words">
-							{report.error}
-						</p>
-					)}
-					<ul className="list-disc space-y-2 pl-4">
-						{report.checks.map((check) => (
-							<li key={check}>{check}</li>
-						))}
-					</ul>
-					{report.tools.length > 0 && (
-						<p className="break-words text-muted-foreground">Herramientas confirmadas: {report.tools.join(', ')}.</p>
-					)}
-				</>
+			<div>
+				<h3 className="text-sm font-semibold">
+					{pending
+						? 'Prueba aislada en curso…'
+						: !current
+							? 'Esta revisión todavía no se ha probado'
+							: current.status === 'passed'
+								? 'Harness comprobado en pi'
+								: 'La prueba del harness falló'}
+				</h3>
+				<p className="mt-1 text-muted-foreground">
+					Arranca pi real sin red, credenciales, volúmenes del agente ni peticiones GPT. No prueba la calidad del modelo
+					ni garantiza que siga instrucciones semánticas.
+				</p>
+			</div>
+			{current?.error && !pending && (
+				<p role="alert" className="error break-words">
+					{current.error}
+				</p>
+			)}
+			{todos.length > 0 && (
+				<PlanCompact
+					id={`harness-tests-${version}`}
+					title="Comprobaciones"
+					todos={todos}
+					maxVisibleTodos={todos.length}
+					className="max-w-none min-w-0 border-0 bg-transparent py-0 shadow-none [&_[data-slot=card-content]]:px-0"
+				/>
+			)}
+			{current && !pending && (
+				<p className="break-all text-2xs text-muted-foreground">
+					Revisión {current.version} · harness {current.harnessDigest.slice(0, 12)} · imagen{' '}
+					{current.imageId ? current.imageId.slice(0, 19) : 'no disponible'}
+				</p>
 			)}
 			<p className="text-2xs text-muted-foreground">
-				Cada cambio de la propuesta invalida la prueba anterior. Probar no crea ni cambia un agente; aún debes aprobar
-				explícitamente.
+				Cada cambio de la propuesta invalida la prueba anterior (renombrar no). Probar no crea ni cambia un agente; aún
+				debes aprobar explícitamente.
 			</p>
 		</section>
 	);

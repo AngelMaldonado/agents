@@ -1,10 +1,24 @@
 // Pure validation: neither a model's answer nor a browser draft is trusted as configuration.
 import { HARNESS_SCHEMA, TOOLS, validateHarness, type Harness } from '../../sandbox/harness';
 export type Contract = { name: string; prompt: string };
-import { QUESTIONS_SCHEMA, validateQuestions, type Question } from './interview';
+import { DESIGN_QUESTIONS, questionsSchema, validateQuestions, type Question } from './interview';
 // A schedule wakes the agent with its message (cron, America/Mexico_City). null: keep what there is.
 export type ScheduleProposal = { cron: string; message: string };
+// Which of the person's accesses the agent should use (names only; the owner grants them).
+export type AccessSuggestion = {
+	kind: 'site' | 'mcp' | 'key';
+	name: string;
+	reason: string;
+	/** The owner chose to grant it before the agent exists: granted on approval. */
+	accepted?: boolean;
+};
 export type DesignReply = {
+	/** 1–3 sentences on what it is weighing, written first so the owner reads it while it answers. */
+	pensamiento: string;
+	accesses: AccessSuggestion[];
+	secrets: { name: string; description: string; domains: string[] }[];
+	/** Ids of this reply's search results worth showing the owner (the rest stay hidden). */
+	hallazgos: string[];
 	message: string;
 	contract: Contract | null;
 	harness: Harness | null;
@@ -88,9 +102,51 @@ export const REPLY_FORMAT = {
 	schema: {
 		type: 'object',
 		additionalProperties: false,
-		required: ['message', 'contract', 'harness', 'schedules', 'ready', 'questions'],
+		required: [
+			'pensamiento',
+			'message',
+			'contract',
+			'harness',
+			'schedules',
+			'ready',
+			'questions',
+			'accesses',
+			'secrets',
+			'hallazgos',
+		],
+		// pensamiento first: the reply streams in this order and the page shows it while the rest is written.
 		properties: {
-			questions: QUESTIONS_SCHEMA,
+			pensamiento: { type: 'string' },
+			questions: questionsSchema(DESIGN_QUESTIONS),
+			hallazgos: { type: 'array', maxItems: 6, items: { type: 'string' } },
+			secrets: {
+				type: 'array',
+				maxItems: 4,
+				items: {
+					type: 'object',
+					additionalProperties: false,
+					required: ['name', 'description', 'domains'],
+					properties: {
+						name: { type: 'string' },
+						description: { type: 'string' },
+						domains: { type: 'array', maxItems: 5, items: { type: 'string' } },
+					},
+				},
+			},
+			accesses: {
+				type: 'array',
+				maxItems: 12,
+				items: {
+					type: 'object',
+					additionalProperties: false,
+					required: ['kind', 'name', 'reason'],
+					properties: {
+						kind: { type: 'string', enum: ['site', 'mcp', 'key'] },
+						name: { type: 'string' },
+						reason: { type: 'string' },
+					},
+				},
+			},
 			harness: { anyOf: [{ type: 'null' }, HARNESS_SCHEMA] },
 			schedules: SCHEDULES_SCHEMA,
 			message: { type: 'string' },
@@ -117,15 +173,48 @@ export function validateContract(value: unknown): Contract {
 		throw new Error('El contrato necesita un prompt de hasta 16000 caracteres.');
 	return { name: c.name.trim(), prompt: c.prompt.trim() };
 }
-export function parseDesignReply(response: any): DesignReply {
-	if (response?.status !== 'completed')
-		throw new Error('La IA no terminó la respuesta. Reintenta o pide un contrato más breve.');
-	const text = (Array.isArray(response.output) ? response.output : [])
+/** The reply's text (the JSON the designer wrote). */
+export function replyText(response: any): string {
+	return (Array.isArray(response?.output) ? response.output : [])
 		.filter((o: any) => o.type === 'message' && o.role === 'assistant')
 		.flatMap((o: any) => (Array.isArray(o.content) ? o.content : []))
 		.filter((c: any) => c.type === 'output_text')
 		.map((c: any) => c.text)
 		.join('');
+}
+/** What the model gets wrong harmlessly in its skills is repaired: a slug name, a description up to 300. */
+export function repairSkills(harness: any) {
+	if (!harness || !Array.isArray(harness.skills)) return harness;
+	const used = new Set<string>();
+	const skills = harness.skills.map((s: any, i: number) => {
+		let name =
+			String(s?.name ?? '')
+				.normalize('NFD')
+				.replace(/\p{M}/gu, '')
+				.toLowerCase()
+				.replace(/[^a-z0-9-]+/g, '-')
+				.replace(/^[^a-z]+/, '')
+				.replace(/-+/g, '-')
+				.replace(/-$/, '')
+				.slice(0, 40) || `skill-${i + 1}`;
+		for (let n = 2; used.has(name); n++) name = `${name.slice(0, 37)}-${n}`;
+		used.add(name);
+		return s && typeof s === 'object'
+			? {
+					...s,
+					name,
+					description: String(s.description ?? '')
+						.trim()
+						.slice(0, 300),
+				}
+			: s;
+	});
+	return { ...harness, skills };
+}
+export function parseDesignReply(response: any): DesignReply {
+	if (response?.status !== 'completed')
+		throw new Error('La IA no terminó la respuesta. Reintenta o pide un contrato más breve.');
+	const text = replyText(response);
 	let r: any;
 	try {
 		r = JSON.parse(text);
@@ -145,9 +234,43 @@ export function parseDesignReply(response: any): DesignReply {
 	return {
 		message: r.message.trim(),
 		contract,
-		harness: r.harness == null ? null : validateHarness(r.harness),
+		harness: r.harness == null ? null : validateHarness(repairSkills(r.harness)),
 		schedules: validateSchedules(r.schedules ?? null),
 		ready: r.ready,
-		questions: validateQuestions(r.questions ?? []),
+		questions: validateQuestions(r.questions ?? [], DESIGN_QUESTIONS),
+		pensamiento: typeof r.pensamiento === 'string' ? r.pensamiento.trim().slice(0, 800) : '',
+		hallazgos: (Array.isArray(r.hallazgos) ? r.hallazgos : [])
+			.filter((x: unknown): x is string => typeof x === 'string')
+			.slice(0, 6),
+		// Names only (env-var style); the owner types the value in a secure card.
+		secrets: (Array.isArray(r.secrets) ? r.secrets : []).slice(0, 4).flatMap((x: any) =>
+			typeof x?.name === 'string' && /^[A-Z][A-Z0-9_]{1,63}$/.test(x.name.trim().toUpperCase())
+				? [
+						{
+							name: x.name.trim().toUpperCase(),
+							description: String(x.description ?? '')
+								.trim()
+								.slice(0, 300),
+							domains: (Array.isArray(x.domains) ? x.domains : [])
+								.map((d: unknown) => String(d).trim().toLowerCase())
+								.filter((d: string) => /^[a-z0-9.-]+\.[a-z]{2,}$/.test(d))
+								.slice(0, 5),
+						},
+					]
+				: [],
+		),
+		accesses: (Array.isArray(r.accesses) ? r.accesses : []).slice(0, 12).flatMap((a: any) =>
+			['site', 'mcp', 'key'].includes(a?.kind) && typeof a?.name === 'string' && a.name.trim()
+				? [
+						{
+							kind: a.kind,
+							name: a.name.trim().slice(0, 100),
+							reason: String(a.reason ?? '')
+								.trim()
+								.slice(0, 300),
+						},
+					]
+				: [],
+		),
 	};
 }

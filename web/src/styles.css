@@ -330,7 +330,7 @@
 		@apply border-t;
 	}
 	.hub-row {
-		@apply -mx-2 flex min-w-0 items-center justify-between gap-4 rounded-md px-2 py-3 text-sm outline-none hover:bg-muted/50 focus-visible:ring-2 focus-visible:ring-ring;
+		@apply flex min-w-0 items-center justify-between gap-4 rounded-md px-3 py-3 text-sm outline-none hover:bg-muted/50 focus-visible:ring-2 focus-visible:ring-ring;
 	}
 	.hub-files {
 		@apply grid gap-2 sm:grid-cols-2;
@@ -445,6 +445,15 @@
 	.current-work {
 		container: work-panel / inline-size;
 	}
+	/* The contract panel's tabs, the same way (Contrato · Harness · Horarios · Pruebas · Vigente). */
+	.designer-contract {
+		container: contract-panel / inline-size;
+	}
+	@container contract-panel (max-width: 30rem) {
+		.work-tab-label {
+			@apply sr-only;
+		}
+	}
 	@container work-panel (max-width: 36rem) {
 		.work-tab-label {
 			@apply sr-only;
@@ -471,6 +480,60 @@
 	}
 	.work-peek-open {
 		@apply block w-full rounded-card text-left outline-none;
+	}
+	/* Dragged around the chat: no text selection, a grabbing hand while it moves. */
+	.work-peek {
+		@apply cursor-grab touch-none select-none;
+	}
+	.work-peek[data-dragging] {
+		@apply cursor-grabbing shadow-xl;
+	}
+	.work-peek[data-snapping] {
+		transition:
+			left 260ms cubic-bezier(0.2, 0.8, 0.2, 1),
+			top 260ms cubic-bezier(0.2, 0.8, 0.2, 1);
+	}
+	@media (prefers-reduced-motion: reduce) {
+		.work-peek[data-snapping] {
+			transition: none;
+		}
+	}
+	/* Without a browser: the latest activity, small, newest first (fading at the bottom). */
+	.peek-activity {
+		@apply bg-card;
+	}
+	.peek-activity-bar {
+		@apply flex items-center gap-1.5 border-b py-1 pr-7 pl-2 text-[0.5625rem] font-medium text-muted-foreground;
+	}
+	.peek-activity-dot {
+		@apply size-1.5 rounded-full bg-success;
+	}
+	.peek-activity-dot-off {
+		@apply bg-muted-foreground/50;
+	}
+	.peek-activity-log {
+		@apply h-24 overflow-hidden p-2 text-[0.5625rem] leading-snug;
+		mask-image: linear-gradient(to bottom, black 70%, transparent);
+	}
+	/* One line each, full height: in the fixed-height column, an overflow-hidden flex item could
+	   otherwise shrink to nothing. */
+	.peek-activity-log .ev {
+		@apply block shrink-0 truncate;
+	}
+	.peek-activity-log {
+		@apply gap-1;
+	}
+	/* A message (with its line breaks) and a multi-line command also stay one clipped line. */
+	.work-peek .peek-activity-log .ev,
+	.work-peek .peek-activity-log .ev * {
+		font-size: inherit;
+		line-height: inherit;
+	}
+	.work-peek .peek-activity-log .ev * {
+		@apply inline whitespace-nowrap;
+	}
+	.peek-activity-log svg {
+		@apply inline size-2.5;
 	}
 	.work-peek .browser {
 		@apply pointer-events-none;
@@ -1182,6 +1245,17 @@
 	.designer-composer-input {
 		@apply block w-full resize-none border-0 bg-transparent px-4 pt-4 pb-2 text-sm leading-relaxed text-foreground shadow-none outline-none placeholder:text-muted-foreground disabled:cursor-not-allowed disabled:opacity-50;
 	}
+	/* The Automejora composer is Lexical (chips for cited jobs and conversations): same look as the
+	   textarea, 2 to 6 lines, the placeholder over the empty editor. */
+	.designer-composer-lexical {
+		@apply relative max-h-[calc(6lh+1.5rem)] cursor-text;
+		& .aui-lexical-input {
+			@apply min-h-[2lh] break-words whitespace-pre-wrap outline-none;
+		}
+		& .aui-lexical-placeholder {
+			@apply pointer-events-none absolute top-4 left-4 text-muted-foreground select-none;
+		}
+	}
 	.designer-contract {
 		@apply flex h-full min-h-0 min-w-0 flex-col overflow-hidden border-l bg-card;
 		animation: artifact-in 180ms ease-out;
@@ -1405,6 +1479,77 @@
 		* {
 			scrollbar-width: thin;
 		}
+	}
+}
+/* The designer while it answers: phase, searches and the last thing it reasoned; then its reasoning, folded. */
+.designer-progress {
+	@apply text-xs;
+}
+.designer-progress-thought {
+	@apply mt-2 flex max-w-prose items-start gap-1.5 pl-6 text-2xs text-muted-foreground italic;
+}
+.designer-progress-thought svg {
+	@apply mt-0.5;
+}
+.designer-reasoning {
+	@apply mb-2 text-2xs text-muted-foreground;
+}
+.designer-reasoning > summary {
+	@apply flex w-fit cursor-pointer list-none items-center gap-1 hover:text-foreground;
+}
+.designer-reasoning > summary::-webkit-details-marker {
+	display: none;
+}
+.designer-reasoning[open] > summary svg {
+	@apply rotate-90;
+}
+.designer-reasoning > p {
+	@apply mt-1.5 max-w-prose border-l pl-3;
+}
+/* The designer's tool search: a finished call, the cards it found, and secure cards for secrets. */
+.designer-tool-call {
+	@apply mb-2 flex items-center gap-2 text-2xs text-muted-foreground;
+}
+.designer-findings {
+	@apply mt-3 min-w-0;
+}
+.designer-secret-card {
+	@apply mt-3 grid max-w-md gap-2 rounded-lg border bg-card p-3;
+}
+/* A contract's flow diagram (mermaid): centered, never wider than the text. */
+.mermaid-diagram {
+	margin: 1rem 0;
+	overflow-x: auto;
+	text-align: center;
+}
+.mermaid-diagram svg {
+	max-width: 100%;
+	height: auto;
+}
+/* Tool UI's Plan: a running step's label shimmers (a light band sweeps across the text). */
+@utility shimmer {
+	background-image: linear-gradient(
+		100deg,
+		var(--foreground) 35%,
+		color-mix(in oklab, var(--foreground) 30%, transparent) 50%,
+		var(--foreground) 65%
+	);
+	background-size: 250% 100%;
+	background-clip: text;
+	-webkit-background-clip: text;
+	color: transparent;
+	animation: shimmer 1.8s linear infinite;
+}
+@utility shimmer-invert {
+	/* Same band; a utility can't be empty. Kept so the registry markup stays as published. */
+	--shimmer-invert: 1;
+}
+@keyframes shimmer {
+	from {
+		background-position: 100% 0;
+	}
+	to {
+		background-position: -150% 0;
 	}
 }
 /* Cuby agents' mark: it pops up from below on load, blinks twice, then blinks now and then. */
@@ -1642,4 +1787,9 @@ html[data-sidebar-resize='drag'] [data-slot='sidebar-container'] {
 }
 html[data-sidebar-resize='drag'] {
 	user-select: none;
+}
+
+/* A cited job or conversation in a message (Automejora): an outline chip in the line of text. */
+.reference-chip {
+	@apply mx-0.5 max-w-64 gap-1 align-[-0.15em] font-normal no-underline [&>svg]:size-3 [&>svg]:shrink-0 [&>svg]:text-muted-foreground;
 }

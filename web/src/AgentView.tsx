@@ -42,7 +42,6 @@ import {
 	Square,
 	Terminal as TerminalIcon,
 	TriangleAlert,
-	X,
 } from 'lucide-react';
 import { ResizableHandle, ResizablePanel, ResizablePanelGroup } from '@/components/ui/resizable';
 import { ScrollArea } from '@/components/ui/scroll-area';
@@ -57,6 +56,8 @@ import { ConversationMenu } from '@/components/conversation-menu';
 import { HeaderSlot } from '@/components/header-slot';
 import { crewOf, usePeople } from '@/lib/use-people';
 import { useSlidePanel } from '@/lib/use-slide-panel';
+import { WorkPeek } from '@/components/work-peek';
+import { improveWith } from '@/lib/sidebar-events';
 
 type Tab = 'browser' | 'activity' | 'terminal' | 'answer';
 type Mode = 'hub' | 'chat' | 'browser' | 'improve';
@@ -214,6 +215,7 @@ export function AgentView({
 	const [events, setEvents] = useState<TaskEvent[]>([]);
 	const [files, setFiles] = useState<Artifact[]>([]);
 	const [tab, setTab] = useState<Tab>('browser');
+	const pickedTab = useRef<number | null>(null);
 
 	const connected = useConnected();
 	useEffect(() => {
@@ -450,7 +452,14 @@ export function AgentView({
 					</Button>
 				</div>
 			)}
-			<Tabs value={tab} onValueChange={(value) => setTab(value as Tab)} className="agent-tabs">
+			<Tabs
+				value={tab}
+				onValueChange={(value) => {
+					pickedTab.current = taskId; // the owner's pick for this work stays
+					setTab(value as Tab);
+				}}
+				className="agent-tabs"
+			>
 				<div className="work-toolbar">
 					<TabsList aria-label="Detalle del trabajo">
 						{(Object.keys(TABS) as Tab[]).map((t) => {
@@ -570,6 +579,22 @@ export function AgentView({
 	// The peek closed with its X stays closed until the work panel opens again (then closing the
 	// panel brings it back), another run starts or another chat opens.
 	const [peekClosed, setPeekClosed] = useState(false);
+	// The peek shows the browser only when the work really uses it (a blank page that was never used
+	// does not count); otherwise its latest activity.
+	const peekEvents = task?.id === taskId ? events : [];
+	const browserActive =
+		driving ||
+		(!!shot?.data?.url && shot.data.url !== 'about:blank') ||
+		peekEvents.some(
+			(e) => e.kind === 'tool' && (e.data.name === 'browser' || /agent-browser/.test(e.data.summary ?? '')),
+		);
+	// The work's first view: the browser when it uses it; otherwise its terminal (if it ran commands) or
+	// its activity. Until the owner picks a tab for this work.
+	const ranCommands = peekEvents.some((e) => e.kind === 'tool');
+	useEffect(() => {
+		if (pickedTab.current === taskId || driving) return;
+		setTab(browserActive ? 'browser' : ranCommands ? 'terminal' : 'activity');
+	}, [taskId, browserActive, ranCommands, driving]);
 	useEffect(() => {
 		if (showPanel) setPeekClosed(false);
 	}, [showPanel]);
@@ -611,6 +636,8 @@ export function AgentView({
 						loading={listLoading}
 						error={listError}
 						onRetry={() => setListVersion((v) => v + 1)}
+						mine={mine}
+						onChanged={() => setListVersion((v) => v + 1)}
 					/>
 					<RecentFiles agentId={agent.id} version={filesVersion} />
 				</div>
@@ -630,6 +657,7 @@ export function AgentView({
 								conversation={chat}
 								conversations={conversations}
 								canManage={canUse}
+								onImprove={mine && chat ? () => improveWith(agent.id, { id: chat.id, title: chat.title }) : undefined}
 								onRename={async (title) => {
 									const { conversation } = await api<{ conversation: Conversation }>(
 										`/agents/${agent.id}/conversations/${chat!.id}`,
@@ -664,15 +692,10 @@ export function AgentView({
 							/>
 						)}
 						{hasWork && !showPanel && !missingChat && !peekClosed && (
-							// The work panel is hidden: a small live view of the browser, top right; it opens the panel.
-							<div className="work-peek">
-								<button
-									type="button"
-									className="work-peek-open"
-									aria-label="Mostrar el trabajo"
-									title="Mostrar el trabajo"
-									onClick={() => setPanelOpen(true)}
-								>
+							// The work panel is hidden: a small live view, top right (or where it was dragged); it opens the
+							// panel. The browser when the work uses it; otherwise its latest activity.
+							<WorkPeek container={chatView} onOpen={() => setPanelOpen(true)} onClose={() => setPeekClosed(true)}>
+								{browserActive ? (
 									<Browser
 										compact
 										agentId={agent.id}
@@ -682,17 +705,10 @@ export function AgentView({
 										loading={shot?.loading}
 										error={shot?.error}
 									/>
-								</button>
-								<button
-									type="button"
-									className="work-peek-close"
-									aria-label="Cerrar la vista previa"
-									title="Cerrar la vista previa"
-									onClick={() => setPeekClosed(true)}
-								>
-									<X aria-hidden="true" />
-								</button>
-							</div>
+								) : (
+									<PeekActivity events={peekEvents} live={live} />
+								)}
+							</WorkPeek>
 						)}
 						{missingChat ? (
 							<div className="empty">
@@ -880,18 +896,21 @@ export function AgentView({
 	);
 }
 
-function useAutoScroll(dep: unknown) {
+/** Newest first: near the top it stays at the top, where the new lines arrive; scrolled down to read
+ * something older, the browser's scroll anchoring keeps that place while lines push in above. */
+function useStickToTop(dep: unknown) {
 	const ref = useRef<HTMLDivElement>(null);
 	useEffect(() => {
 		const el = ref.current;
-		if (el && el.scrollHeight - el.scrollTop - el.clientHeight < 120) el.scrollTop = el.scrollHeight;
+		if (el && el.scrollTop < 120) el.scrollTop = 0;
 	}, [dep]);
 	return ref;
 }
 
 function Activity({ events }: { events: TaskEvent[] }) {
-	const shown = events.filter((e) => e.kind !== 'tool_end' && !(e.kind === 'system' && e.data?.stderr));
-	const ref = useAutoScroll(shown.length);
+	// The newest at the top, pushing the older ones down.
+	const shown = events.filter((e) => e.kind !== 'tool_end' && !(e.kind === 'system' && e.data?.stderr)).reverse();
+	const ref = useStickToTop(shown.length);
 	return (
 		<ScrollArea
 			className="work-content-scroll"
@@ -907,6 +926,30 @@ function Activity({ events }: { events: TaskEvent[] }) {
 				{!shown.length && <p className="muted">Nada todavía.</p>}
 			</div>
 		</ScrollArea>
+	);
+}
+
+/** The peek without a browser: the work's latest activity, newest first. */
+function PeekActivity({ events, live }: { events: TaskEvent[]; live: boolean }) {
+	const latest = events
+		.filter((e) => e.kind !== 'tool_end' && !(e.kind === 'system' && e.data?.stderr))
+		.slice(-6)
+		.reverse();
+	return (
+		<div className="peek-activity">
+			<p className="peek-activity-bar">
+				<span className={live ? 'peek-activity-dot' : 'peek-activity-dot peek-activity-dot-off'} aria-hidden="true" />
+				Actividad
+			</p>
+			<div className="log peek-activity-log">
+				{latest.map((e) => (
+					<div key={e.id} className={`ev ev-${e.kind}`}>
+						<EventBody e={e} />
+					</div>
+				))}
+				{!latest.length && <p className="muted">Nada todavía.</p>}
+			</div>
+		</div>
 	);
 }
 
@@ -992,14 +1035,23 @@ function EventBody({ e }: { e: TaskEvent }) {
 
 function Terminal({ events }: { events: TaskEvent[] }) {
 	const lines = useMemo(() => events.filter((e) => e.kind === 'tool' || e.kind === 'tool_end'), [events]);
-	const ref = useAutoScroll(lines.length);
+	// The newest command at the top, each one still above its own output.
+	const blocks = useMemo(() => {
+		const out: TaskEvent[][] = [];
+		for (const e of lines) {
+			if (e.kind === 'tool' || !out.length) out.push([e]);
+			else out.at(-1)!.push(e);
+		}
+		return out.reverse();
+	}, [lines]);
+	const ref = useStickToTop(lines.length);
 	return (
 		<ScrollArea
 			className="work-content-scroll work-terminal-scroll"
 			viewportProps={{ ref, tabIndex: 0, 'aria-label': 'Terminal del trabajo' }}
 		>
 			<div className="terminal work-content">
-				{lines.map((e) =>
+				{blocks.flat().map((e) =>
 					e.kind === 'tool' ? (
 						<div key={e.id} className="cmd">
 							<span className="prompt-sign">

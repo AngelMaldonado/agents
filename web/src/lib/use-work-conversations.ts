@@ -131,6 +131,10 @@ export function useWorkConversations(
 		const offT = onTask((t) => {
 			if (t.agent_id !== agent.id) return;
 			setAgentTask((old) => (!old || t.id >= old.id ? t : old));
+			// «Recientes» shows which chats are working (parallel ones too).
+			setConversations((cs) =>
+				cs.map((c) => (c.id === t.conversation_id && c.live !== isLive(t) ? { ...c, live: isLive(t) } : c)),
+			);
 			revisions.current.set(t.conversation_id, (revisions.current.get(t.conversation_id) ?? 0) + 1);
 			setPages((p) => {
 				const page = p[t.conversation_id];

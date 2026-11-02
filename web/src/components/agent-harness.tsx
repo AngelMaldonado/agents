@@ -9,6 +9,7 @@ import { PLUGINS } from '../../../sandbox/harness';
 import { useAgentConfiguration } from '@/AgentConfiguration';
 import { Button } from '@/components/ui/button';
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip';
+import { Tile } from '@/components/harness-tile';
 import { cn } from '@/lib/utils';
 
 const RoleEditor = lazy(() => import('@/components/role-editor').then((module) => ({ default: module.RoleEditor })));
@@ -370,25 +371,6 @@ function DocTiles({ docs, onOpen }: { docs: Doc[]; onOpen: (doc: Doc) => void })
 				</Tooltip>
 			))}
 		</div>
-	);
-}
-
-function Tile({ icon: Icon, title, detail, hint }: { icon: typeof Plug; title: string; detail: string; hint: string }) {
-	return (
-		<Tooltip>
-			<TooltipTrigger asChild>
-				<div className="harness-tile" tabIndex={0}>
-					<Icon className="size-5 shrink-0 text-primary" aria-hidden="true" />
-					<span className="grid min-w-0">
-						<span className="truncate">{title}</span>
-						<span className="truncate font-mono text-2xs font-normal text-muted-foreground">{detail}</span>
-					</span>
-				</div>
-			</TooltipTrigger>
-			<TooltipContent side="top" className="max-w-xs">
-				{hint}
-			</TooltipContent>
-		</Tooltip>
 	);
 }
 

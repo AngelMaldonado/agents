@@ -47,7 +47,78 @@ test('rejects truncation, refusals, invalid JSON and arbitrary model fields inst
 		schedules: null,
 		ready: true,
 		questions: [],
+		accesses: [],
+		secrets: [],
+		hallazgos: [],
+		pensamiento: '',
 	});
+});
+test('access suggestions keep only known kinds and named entries; a round may ask up to six questions', () => {
+	const parsed = parseDesignReply(
+		response({
+			message: 'Propuesta',
+			contract: { name: 'A', prompt: 'Rol' },
+			ready: true,
+			accesses: [
+				{ kind: 'site', name: ' proveedor ', reason: 'Inicia sesión en el portal' },
+				{ kind: 'root', name: 'x', reason: '' },
+				{ kind: 'key', name: '', reason: '' },
+			],
+		}),
+	);
+	expect(parsed.accesses).toEqual([{ kind: 'site', name: 'proveedor', reason: 'Inicia sesión en el portal' }]);
+	const asked = parseDesignReply(
+		response({
+			message: 'Guarda tu token',
+			contract: null,
+			ready: false,
+			secrets: [
+				{ name: 'github_token', description: 'Token de lectura', domains: ['API.github.com', 'no es dominio'] },
+				{ name: 'mal nombre', description: '', domains: [] },
+			],
+		}),
+	);
+	expect(asked.secrets).toEqual([
+		{ name: 'GITHUB_TOKEN', description: 'Token de lectura', domains: ['api.github.com'] },
+	]);
+	const q = (i: number) => ({
+		id: `q-${i}`,
+		title: `Pregunta ${i}`,
+		description: '',
+		selectionMode: 'single',
+		options: [{ id: 'a', label: 'A', description: '' }],
+		recommended: 'a',
+	});
+	const six = parseDesignReply(
+		response({ message: 'Ronda', contract: null, ready: false, questions: [1, 2, 3, 4, 5, 6].map(q) }),
+	);
+	expect(six.questions).toHaveLength(6);
+	expect(() =>
+		parseDesignReply(
+			response({ message: 'Ronda', contract: null, ready: false, questions: [1, 2, 3, 4, 5, 6, 7].map(q) }),
+		),
+	).toThrow();
+});
+test('a skill with a sloppy name or a long description is repaired; oversized instructions are not', async () => {
+	const { defaultHarness } = await import('../../sandbox/harness');
+	const skill = (s: object) => ({
+		...defaultHarness(),
+		skills: [{ name: 'Tech News Digest!', description: 'x'.repeat(400), instructions: 'Resume noticias.', ...s }],
+	});
+	const ok = parseDesignReply(
+		response({ message: 'Propuesta', contract: { name: 'A', prompt: 'Rol' }, ready: true, harness: skill({}) }),
+	);
+	expect(ok.harness?.skills[0]).toMatchObject({ name: 'tech-news-digest', description: 'x'.repeat(300) });
+	expect(() =>
+		parseDesignReply(
+			response({
+				message: 'Propuesta',
+				contract: { name: 'A', prompt: 'Rol' },
+				ready: true,
+				harness: skill({ instructions: 'y'.repeat(9000) }),
+			}),
+		),
+	).toThrow('skill inválida');
 });
 test('initialization ends with readiness, not with merely opening Chrome', () => {
 	expect(INIT_STEPS.map((s) => s.id)).toEqual(['contract', 'computer', 'workspace', 'tools', 'browser', 'ready']);

@@ -21,6 +21,7 @@ import { Input } from '@/components/ui/input';
 import { OptionSelect } from '@/components/option-select';
 import { ScrollArea } from '@/components/ui/scroll-area';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
+import { SHARE_REQUEST, takeShareRequest } from '@/lib/sidebar-events';
 
 export function AgentSettings({
 	agent,
@@ -46,10 +47,25 @@ export function AgentSettings({
 	request?: { section: 'share'; at: number } | null;
 }) {
 	const [open, setOpen] = useState(false);
+	// «Compartir» from the sidebar's menu: taken here, once this button is on screen (on arriving at the
+	// hub, or right away if it already is), so it is never mistaken for a stale request.
+	const [fromSidebar, setFromSidebar] = useState<{ section: 'share'; at: number } | null>(null);
+	useEffect(() => {
+		if (iconOnly || !mine) return;
+		const take = () => {
+			const at = takeShareRequest(agent.id);
+			if (at) setFromSidebar({ section: 'share', at });
+		};
+		take();
+		window.addEventListener(SHARE_REQUEST, take);
+		return () => window.removeEventListener(SHARE_REQUEST, take);
+	}, [agent.id, iconOnly, mine]);
+	const wanted = !fromSidebar || (request && request.at > fromSidebar.at) ? request : fromSidebar;
 	// Only a request made while this is on screen opens it: one left over from before (the hub's
 	// «Compartir», then a visit to a chat and back) must not reopen the dialog when this remounts.
 	const seen = useRef(request?.at ?? null);
 	useEffect(() => {
+		const request = wanted;
 		if (!request || request.at === seen.current) return;
 		seen.current = request.at;
 		setOpen(true);
@@ -70,7 +86,7 @@ export function AgentSettings({
 			if (still >= 4 || ++tries > 40) clearInterval(timer);
 		}, 50);
 		return () => clearInterval(timer);
-	}, [request]);
+	}, [wanted]);
 	const [tab, setTab] = useState('general');
 	const [visited, setVisited] = useState(new Set(['general']));
 	const [editingDoc, setEditingDoc] = useState(false);

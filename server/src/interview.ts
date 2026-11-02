@@ -16,7 +16,15 @@ export type InterviewMessage = {
 	questionRound?: number;
 	answers?: Answers;
 	attachments?: { id: string; name: string; mime: string; size: number }[];
+	/** The model's reasoning summary for this reply (shown folded). */
+	reasoning?: string;
+	/** The designer's searches in this reply and what they found (cards the owner adds or skips). */
+	searches?: import('./tool-search').Search[];
+	findings?: import('./tool-search').Finding[];
+	/** Secrets the designer asked the owner to save (a secure card; the value never reaches the model). */
+	secrets?: SecretRequest[];
 };
+export type SecretRequest = { name: string; description: string; domains: string[]; saved?: boolean };
 export type QuestionRound = { round: number; questions: Question[] };
 const slug = /^[a-z][a-z0-9-]{0,39}$/;
 const object = (v: unknown): v is Record<string, any> => !!v && typeof v === 'object' && !Array.isArray(v);
@@ -44,8 +52,10 @@ function questionId(value: unknown, kind: 'question' | 'option', index: number, 
 	used.add(id);
 	return id;
 }
-export function validateQuestions(v: unknown): Question[] {
-	if (!Array.isArray(v) || v.length > 3) throw new Error('Una ronda necesita de cero a tres preguntas.');
+// The designer asks the whole frontier of a round (up to 6); help questions stay at 3.
+export const DESIGN_QUESTIONS = 6;
+export function validateQuestions(v: unknown, max = 3): Question[] {
+	if (!Array.isArray(v) || v.length > max) throw new Error(`Una ronda necesita de cero a ${max} preguntas.`);
 	const ids = new Set<string>();
 	return v.map((q, index) => {
 		if (!object(q)) throw new Error('Pregunta inválida.');
@@ -163,16 +173,87 @@ export const FALLBACK_QUESTIONS: Question[] = [
 		recommended: 'clarify',
 	},
 ];
-export function canReview(d: { messages: InterviewMessage[]; restored_revision?: number | null }) {
-	const state = interview(d.messages);
-	return !!d.restored_revision || (state.completed > 0 && !state.pending);
+export const CONFIRM_QUESTION: Question = {
+	id: 'confirmar',
+	title: '¿Entendí bien lo que necesitas?',
+	description: 'Antes de redactar el contrato, confirma el entendimiento o dime qué falta.',
+	selectionMode: 'single',
+	options: [
+		{ id: 'si', label: 'Sí, redacta el contrato', description: 'Con lo que acordamos hasta ahora.' },
+		{ id: 'falta', label: 'Falta algo o hay que corregir', description: 'Escríbelo en «Otra respuesta».' },
+	],
+	recommended: null,
+};
+/** What each run hands over. «Otra respuesta» (added by the UI) defines any other deliverable. */
+export const DELIVERABLE_QUESTION: Question = {
+	id: 'entregable',
+	title: '¿Qué entregable esperas de cada trabajo?',
+	description:
+		'Cómo te entrega el resultado cada vez que trabaja. Con «Otra respuesta» describe cualquier otro: un reporte por WhatsApp, acciones encadenadas, un ciclo de trabajo, un archivo para otro sistema…',
+	selectionMode: 'single',
+	options: [
+		{
+			id: 'html',
+			label: 'HTML',
+			description: 'Una página HTML autocontenida (estilos incluidos, sin scripts) que se ve en la pestaña Respuesta.',
+		},
+		{
+			id: 'markdown',
+			label: 'Markdown',
+			description: 'Su respuesta en Markdown: texto, tablas y ligas, más los archivos que hagan falta.',
+		},
+	],
+	recommended: null,
+};
+const lastAnswer = (messages: InterviewMessage[], id: string) =>
+	[...messages].reverse().find((m) => m.role === 'user' && m.answers?.values[id])?.answers!.values[id];
+/** The contract already says what it delivers (an agent being improved keeps its deliverable). */
+export const definesDeliverable = (prompt: string | null | undefined) => /^##\s+Entregable\b/im.test(prompt ?? '');
+/**
+ * The last round the platform adds before a contract: the deliverable (unless the agent being improved
+ * already defines one) and, for a new agent, the confirmation of the shared understanding.
+ */
+export function finalRound(d: {
+	messages: InterviewMessage[];
+	agent_id?: number | null;
+	contract?: { prompt: string } | null;
+}): Question[] {
+	const questions: Question[] = [];
+	if (!lastAnswer(d.messages, 'entregable') && !(d.agent_id && definesDeliverable(d.contract?.prompt)))
+		questions.push(DELIVERABLE_QUESTION);
+	if (!d.agent_id && !lastAnswer(d.messages, 'confirmar')?.selected.includes('si')) questions.push(CONFIRM_QUESTION);
+	return questions;
 }
-// Model output cannot skip the first human round or close unanswered questions.
+export function canReview(d: {
+	messages: InterviewMessage[];
+	restored_revision?: number | null;
+	agent_id?: number | null;
+	contract?: { prompt: string } | null;
+}) {
+	const state = interview(d.messages);
+	return !!d.restored_revision || (state.completed > 0 && !state.pending && finalRound(d).length === 0);
+}
+// Model output cannot skip the human rounds or close unanswered questions.
 export function interviewReply<
 	T extends { message: string; questions: Question[]; contract: unknown; harness: unknown; ready: boolean },
->(messages: InterviewMessage[], reply: T): T {
+>(messages: InterviewMessage[], reply: T, final: Question[] = []): T {
 	const state = interview(messages);
 	if (reply.questions.length) return { ...reply, contract: null, harness: null, ready: false };
+	// The frontier is empty: the platform's last round (deliverable, confirmation) comes before the contract.
+	if (state.completed && !state.pending && reply.ready && final.length)
+		return {
+			...reply,
+			message: `${reply.message}\n\nAntes de redactar el contrato: ${[
+				final.some((q) => q.id === 'entregable') && 'elige qué entregable esperas de cada trabajo',
+				final.some((q) => q.id === 'confirmar') && 'confirma que entendí bien',
+			]
+				.filter(Boolean)
+				.join(' y ')}.`,
+			questions: final,
+			contract: null,
+			harness: null,
+			ready: false,
+		};
 	if (!state.completed || state.pending || !reply.ready)
 		return {
 			...reply,
@@ -193,6 +274,7 @@ const QUESTION_ID_SCHEMA = {
 	description:
 		'ID técnico único: minúsculas, números y guiones, empieza por letra. Ejemplo: q-1. No usar other, constructor ni prototype.',
 };
+export const questionsSchema = (max: number) => ({ ...QUESTIONS_SCHEMA, maxItems: max });
 export const QUESTIONS_SCHEMA = {
 	type: 'array',
 	maxItems: 3,

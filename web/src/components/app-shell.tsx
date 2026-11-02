@@ -20,6 +20,7 @@ export function AppShell({
 	connected,
 	hash,
 	agentName,
+	onAgentsChanged,
 	onSettings,
 	onLogout,
 	children,
@@ -29,6 +30,7 @@ export function AppShell({
 	connected: boolean;
 	hash: string;
 	agentName?: string;
+	onAgentsChanged: () => void;
 	onSettings: () => void;
 	onLogout: () => Promise<void>;
 	children: ReactNode;
@@ -52,7 +54,15 @@ export function AppShell({
 			>
 				Ir al contenido
 			</a>
-			<AppSidebar me={me} agents={agents} hash={hash} width={width} onSettings={onSettings} onLogout={onLogout} />
+			<AppSidebar
+				me={me}
+				agents={agents}
+				hash={hash}
+				width={width}
+				onAgentsChanged={onAgentsChanged}
+				onSettings={onSettings}
+				onLogout={onLogout}
+			/>
 			<SidebarInset className="cuby-inset">
 				<header className="cuby-header">
 					<SidebarTrigger className="-ml-1" />

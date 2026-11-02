@@ -201,14 +201,25 @@ export function ArtifactDrawer({
 		</Dialog>
 	);
 }
+/** A full HTML document's <style> elements live in <head>, which sanitizing drops: bring them into the body. */
+function withHeadStyles(raw: string) {
+	if (!/<head[\s>]/i.test(raw)) return raw;
+	const doc = new DOMParser().parseFromString(raw, 'text/html'); // parsing runs no scripts
+	const styles = [...doc.head.querySelectorAll('style')].map((s) => `<style>${s.textContent ?? ''}</style>`).join('');
+	return styles + doc.body.innerHTML;
+}
 function PreviewContent({ preview: p }: { preview: Preview }) {
 	const csv = useMemo(() => (p.kind === 'csv' && p.text !== null ? csvPreview(p.text) : null), [p]);
 	const html = useMemo(
 		() =>
 			p.kind === 'html' && p.text !== null && DOMPurify.isSupported
 				? isolatedHtml(
-						DOMPurify.sanitize(p.text, {
+						DOMPurify.sanitize(withHeadStyles(p.text), {
 							USE_PROFILES: { html: true, svg: true },
+							// A full document keeps its look: its <style> (moved out of <head>) stays, as inline
+							// CSS. The CSP of the isolated frame still blocks anything external (@import, url()).
+							ADD_TAGS: ['style'],
+							FORCE_BODY: true,
 							FORBID_TAGS: [
 								'script',
 								'iframe',
