@@ -329,6 +329,21 @@ try {
 	assert.deepEqual((await api(`/designs/${design.id}`)).design.interview, design.interview);
 	ready = true;
 	({ design } = await api(`/designs/${design.id}/messages`, answerBody(design)));
+	// The platform's last round before a contract (#26): the deliverable and, for a new agent, the
+	// confirmation of the shared understanding. The model saying «ready» does not skip it.
+	assert.equal(design.ready, false);
+	assert.equal(design.contract, null);
+	assert.deepEqual(
+		design.interview.pending.questions.map((q: any) => q.id),
+		['entregable', 'confirmar'],
+	);
+	({ design } = await api(`/designs/${design.id}/messages`, {
+		version: design.version,
+		answers: {
+			round: design.interview.pending.round,
+			values: { entregable: { selected: ['markdown'], other: '' }, confirmar: { selected: ['si'], other: '' } },
+		},
+	}));
 	assert.equal(design.ready, true);
 	assert.equal((await api('/agents')).agents.length, 0);
 	console.log(
