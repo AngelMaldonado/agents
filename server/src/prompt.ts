@@ -15,12 +15,36 @@ const PURCHASES_ALLOWED = [
 	'- Antes de confirmar revisa producto, cantidad, precio total, envío y dirección. Después guarda una captura de la confirmación en `~/work/out/` y reporta número de pedido y total.',
 ].join('\n');
 
-export function systemPrompt(agent: { name: string; role: string }, credentialNames: string[]) {
+export type Granted = {
+	keys: { name: string; domains: string[]; expose_real: boolean }[];
+	mcp: { name: string; description: string }[];
+};
+
+/** What the owner granted besides site logins (#24): names and domains, never values. */
+export function grantedSection(g: Granted | undefined) {
+	if (!g || (!g.keys.length && !g.mcp.length)) return '';
+	const keys = g.keys.length
+		? `API Keys en tus variables de entorno: ${g.keys
+				.map((k) => `\`${k.name}\`${k.expose_real ? '' : ` (sólo hacia ${k.domains.join(', ')})`}`)
+				.join(
+					', ',
+				)}. Úsalas desde tus CLI y scripts por su variable; nunca las imprimas, copies ni envíes a otro lado. Las que llevan dominios contienen un marcador, no la key: la plataforma la pone sólo en las peticiones HTTPS a esos dominios, así que fuera de ellos no sirven.`
+		: '';
+	const mcp = g.mcp.length
+		? `Servidores MCP concedidos (sus herramientas se llaman mcp__<servidor>__<herramienta>): ${g.mcp
+				.map((m) => `\`${m.name}\`${m.description ? ` (${m.description})` : ''}`)
+				.join(', ')}.`
+		: '';
+	return [keys, mcp].filter(Boolean).join(' ');
+}
+
+export function systemPrompt(agent: { name: string; role: string }, credentialNames: string[], granted?: Granted) {
 	const s = settings();
 	const purchases = PURCHASES_SECTION.test(agent.role);
 	const creds = credentialNames.length
 		? `Tienes acceso a estos inicios de sesión guardados: ${credentialNames.map((n) => `\`${n}\``).join(', ')}. Para usar uno: \`agents-login <nombre>\` (abre la página de login, llena y envía el formulario; agrega \`--no-navigate\` si ya estás en el formulario). Nunca verás el usuario ni la contraseña y no debes pedirlos. Tu navegador conserva la sesión entre tareas: antes de volver a entrar, revisa si sigues adentro.`
 		: 'No tienes inicios de sesión guardados en la plataforma.';
+	const access = grantedSection(granted);
 	const takeover = `Tu navegador conserva entre tareas las sesiones, contraseñas, tarjetas y direcciones que tu dueño guardó en él: antes de pedir que alguien entre, revisa si ya estás adentro, y deja que Chrome o el sitio llenen lo que tengan guardado. Si un sitio exige iniciar sesión, un segundo factor o un pago que no te toca hacer, deja todo listo (carrito, formulario, pantalla de pago) y pide ayuda con \`request_help\` o \`agents-blocked\`, diciendo en qué sitio y qué falta: tu dueño puede **tomar el control de tu navegador** y hacerlo él. Mientras tanto quedas en pausa; al volver, revisa la página actual antes de seguir.`;
 	return `
 # Eres ${agent.name}, un agente de Cuby
@@ -64,7 +88,7 @@ Esta sección aplica sólo si tu harness habilita navegador. Usa la herramienta 
 - \`agent-browser screenshot ~/work/out/<archivo>.png\` para guardar evidencia.
 - \`agent-browser --help\` para todo lo demás.
 
-${creds}
+${creds}${access ? `\n\n${access}` : ''}
 
 ${takeover}
 

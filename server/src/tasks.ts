@@ -36,6 +36,7 @@ import { createDelivery, startDelivery, notify } from './channels';
 import { requestRoute, startPrompt, filesFor, render } from './inbox';
 import * as whatsapp from './whatsapp';
 import * as secrets from './secrets';
+import * as accesses from './accesses';
 import { browserSnapshot, readSnapshot, saveSnapshot, type BrowserSnapshot } from './snapshots';
 import { definition, digest, defaultHarness, withHarnessPrompt, type Definition } from './harnesses';
 import { runtimeToolNames } from '../../sandbox/harness';
@@ -166,6 +167,15 @@ export function artifacts(taskId: number) {
 	return rows<{ id: number; name: string; mime: string; size: number }>(
 		"select id, name, mime, size from files where run_id = $1 and direction = 'out' order by name",
 		[taskId],
+	);
+}
+
+/** An agent's latest outputs across its runs (initialization included: it is the agent's work too). */
+export function recentArtifacts(agentId: number, limit: number) {
+	return rows<{ id: number; name: string; mime: string; size: number; run_id: number; created_at: number }>(
+		`select f.id, f.name, f.mime, f.size, f.run_id, f.created_at from files f join runs r on r.id = f.run_id
+		 where r.agent_id = $1 and f.direction = 'out' order by f.id desc limit $2`,
+		[agentId, limit],
 	);
 }
 
@@ -689,6 +699,18 @@ export async function attach(cred: { token?: string; session?: string }, sup: Su
 		const s = settings();
 		// Every message that joined while the run waited goes into its first prompt.
 		const { prompt, files } = await startPrompt(t.id);
+		// The owner's granted keys and MCP servers (#24): secrets as placeholders the egress proxy swaps;
+		// the agent's own leftover secrets win. A browser session only signs a server in: no secrets.
+		const work = run.kind !== 'browser';
+		const proxy = accesses.proxyConfig();
+		const proxyToken = work && proxy ? await accesses.issueProxyToken(t.id) : null;
+		const access = await accesses.forRun(t.agent_id, proxyToken, work ? await secrets.forRun(t.agent_id) : {});
+		const granted = await accesses.grantedTo(t.agent_id);
+		const ownMcp = new Set((harness.mcp ?? []).map((s) => s.name));
+		const logouts = await accesses.pendingLogouts(t.agent_id);
+		// A harness server with that name keeps its session: only the granted one went away.
+		const kept = logouts.filter((l) => ownMcp.has(l.server)).map((l) => l.id);
+		if (kept.length) await accesses.logoutsDone(t.agent_id, kept);
 		sup.send(
 			JSON.stringify({
 				t: 'start',
@@ -699,11 +721,14 @@ export async function attach(cred: { token?: string; session?: string }, sup: Su
 				harnessDigest: run.definition?.harnessDigest,
 				prompt,
 				files,
-				system: withHarnessPrompt(systemPrompt(agent, await grantedNames(t.agent_id)), harness),
+				system: withHarnessPrompt(systemPrompt(agent, await grantedNames(t.agent_id), granted), harness),
 				blockedWaitMs: s.blockedWaitMinutes * 60_000,
 				piSession: conv.pi_session_id,
 				// The agent's credentials go only to its own work; a browser session may sign an MCP server in.
-				secrets: run.kind === 'browser' ? {} : await secrets.forRun(t.agent_id),
+				secrets: work ? access.env : {},
+				grantedMcp: access.grantedMcp,
+				proxy: proxyToken && proxy ? { url: accesses.proxyUrlFor(proxyToken), ca: proxy.ca } : undefined,
+				mcpLogouts: logouts.filter((l) => !ownMcp.has(l.server)),
 				mcpLogin:
 					run.kind === 'browser'
 						? ((
@@ -880,6 +905,9 @@ function onSupervisor(l: Live, raw: string) {
 			case 'note':
 				// What the computer is doing before the agent starts (installing tools, signing in).
 				await event(ref, 'system', { message: String(msg.message ?? '').slice(0, 500) });
+				break;
+			case 'mcp_logouts':
+				await accesses.logoutsDone(ref.agent_id, msg.ids);
 				break;
 			case 'mcp_login':
 				await event(ref, 'system', {

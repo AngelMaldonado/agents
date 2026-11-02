@@ -1,11 +1,13 @@
-import { lazy, Suspense, useState, type ReactNode } from 'react';
-import { CalendarDays, Globe, Settings2, SlidersHorizontal, Trash2, Wrench } from 'lucide-react';
+import { useEffect, useRef, useState, type ReactNode } from 'react';
+import { CalendarDays, Globe, KeyRound, Save, Settings2, SlidersHorizontal, Trash2 } from 'lucide-react';
 import { api, isLive, type Agent, type PublicSettings } from './api';
 import { AgentConfiguration } from './AgentConfiguration';
 import { Channels } from './Channels';
 import { AgentSchedules } from './AgentSchedules';
-import { AgentTools } from './AgentTools';
+import { AgentAccesses } from './AgentTools';
 import { ShareAgent } from './ShareAgent';
+import { AgentHarness } from '@/components/agent-harness';
+import { AgentFace } from '@/components/agent-face';
 import { Button } from '@/components/ui/button';
 import {
 	Dialog,
@@ -19,7 +21,7 @@ import { Input } from '@/components/ui/input';
 import { OptionSelect } from '@/components/option-select';
 import { ScrollArea } from '@/components/ui/scroll-area';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
-const RoleEditor = lazy(() => import('@/components/role-editor').then((module) => ({ default: module.RoleEditor })));
+import { SHARE_REQUEST, takeShareRequest } from '@/lib/sidebar-events';
 
 export function AgentSettings({
 	agent,
@@ -29,6 +31,8 @@ export function AgentSettings({
 	onProfileReset,
 	onChanged,
 	onDeleted,
+	iconOnly = false,
+	request,
 }: {
 	agent: Agent;
 	settings: PublicSettings;
@@ -37,10 +41,55 @@ export function AgentSettings({
 	onProfileReset: (pending: boolean) => void;
 	onChanged: () => void;
 	onDeleted: () => void;
+	/** The chat view's bar: an icon instead of a labelled button. */
+	iconOnly?: boolean;
+	/** Opens it from elsewhere (the header's «Compartir»): a new value opens it at that section. */
+	request?: { section: 'share'; at: number } | null;
 }) {
 	const [open, setOpen] = useState(false);
+	// «Compartir» from the sidebar's menu: taken here, once this button is on screen (on arriving at the
+	// hub, or right away if it already is), so it is never mistaken for a stale request.
+	const [fromSidebar, setFromSidebar] = useState<{ section: 'share'; at: number } | null>(null);
+	useEffect(() => {
+		if (iconOnly || !mine) return;
+		const take = () => {
+			const at = takeShareRequest(agent.id);
+			if (at) setFromSidebar({ section: 'share', at });
+		};
+		take();
+		window.addEventListener(SHARE_REQUEST, take);
+		return () => window.removeEventListener(SHARE_REQUEST, take);
+	}, [agent.id, iconOnly, mine]);
+	const wanted = !fromSidebar || (request && request.at > fromSidebar.at) ? request : fromSidebar;
+	// Only a request made while this is on screen opens it: one left over from before (the hub's
+	// «Compartir», then a visit to a chat and back) must not reopen the dialog when this remounts.
+	const seen = useRef(request?.at ?? null);
+	useEffect(() => {
+		const request = wanted;
+		if (!request || request.at === seen.current) return;
+		seen.current = request.at;
+		setOpen(true);
+		setTab('general');
+		// The dialog mounts its content after opening, and the configuration above the section loads
+		// later and pushes it down: keep it in view until it stops moving (or two seconds pass).
+		let tries = 0,
+			still = 0,
+			last = NaN;
+		const timer = setInterval(() => {
+			const section = document.querySelector<HTMLElement>('.agent-settings-dialog [aria-label="Compartir"]');
+			if (section) {
+				section.scrollIntoView({ block: 'start' });
+				const top = Math.round(section.getBoundingClientRect().top);
+				still = top === last ? still + 1 : 0;
+				last = top;
+			}
+			if (still >= 4 || ++tries > 40) clearInterval(timer);
+		}, 50);
+		return () => clearInterval(timer);
+	}, [wanted]);
 	const [tab, setTab] = useState('general');
 	const [visited, setVisited] = useState(new Set(['general']));
+	const [editingDoc, setEditingDoc] = useState(false);
 	const changeTab = (value: string) => {
 		setTab(value);
 		setVisited((tabs) => new Set([...tabs, value]));
@@ -57,9 +106,14 @@ export function AgentSettings({
 			}}
 		>
 			<DialogTrigger asChild>
-				<Button variant="outline" size="sm" aria-label="Configuración del agente" title="Configuración del agente">
+				<Button
+					variant={iconOnly ? 'ghost' : 'outline'}
+					size={iconOnly ? 'icon-sm' : 'sm'}
+					aria-label="Configuración del agente"
+					title="Configuración del agente"
+				>
 					<Settings2 />
-					<span className="agent-action-label">Configuración</span>
+					{!iconOnly && <span className="agent-action-label">Configuración</span>}
 				</Button>
 			</DialogTrigger>
 			<DialogContent
@@ -67,14 +121,18 @@ export function AgentSettings({
 					if ((event.target as Element)?.closest('.role-editor[data-vim-enabled="true"] .cm-editor'))
 						event.preventDefault();
 				}}
-				className="agent-settings-dialog flex h-[min(46rem,calc(100svh-2rem))] w-[calc(100vw-2rem)] max-w-6xl flex-col gap-0 overflow-hidden p-0 sm:max-w-6xl"
+				className="agent-settings-dialog app-settings flex h-[min(46rem,calc(100svh-2rem))] w-[calc(100vw-2rem)] max-w-5xl flex-col gap-0 overflow-hidden p-0 sm:max-w-5xl"
 			>
-				<DialogHeader className="shrink-0 border-b px-5 py-4 pr-12">
-					<DialogTitle>Configuración</DialogTitle>
-					<DialogDescription className="break-words">
-						{agent.name}
-						{!mine && ' · Sólo lectura'}
-					</DialogDescription>
+				<DialogHeader className="shrink-0 flex-row items-center gap-3 border-b px-5 py-4 pr-12 text-left">
+					{/* The agent's face, as tall as the title and its name. */}
+					<AgentFace agent={agent} size={44} still />
+					<div className="grid min-w-0 gap-1">
+						<DialogTitle>Configuración</DialogTitle>
+						<DialogDescription className="break-words">
+							{agent.name}
+							{!mine && ' · Sólo lectura'}
+						</DialogDescription>
+					</div>
 				</DialogHeader>
 				<Tabs
 					orientation="vertical"
@@ -89,6 +147,12 @@ export function AgentSettings({
 								<span>General</span>
 							</TabsTrigger>
 							{mine && (
+								<TabsTrigger value="accesses" aria-label="Accesos">
+									<KeyRound />
+									<span>Accesos</span>
+								</TabsTrigger>
+							)}
+							{mine && (
 								<TabsTrigger value="channels" aria-label="Canales">
 									<Globe />
 									<span>Canales</span>
@@ -100,33 +164,33 @@ export function AgentSettings({
 									<span>Horarios</span>
 								</TabsTrigger>
 							)}
-							{mine && (
-								<TabsTrigger value="tools" aria-label="Herramientas">
-									<Wrench />
-									<span>Herramientas</span>
-								</TabsTrigger>
-							)}
-							{mine && (
-								<TabsTrigger value="advanced" aria-label="Avanzado">
-									<SlidersHorizontal />
-									<span>Avanzado</span>
-								</TabsTrigger>
-							)}
+							<TabsTrigger value="advanced" aria-label="Avanzado">
+								<SlidersHorizontal />
+								<span>Avanzado</span>
+							</TabsTrigger>
 						</TabsList>
 					</div>
 					<SettingsPanel value="general" active={tab}>
-						<AgentConfiguration
-							agent={agent}
-							settings={settings}
-							mine={mine}
-							onRestore={() => {
-								setOpen(false);
-								setTab('general');
-								setVisited(new Set(['general']));
-							}}
-						/>
+						{mine && (
+							<section className="panel">
+								<h2>Agente</h2>
+								<EditAgent key={agent.config_revision} agent={agent} settings={settings} onSaved={onChanged} />
+							</section>
+						)}
 						{mine && <ShareAgent agent={agent} onChanged={onChanged} />}
+						<AgentConfiguration agent={agent} settings={settings} mine={mine} />
 					</SettingsPanel>
+					{mine && visited.has('accesses') && (
+						<SettingsPanel value="accesses" active={tab}>
+							<AgentAccesses
+								agent={agent}
+								onBrowser={() => {
+									setOpen(false);
+									onChanged();
+								}}
+							/>
+						</SettingsPanel>
+					)}
 					{mine && visited.has('channels') && (
 						<SettingsPanel value="channels" active={tab}>
 							<Channels agentId={agent.id} />
@@ -137,35 +201,16 @@ export function AgentSettings({
 							<AgentSchedules agentId={agent.id} />
 						</SettingsPanel>
 					)}
-					{mine && visited.has('tools') && (
-						<SettingsPanel value="tools" active={tab}>
-							<AgentTools
-								agent={agent}
-								onBrowser={() => {
-									setOpen(false);
-									onChanged();
-								}}
-							/>
-						</SettingsPanel>
-					)}
-					{mine && visited.has('advanced') && (
+					{visited.has('advanced') && (
 						<SettingsPanel value="advanced" active={tab}>
-							<h2 className="mb-2">Edición manual</h2>
-							<p className="mb-4 text-xs text-muted-foreground">
-								Modifica directamente el nombre, contrato y modelo. Para revisar una propuesta con IA, abre Automejora
-								junto al botón Historial.
-							</p>
-							<EditAgent
-								key={agent.config_revision}
-								agent={agent}
-								settings={settings}
-								onSaved={() => {
-									changeTab('general');
-									onChanged();
-								}}
-							/>
-							<BrowserProfile agent={agent} pending={profileReset} onPending={onProfileReset} />
-							<RetireAgent agent={agent} onDeleted={onDeleted} />
+							<div className="panel">
+								<AgentHarness agent={agent} mine={mine} onChanged={onChanged} onEditing={setEditingDoc} />
+							</div>
+							{/* While a document is open, its editor has the whole panel. */}
+							{mine && !editingDoc && (
+								<BrowserProfile agent={agent} pending={profileReset} onPending={onProfileReset} />
+							)}
+							{mine && !editingDoc && <RetireAgent agent={agent} onDeleted={onDeleted} />}
 						</SettingsPanel>
 					)}
 				</Tabs>
@@ -186,7 +231,6 @@ function SettingsPanel({ value, active, children }: { value: string; active: str
 
 function EditAgent({ agent, settings, onSaved }: { agent: Agent; settings: PublicSettings; onSaved: () => void }) {
 	const [name, setName] = useState(agent.name);
-	const [role, setRole] = useState(agent.role);
 	const [model, setModel] = useState(agent.model);
 	const [error, setError] = useState('');
 	const [busy, setBusy] = useState(false);
@@ -205,13 +249,13 @@ function EditAgent({ agent, settings, onSaved }: { agent: Agent; settings: Publi
 	};
 	return (
 		<form
-			className="form mb-6"
+			className="form"
 			onSubmit={(e) => {
 				e.preventDefault();
 				void perform(async () => {
 					await api(`/agents/${agent.id}`, {
 						method: 'PATCH',
-						body: { name, role, model, revision: agent.config_revision },
+						body: { name, role: agent.role, model, revision: agent.config_revision },
 					});
 					onSaved();
 				});
@@ -222,22 +266,13 @@ function EditAgent({ agent, settings, onSaved }: { agent: Agent; settings: Publi
 					La edición manual espera a que termine la corrida activa.
 				</p>
 			)}
-			<fieldset disabled={busy || live} className="grid min-w-0 gap-4">
-				<label>
-					Nombre
+			<fieldset disabled={busy || live} className="field-list min-w-0">
+				<label className="field">
+					<span>Nombre</span>
 					<Input value={name} onChange={(e) => setName(e.target.value)} maxLength={40} required />
 				</label>
-				<Suspense
-					fallback={
-						<p role="status" className="muted">
-							Cargando editor…
-						</p>
-					}
-				>
-					<RoleEditor value={role} onChange={setRole} disabled={busy || live} />
-				</Suspense>
-				<label>
-					Modelo
+				<label className="field">
+					<span>Modelo</span>
 					<OptionSelect
 						label="Modelo del agente"
 						value={model}
@@ -246,8 +281,11 @@ function EditAgent({ agent, settings, onSaved }: { agent: Agent; settings: Publi
 						disabled={busy || live}
 					/>
 				</label>
-				<div className="row wrap">
-					<Button>Guardar cambios</Button>
+				<div className="field-actions row wrap">
+					<Button disabled={busy || live || (name === agent.name && model === agent.model)}>
+						<Save aria-hidden="true" />
+						Guardar
+					</Button>
 				</div>
 			</fieldset>
 			{error && (
@@ -271,7 +309,7 @@ function BrowserProfile({
 	const [error, setError] = useState('');
 	const [busy, setBusy] = useState(false);
 	return (
-		<section className="border-t pt-5">
+		<section className="panel">
 			<h2>Perfil del navegador</h2>
 			<p className="mb-3 mt-2 text-xs text-muted-foreground">
 				Borra cookies, sesiones y almacenamiento del navegador en la siguiente tarea. No reinicia la conversación ni

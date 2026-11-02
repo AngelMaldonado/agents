@@ -3,10 +3,8 @@ import { api, type Agent, type Person, type PublicSettings } from './api';
 import { connect, onTask, useConnected } from './live';
 import { Entry, Invite } from './Entry';
 import { Gallery } from './Gallery';
-import { Monitor } from './Monitor';
-import { Settings } from './Settings';
-import { Admin } from './Admin';
 import { AppShell } from '@/components/app-shell';
+import { AppSettings, type SettingsTab } from '@/components/app-settings';
 import { Skeleton } from '@/components/ui/skeleton';
 
 // Keep the markdown renderer and detailed agent controls out of the initial gallery bundle.
@@ -31,6 +29,17 @@ export function App() {
 	const [settings, setSettings] = useState<PublicSettings | null>(null);
 	const [agents, setAgents] = useState<Agent[]>([]);
 	const connected = useConnected();
+	const [settingsTab, setSettingsTab] = useState<SettingsTab | null>(null);
+	// The old pages are sections of Configuración now: their links open it over the gallery.
+	useEffect(() => {
+		const tab = ({ '/settings': 'ai', '/monitor': 'monitor', '/admin': 'admin' } as const)[
+			hash as '/settings' | '/monitor' | '/admin'
+		];
+		if (!tab) return;
+		setSettingsTab(tab);
+		history.replaceState(null, '', '#/');
+		dispatchEvent(new HashChangeEvent('hashchange'));
+	}, [hash]);
 
 	const loadMe = useCallback(async () => {
 		const r = await api('/me');
@@ -81,7 +90,7 @@ export function App() {
 	if (!settings) return null;
 
 	const designerMatch = hash.match(/^\/new(?:\/([\da-f-]+))?$/i);
-	const agentMatch = hash.match(/^\/agent\/(\d+)(?:\/(improve)(?:\/([\da-f-]+))?)?$/i);
+	const agentMatch = hash.match(/^\/agent\/(\d+)(?:\/(improve)(?:\/([\da-f-]+))?|\/chat\/(\d+)|\/(browser))?$/i);
 	const artifactMatch = hash.match(/^\/agent\/(\d+)\/artifact\/(\d+)\/([^/]+)$/i);
 	let artifact = null;
 	if (artifactMatch) {
@@ -99,7 +108,31 @@ export function App() {
 	};
 
 	return (
-		<AppShell me={me} connected={connected} hash={hash} agentName={agent?.name}>
+		<AppShell
+			me={me}
+			agents={agents}
+			connected={connected}
+			hash={hash}
+			agentName={agent?.name}
+			onAgentsChanged={() => void loadAgents()}
+			onSettings={() => setSettingsTab('ai')}
+			onLogout={async () => {
+				await api('/logout', { method: 'POST' });
+				setSettingsTab(null);
+				setAgents([]);
+				setMe(null);
+				go('/');
+			}}
+		>
+			<AppSettings
+				tab={settingsTab}
+				onTab={setSettingsTab}
+				onClose={() => setSettingsTab(null)}
+				me={me}
+				agents={agents}
+				pinIsSet={pinIsSet}
+				onChanged={changed}
+			/>
 			{designerMatch ? (
 				<Suspense
 					fallback={
@@ -122,12 +155,6 @@ export function App() {
 						}}
 					/>
 				</Suspense>
-			) : hash === '/monitor' ? (
-				<Monitor key={String(me.admin)} me={me} />
-			) : hash === '/settings' ? (
-				<Settings me={me} agents={agents} />
-			) : hash === '/admin' ? (
-				<Admin me={me} pinIsSet={pinIsSet} onChanged={changed} />
 			) : agent ? (
 				<Suspense
 					fallback={
@@ -143,10 +170,10 @@ export function App() {
 						settings={settings}
 						improving={!!agentMatch?.[2]}
 						designId={agentMatch?.[3]}
+						chatId={agentMatch?.[4] ? Number(agentMatch[4]) : undefined}
+						browsing={!!agentMatch?.[5]}
 						artifact={artifact}
-						onViewChange={(view, draft) =>
-							go(`/agent/${agent.id}${view === 'improve' ? `/improve${draft ? `/${draft}` : ''}` : ''}`)
-						}
+						onRoute={(suffix) => go(`/agent/${agent.id}${suffix}`)}
 						onBack={() => go('/')}
 						onChanged={changed}
 					/>

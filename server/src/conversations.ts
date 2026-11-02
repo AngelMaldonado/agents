@@ -7,6 +7,9 @@ export type Conversation = {
 	archived_at: number | null;
 	is_default: boolean;
 	runs: number;
+	last_at: number;
+	/** It has a run in the queue or working now. */
+	live: boolean;
 };
 export const requestKey = (value: unknown) => {
 	if (typeof value !== 'string' || !/^[0-9a-f]{8}-(?:[0-9a-f]{4}-){3}[0-9a-f]{12}$/i.test(value))
@@ -32,16 +35,19 @@ export async function defaultConversation(agentId: number, c: Exec) {
 	}
 	return conv!;
 }
-const title = `coalesce(c.title,case when c.is_default then 'Principal' else (select left(m.text,60) from messages m left join runs r on r.id=m.run_id where m.conversation_id=c.id and (r.kind is null or r.kind<>'initialize') order by m.id limit 1) end,'Nueva conversación')`;
+/** A conversation's title, for a query that has it as `c`. */
+export const titleSql = `coalesce(c.title,case when c.is_default then 'Principal' else (select left(m.text,60) from messages m left join runs r on r.id=m.run_id where m.conversation_id=c.id and (r.kind is null or r.kind<>'initialize') order by m.id limit 1) end,'Nueva conversación')`;
+// last_at: its latest message or run, for «Recientes» (the hub's history).
+const COLUMNS = `c.id,c.agent_id,${titleSql} as title,c.started_at,c.archived_at,c.is_default,(select count(*) from runs r where r.conversation_id=c.id) as runs,greatest(c.started_at,(select max(r.created_at) from runs r where r.conversation_id=c.id),(select max(m.received_at) from messages m where m.conversation_id=c.id)) as last_at,exists(select 1 from runs r where r.conversation_id=c.id and r.status in ('queued','starting','running','blocked')) as live`;
 export function list(agentId: number) {
 	return rows<Conversation>(
-		`select c.id,c.agent_id,${title} as title,c.started_at,c.archived_at,c.is_default,(select count(*) from runs r where r.conversation_id=c.id) as runs from conversations c where c.agent_id=$1 order by c.is_default desc,c.id desc`,
+		`select ${COLUMNS} from conversations c where c.agent_id=$1 and c.deleted_at is null order by c.is_default desc,c.id desc`,
 		[agentId],
 	);
 }
 export function get(agentId: number, id: number, on?: Exec) {
 	return row<Conversation>(
-		`select c.id,c.agent_id,${title} as title,c.started_at,c.archived_at,c.is_default,(select count(*) from runs r where r.conversation_id=c.id) as runs from conversations c where c.agent_id=$1 and c.id=$2`,
+		`select ${COLUMNS} from conversations c where c.agent_id=$1 and c.id=$2 and c.deleted_at is null`,
 		[agentId, id],
 		on,
 	);
@@ -67,6 +73,43 @@ export async function archive(agentId: number, id: number, archived: boolean) {
 	);
 	if (!n) throw new Error('La conversación no pertenece a este agente.');
 	return (await get(agentId, id))!;
+}
+/** A title of its own; an empty one goes back to the derived title (Principal, or its first message). */
+export async function rename(agentId: number, id: number, title: string) {
+	const clean = title.replace(/\s+/g, ' ').trim();
+	if (clean.length > 80) throw new Error('El título puede tener hasta 80 caracteres.');
+	const n = await exec('update conversations set title=$3 where agent_id=$1 and id=$2', [agentId, id, clean || null]);
+	if (!n) throw new Error('La conversación no pertenece a este agente.');
+	return (await get(agentId, id))!;
+}
+/**
+ * Out of every view; its messages, runs and files stay. Principal stays (channels and schedules
+ * land there), and so does a conversation the agent is working in.
+ */
+export async function remove(agentId: number, id: number) {
+	await tx(async (c) => {
+		const conv = await row<{ is_default: boolean }>(
+			'select is_default from conversations where agent_id=$1 and id=$2 and deleted_at is null for update',
+			[agentId, id],
+			c,
+		);
+		if (!conv) throw new Error('La conversación no pertenece a este agente.');
+		if (conv.is_default) throw new Error('Principal no se elimina: ahí llegan los canales y los horarios.');
+		if (
+			await row(
+				`select 1 from runs where conversation_id=$1 and status in ('queued','starting','running','blocked') limit 1`,
+				[id],
+				c,
+			)
+		)
+			throw new Error('El agente está trabajando en esta conversación. Espera a que termine o cancela la tarea.');
+		await exec(
+			'update conversations set deleted_at=now(), archived_at=coalesce(archived_at,now()) where id=$1',
+			[id],
+			c,
+		);
+		await exec(`delete from pins where kind='conversation' and ref_id=$1`, [id], c);
+	});
 }
 export async function transcript(agentId: number, id: number, before?: number) {
 	const conversation = await get(agentId, id);

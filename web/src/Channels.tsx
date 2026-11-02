@@ -4,6 +4,7 @@ import { useEffect, useRef, useState } from 'react';
 import { FEATURES } from '../../sandbox/features';
 import { api, ago } from './api';
 import { Button } from '@/components/ui/button';
+import { DeleteButton } from '@/components/actions';
 import { Input } from '@/components/ui/input';
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
 
@@ -80,7 +81,7 @@ export function Channels({ agentId }: { agentId: number }) {
 			</div>
 		);
 	return (
-		<div className="channels grid min-w-0 gap-7 divide-y">
+		<div className="channels min-w-0">
 			{error && (
 				<p role="alert" className="error">
 					{error}
@@ -131,7 +132,7 @@ function WhatsApp({
 		setContacts((cs) => cs.map((c, j) => (j === i ? { ...c, ...patch } : c)));
 	};
 	return (
-		<section className="channel-section min-w-0" aria-label="WhatsApp">
+		<section className="panel channel-section min-w-0" aria-label="WhatsApp">
 			<h2>WhatsApp</h2>
 			{v.available ? (
 				<p className="muted">
@@ -182,16 +183,14 @@ function WhatsApp({
 							<input type="checkbox" checked={c.notify} onChange={(e) => edit(i, { notify: e.target.checked })} />{' '}
 							Avisos
 						</label>
-						<Button
-							variant="ghost"
-							size="sm"
+						<DeleteButton
+							label="Quitar"
+
 							onClick={() => {
 								setSaved(false);
 								setContacts((cs) => cs.filter((_, j) => j !== i));
 							}}
-						>
-							Quitar
-						</Button>
+						/>
 					</div>
 				))}
 				{!contacts.length && <p className="muted small">Sin números: nadie puede escribirle por WhatsApp.</p>}
@@ -256,7 +255,7 @@ sig=$(printf '%s.%s' "$t" "$body" | openssl dgst -sha256 -hmac "$SECRETO" -hex |
 curl -s ${v.inUrl} -H 'content-type: application/json' \\
   -H "x-agents-signature: t=$t,v1=$sig" -H "idempotency-key: msg-123" -d "$body"`;
 	return (
-		<section className="channel-section min-w-0">
+		<section className="panel channel-section min-w-0">
 			<h2>Entrada</h2>
 			<p className="muted">
 				Un puente (n8n, Bubble…) despierta al agente con un POST firmado. Si trabaja, el mensaje entra como seguimiento;
@@ -289,7 +288,7 @@ curl -s ${v.inUrl} -H 'content-type: application/json' \\
 function Outbound({ v, save, rotate }: { v: View; save: (url: string) => void; rotate: () => void }) {
 	const [url, setUrl] = useState(v.outUrl ?? '');
 	return (
-		<section className="channel-section min-w-0">
+		<section className="panel channel-section min-w-0">
 			<h2>Salida</h2>
 			<p className="muted">
 				Cuando una tarea termina o se atasca, Agents envía la respuesta, enlaces a archivos válidos por 7 días y el{' '}
@@ -324,7 +323,7 @@ function Outbound({ v, save, rotate }: { v: View; save: (url: string) => void; r
 const DELIVERY_LABEL = { pending: 'Reintentando', delivered: 'Entregado', failed: 'Falló' } as const;
 function Deliveries({ list, resend }: { list: Delivery[]; resend: (id: number) => void }) {
 	return (
-		<section className="channel-section min-w-0">
+		<section className="panel channel-section min-w-0">
 			<h2>Entregas</h2>
 			{!list.length ? (
 				<p className="muted">Todavía no hay entregas.</p>

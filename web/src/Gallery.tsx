@@ -3,9 +3,25 @@ import { isLive, ago, type Agent, type Person, type PublicSettings } from './api
 import { Character, STATE_LABEL, type CharState } from './Character';
 import { Browser } from './Browser';
 import { useTick } from './live';
+import { StatusIcon, type CardStatus } from '@/components/status-icon';
+import { PeopleStack } from '@/components/people-stack';
+import { Ticker } from '@/components/ticker';
+import { crewOf, usePeople, type Someone } from '@/lib/use-people';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { Card } from '@/components/ui/card';
+
+/** When it last worked: now (it is working), its last work's end, start or creation; or when it was made. */
+const lastActivity = (a: Agent) =>
+	isLive(a.task)
+		? Number.MAX_SAFE_INTEGER
+		: Math.max(
+				a.task?.ended_at ?? 0,
+				a.task?.started_at ?? 0,
+				a.task?.created_at ?? 0,
+				// never worked: after every agent that did, newest first
+				(a.created_at ?? 0) - 1e13,
+			);
 
 export function stateOf(a: Agent): CharState {
 	if (!a.task || a.task.status === 'queued') return 'idle';
@@ -25,9 +41,12 @@ export function Gallery({
 	onChanged: () => void;
 }) {
 	useTick(5000);
-	const mine = agents.filter((a) => a.person_id === me.id);
-	const shared = agents.filter((a) => a.person_id !== me.id && a.shares?.includes(me.id));
-	const others = agents.filter((a) => a.person_id !== me.id && !a.shares?.includes(me.id));
+	const people = usePeople();
+	// The ones with recent activity first: working now, then by their last work; never-used last.
+	const byActivity = [...agents].sort((x, y) => lastActivity(y) - lastActivity(x));
+	const mine = byActivity.filter((a) => a.person_id === me.id);
+	const shared = byActivity.filter((a) => a.person_id !== me.id && a.shares?.includes(me.id));
+	const others = byActivity.filter((a) => a.person_id !== me.id && !a.shares?.includes(me.id));
 	const running = agents.filter((a) => isLive(a.task) && a.task!.status !== 'queued').length;
 	return (
 		<div className="page">
@@ -60,7 +79,7 @@ export function Gallery({
 			)}
 			<div className="agent-grid">
 				{mine.map((a) => (
-					<AgentCard key={a.id} agent={a} onOpen={onOpen} />
+					<AgentCard key={a.id} agent={a} people={people} onOpen={onOpen} />
 				))}
 			</div>
 			{shared.length > 0 && (
@@ -70,7 +89,7 @@ export function Gallery({
 					</h2>
 					<div className="agent-grid">
 						{shared.map((a) => (
-							<AgentCard key={a.id} agent={a} onOpen={onOpen} showOwner />
+							<AgentCard key={a.id} agent={a} people={people} onOpen={onOpen} showOwner />
 						))}
 					</div>
 				</section>
@@ -82,7 +101,7 @@ export function Gallery({
 					</h2>
 					<div className="agent-grid">
 						{others.map((a) => (
-							<AgentCard key={a.id} agent={a} onOpen={onOpen} showOwner />
+							<AgentCard key={a.id} agent={a} people={people} onOpen={onOpen} showOwner />
 						))}
 					</div>
 				</section>
@@ -91,11 +110,36 @@ export function Gallery({
 	);
 }
 
-function AgentCard({ agent, onOpen, showOwner }: { agent: Agent; onOpen: (id: number) => void; showOwner?: boolean }) {
+/** The card's state: the run's, or the setup's while a new agent is still initializing. */
+function cardStatus(agent: Agent, setup: boolean): { status: CardStatus; label: string } {
+	const t = agent.task;
+	if (setup)
+		return t && ['error', 'cancelled', 'incomplete'].includes(t.status)
+			? { status: 'review-setup', label: 'Revisar inicialización' }
+			: { status: 'initializing', label: 'Inicializando' };
+	if (t?.status === 'queued') return { status: 'queued', label: 'En cola' };
+	const state = stateOf(agent);
+	return { status: state, label: STATE_LABEL[state] };
+}
+
+function AgentCard({
+	agent,
+	people,
+	onOpen,
+	showOwner,
+}: {
+	agent: Agent;
+	people: Map<number, Someone>;
+	onOpen: (id: number) => void;
+	showOwner?: boolean;
+}) {
 	const state = stateOf(agent);
 	const t = agent.task;
 	const live = isLive(t) && t!.status !== 'queued';
-	const setup = !showOwner && agent.setup_design_id && (!t || (t.kind === 'initialize' && t.status !== 'done'));
+	const setup = !!(!showOwner && agent.setup_design_id && (!t || (t.kind === 'initialize' && t.status !== 'done')));
+	const { status, label } = cardStatus(agent, setup);
+	const work = t ? `${t.id}:${t.prompt}` : 'none'; // the footer's lines change with the run
+	const crew = crewOf(agent, people);
 	return (
 		<Card className={`agent-card relative gap-0 overflow-hidden rounded-card p-0 shadow-none state-${state}`}>
 			<a
@@ -113,31 +157,32 @@ function AgentCard({ agent, onOpen, showOwner }: { agent: Agent; onOpen: (id: nu
 				<Character seed={agent.seed} state={state} size={56} />
 				<div className="card-id">
 					<h2 className="name">{agent.name}</h2>
-					<p className="truncate text-xs text-muted-foreground">
-						{showOwner ? `${agent.owner} · ` : ''}
-						{agent.model.split('/')[1]}
+					<p className="flex min-w-0 items-center gap-1.5 text-xs text-muted-foreground">
+						<StatusIcon status={status} label={label} />
+						<span className="truncate">
+							{showOwner ? `${agent.owner} · ` : ''}
+							{agent.model.split('/')[1]}
+						</span>
 					</p>
 				</div>
 				<ArrowUpRight className="size-4 shrink-0 text-muted-foreground" aria-hidden="true" />
 			</div>
-			<div className="flex min-w-0 items-center gap-2 px-5 pb-4">
-				<Badge variant="outline" className={`pill s-${state}`}>
-					{setup
-						? t && ['error', 'cancelled', 'incomplete'].includes(t.status)
-							? 'Revisar inicialización'
-							: 'Inicializando'
-						: t?.status === 'queued'
-							? 'En cola'
-							: STATE_LABEL[state]}
-				</Badge>
-				<span className="truncate text-xs text-muted-foreground">{agent.role || 'Sin rol definido'}</span>
-			</div>
 			<Browser agentId={agent.id} live={live} compact />
 			<div className="card-foot">
-				<span className="prompt text-muted-foreground" title={t?.prompt}>
-					{t?.prompt || 'Sin tareas todavía'}
-				</span>
-				{t && <span className="shrink-0 text-muted-foreground">{ago(t.created_at)}</span>}
+				<Ticker itemKey={work} className="flex-1">
+					<span className="prompt block text-muted-foreground" title={t?.prompt}>
+						{t?.prompt || 'Sin tareas todavía'}
+					</span>
+				</Ticker>
+				<div className="flex shrink-0 flex-col items-end gap-1">
+					{/* Every card has a time: the last run's, or when the agent was created. */}
+					<Ticker itemKey={work}>
+						<span className="block text-muted-foreground" title={t ? 'Último trabajo' : 'Creado'}>
+							{ago(t ? t.created_at : agent.created_at)}
+						</span>
+					</Ticker>
+					<PeopleStack people={crew} />
+				</div>
 			</div>
 		</Card>
 	);

@@ -10,7 +10,7 @@ const buttonVariants = cva(
 			variant: {
 				default: 'bg-primary text-primary-foreground hover:bg-primary/80',
 				destructive:
-					'border-destructive/20 bg-danger-soft text-danger-on-soft hover:border-destructive/40 hover:bg-danger-soft hover:text-danger-on-soft hover:brightness-95 focus-visible:ring-destructive/30 dark:hover:brightness-125',
+					'bg-danger text-danger-foreground hover:bg-danger/90 focus-visible:border-danger focus-visible:ring-danger/30',
 				'danger-ghost':
 					'text-danger-on-soft hover:bg-danger-soft hover:text-danger-on-soft focus-visible:bg-danger-soft focus-visible:ring-destructive/30',
 				'danger-outline':

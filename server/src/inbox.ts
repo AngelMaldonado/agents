@@ -117,7 +117,7 @@ export async function receive(
 			m.conversationId === undefined
 				? await defaultConversation(m.agentId, c)
 				: await row<{ id: number }>(
-						'select id from conversations where id=$1 and agent_id=$2 and archived_at is null',
+						'select id from conversations where id=$1 and agent_id=$2 and archived_at is null and deleted_at is null',
 						[m.conversationId, m.agentId],
 						c,
 					);

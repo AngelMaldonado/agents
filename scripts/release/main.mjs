@@ -77,8 +77,6 @@ try {
 		assertPublicationAllowed();
 		if (process.env.GIT_DIR || process.env.GIT_WORK_TREE || process.env.GIT_INDEX_FILE)
 			throw new Error('No ejecutes release desde un hook ni con el repositorio Git redirigido.');
-		if (!existsSync(resolve(root, 'node_modules/semantic-release/package.json')))
-			throw new Error('Faltan dependencias: ejecuta bun install --frozen-lockfile antes de release.');
 		lock = resolve(await command('git', ['rev-parse', '--git-common-dir'], true), 'agents-release.lock');
 		fd = openSync(lock, 'wx', 0o600);
 		if (await command('git', ['status', '--porcelain'], true))
@@ -142,16 +140,53 @@ try {
 		if (prs.length !== 1) throw new Error('No hay una PR inequívoca.');
 		const pr = prs[0];
 		emit(`PR ${pr.url}\n`);
-		await command('gh', [
-			'pr',
-			'checks',
-			String(pr.number),
-			'--repo',
-			config.repository,
-			'--required',
-			'--watch',
-			'--fail-fast',
-		]);
+		// Wait for the checks main requires, ourselves: `gh pr checks --watch --required` exits with «no
+		// required checks reported» while a required job does not exist yet (Required checks has
+		// `needs: [quality, sandbox]`, so GitHub registers it only when those finish).
+		const required = (
+			await command(
+				'gh',
+				[
+					'api',
+					`repos/${config.repository}/branches/${config.releaseBranch}/protection/required_status_checks`,
+					'--jq',
+					'.contexts[]',
+				],
+				true,
+			)
+		)
+			.split('\n')
+			.filter(Boolean);
+		if (!required.length) throw new Error(`${config.releaseBranch} no exige checks; no se integra sin ellos.`);
+		const deadline = Date.now() + 60 * 60_000;
+		let last = '';
+		for (;;) {
+			const rollup = JSON.parse(
+				await command(
+					'gh',
+					['pr', 'view', String(pr.number), '--repo', config.repository, '--json', 'statusCheckRollup'],
+					true,
+				),
+			).statusCheckRollup;
+			// Check runs carry name/status/conclusion; commit statuses carry context/state.
+			const checks = rollup.map((c) => ({
+				name: c.name ?? c.context,
+				done: c.status ? c.status === 'COMPLETED' : c.state !== 'PENDING' && c.state !== 'EXPECTED',
+				ok: ['SUCCESS', 'SKIPPED', 'NEUTRAL'].includes(c.conclusion ?? c.state),
+				success: (c.conclusion ?? c.state) === 'SUCCESS',
+			}));
+			const failed = checks.filter((c) => c.done && !c.ok).map((c) => c.name);
+			if (failed.length) throw new Error(`Checks fallidos en la PR: ${failed.join(', ')}.`);
+			// A required check counts only as SUCCESS: a skipped one must not let the merge through.
+			const passed = required.filter((name) => checks.some((c) => c.name === name && c.done && c.success));
+			const summary = checks.map((c) => `${c.name}: ${c.done ? 'ok' : 'en curso'}`).join(' · ') || 'sin checks aún';
+			if (summary !== last) emit(`Checks · ${summary}\n`);
+			last = summary;
+			if (passed.length === required.length) break;
+			if (Date.now() > deadline)
+				throw new Error(`Los checks requeridos (${required.join(', ')}) no terminaron en 60 minutos.`);
+			await new Promise((done) => setTimeout(done, 15000));
+		}
 		const head = await command(
 			'gh',
 			['pr', 'view', String(pr.number), '--repo', config.repository, '--json', 'headRefOid', '--jq', '.headRefOid'],

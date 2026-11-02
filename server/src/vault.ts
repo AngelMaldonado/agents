@@ -26,7 +26,7 @@ export function originOf(url: string) {
 export function list(personId: number) {
 	return rows<CredentialRow & { agents: number[] }>(
 		`select c.id, c.person_id, c.name, c.origin, c.login_url, c.created_at, c.updated_at,
-		        coalesce(array_agg(g.agent_id) filter (where g.agent_id is not null), '{}') as agents
+		        coalesce(array_agg(g.agent_id::int) filter (where g.agent_id is not null), '{}') as agents
 		 from credentials c left join credential_grants g on g.credential_id = c.id
 		 where c.person_id = $1 group by c.id order by c.name`,
 		[personId],

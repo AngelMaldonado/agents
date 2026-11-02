@@ -62,6 +62,7 @@ Navegador (React) ── /ws: frames sólo lectura, tareas, eventos ──► se
 | `server/src/llm.ts`                      | Gateway LLM: el token de la tarea se vuelve el usuario y su modelo; el sandbox nunca ve una key real                                                                                                                                                   |
 | `server/src/providers.ts`                | Keys de cada persona y la config de CLIProxyAPI (prefijo `u<id>` + `force-model-prefix`)                                                                                                                                                               |
 | `server/src/vault.ts`                    | Accesos a sitios: cifrados, concedidos por agente, log de cada uso                                                                                                                                                                                     |
+| `server/src/accesses.ts`, `proxy/`       | API Keys y servidores MCP de la persona, concedidos a sus agentes (#24); proxy de salida (mitmproxy + addon) que cambia marcadores `agk_…` por la key sólo hacia sus dominios                                                                          |
 | `server/src/people.ts`                   | Login por nombre, link de un solo uso, PIN de admin (como `~/dev/sonos`)                                                                                                                                                                               |
 | `sandbox/`                               | Imagen de la mini-computadora: pi 1.4.0, agent-browser 0.39.2, Chrome, `supervisor.mjs`, `agents-blocked`, `agents-login`, plugin `agents-vault`                                                                                                       |
 | `web/`                                   | Galería, vista del agente, ajustes y admin (React + Vite)                                                                                                                                                                                              |
@@ -81,6 +82,17 @@ Cada agente tiene un volumen Docker (`agents-<instancia>-agent-<id>`, montado en
 - `pi/`: sesiones persistidas de pi, una por conversación. Cada conversación continúa entre tareas. Abrir otra explícitamente crea un contexto nuevo sin borrar el anterior; cerrar su tab sólo lo archiva visualmente. Workspace y perfil de navegador siguen siendo del agente y se comparten, con una sola ejecución activa. Canales/horarios usan siempre la conversación Principal, independientemente del tab seleccionado o cerrado. El antiguo POST vacío de reinicio sigue en 410; crear un tab exige `{requestId}` UUID. Los webhooks que solicitan `new_conversation` con un valor distinto de `false` siguen en 400 sin guardar mensajes ni ejecutar banderas antiguas.
 - `work/`: `~/work`. Se conserva; `~/work/out/` empieza vacía en cada tarea y lo que el agente deja ahí son los archivos de esa tarea.
 - `browser/`: el perfil de Chrome (sesiones iniciadas, cookies, almacenamiento; la caché va a `/tmp`). Quitarle un acceso del vault borra las cookies y el almacenamiento de ese origen; «Borrar perfil del navegador» lo borra entero en su siguiente tarea.
+
+### API Keys y servidores MCP (#24)
+
+Cada persona registra en **Configuración → Accesos** sus API Keys (la variable es el nombre: `GITHUB_TOKEN`) y sus servidores MCP, y los concede a sus agentes (también desde Herramientas del agente). Conceder agrega: no pide volver a aprobar el harness; los MCP concedidos entran a `mcp.json` y a `--tools` por `AGENTS_GRANTED_MCP`, fuera del digest (si el nombre choca, gana el del harness).
+
+- **Proxy de salida:** una key con dominios llega al agente como marcador `agk_…` (derivado del token de proxy de la corrida). pi, su shell, sus CLI y sus MCP salen por `proxy/` (`HTTPS_PROXY=http://run:<token>@…`, CA de Agents en un bundle de `/tmp`, `NODE_USE_ENV_PROXY=1`). El proxy pide al backend las reglas de esa corrida (`GET /internal/proxy/rules`, con `AGENTS_PROXY_SECRET`) y sólo hacia esos dominios abre el TLS y cambia el marcador por el valor en los headers (incluido `Basic`). Todo lo demás pasa como túnel. Si una herramienta ignora el proxy, sólo manda el marcador. Chrome no usa el proxy (`--no-proxy-server`).
+- **«Entregar el valor real»:** para lo que no es HTTP o firma con la key (AWS SigV4); el agente la puede leer.
+- **Credenciales de un MCP:** sus headers y variables secretos se guardan cifrados con él y van por el proxy atados al dominio de su URL (o a los dominios que declare un MCP local). Su OAuth es por agente. Revocar o borrar cierra la sesión del agente en su siguiente tarea (`mcp_logouts`). «Probar» lista las herramientas de un MCP por HTTP desde el backend.
+- **Migración:** los `agent_secrets` de cada agente pasaron a keys de su dueño (como «valor real», concedidas a esos agentes) al arrancar el server. Si una misma variable tenía valores distintos en dos agentes, se queda en cada agente marcada «por resolver» (Herramientas) hasta elegir cuál queda.
+- **Dev:** `just dev` corre el proxy en reko-2 (`just proxy build`). La CA de dev vive en `data/dev/proxy` (`just dev init`). `[proxy]` en el LLM falso prueba una key `TEST_KEY` contra httpbin.org.
+- **Producción:** el proxy aún no está desplegado. Sin `AGENTS_PROXY_URL`, las keys con dominios no se entregan y las de «valor real» sí.
 
 La respuesta de una tarea es el último mensaje del agente, en markdown.
 
@@ -108,7 +120,7 @@ Cada ejecución atiende a una persona: sus seguimientos se incorporan a su tarea
 
 Un agente despierta por la web, por su **webhook de entrada** (`POST /hooks/<token>`, firmado con HMAC: `X-Agents-Signature: t=…,v1=…`) o por sus **horarios** (cron de DBOS, hora de `America/Mexico_City`). Todo entra a su buzón (`server/src/inbox.ts`): si duerme, empieza una tarea; si está trabajando, es un seguimiento; si está atascado, es la respuesta. Cuando una tarea termina o se atasca, su **webhook de salida** recibe la respuesta, enlaces firmados de 7 días a los archivos y el `context` del puente, con reintentos durante ~24 h (`server/src/channels.ts`). Los webhooks se configuran en **Configuración → Canales** y la agenda en su propia pestaña **Configuración → Horarios**, dentro del mismo modal. Canales y Horarios son secciones directas, sin cards envolventes; el contenido de las pestañas usa ScrollArea de shadcn. La agenda usa **FullCalendar Standard 6.1.20 (MIT)**, con vistas Mes/Semana/Agenda, creación visual diaria/laborable/semanal/mensual y cron avanzado. Luxon y cron-parser proyectan los disparos en la zona del horario; DBOS sigue ejecutándolos. Los bloques no indican duración, no se arrastran y las acciones afectan toda la recurrencia. Elegir una fecha sólo propone el día semanal: la regla empieza a aplicar al guardar, no permite diferir su inicio ni excepciones por fecha. Los cron existentes se conservan; para cambiar una regla se crea su reemplazo y se elimina la anterior. La vista previa se limita a 200 disparos por horario y 1,000 totales, sin limitar la ejecución. El contrato completo para quien construya un puente está en Bubble: proyecto `agents`, `docs/canales.md`.
 
-En dev, `just dev fake on` también levanta un receptor de prueba en `http://fake-llm:8317/hook-receiver`.
+En dev, el fake-llm también es un receptor de prueba en `http://127.0.0.1:8318/hook-receiver`.
 
 ## Monitor y tiempo real
 
@@ -151,21 +163,23 @@ Código: `server/src/designs.ts`, `design-format.ts`, `harnesses.ts`, migracione
 - El contenedor recibe un token de arranque que se quema al conectar y a cambio recibe uno de sesión, con el que se reconecta si el backend se reinicia (un deploy); muere con la corrida. Los logins de sitios viajan sólo por ese socket. pi recibe otro token que sólo sirve en `/llm/*`, para el modelo de su tarea. En la base sólo se guarda el sha256 de cada token.
 - CLIProxyAPI sólo es alcanzable por el backend (red `*-internal`); los sandboxes están en otra red.
 - Nadie toca el navegador ni la terminal del agente: la vista es sólo lectura; el humano hace steer o cancela.
-- Los sandboxes salen a internet y a su propia red (el backend), nunca a la LAN, otras redes Docker, la tailnet, link-local/metadata ni al host. La regla es del host y vive en `~/dev/work/reko-3` (`docker_egress_lock_interfaces` y `firewall_deny_interfaces`, sobre los bridges `agents-dev-sbx` y `agents-prd-sbx`); `just sandbox egress` la verifica. Los sandboxes resuelven DNS con resolvers públicos (`AGENTS_SANDBOX_DNS`).
+- Los sandboxes salen a internet y a su propia red (el backend), nunca a la LAN, otras redes Docker, la tailnet, link-local/metadata ni al host. La regla es del host y vive en `~/dev/work/reko-3` (`docker_egress_lock_interfaces` y `firewall_deny_interfaces`, sobre el bridge `agents-prd-sbx`); los scripts de deploy la verifican con `scripts/egress-check.sh`. En dev (reko-2) no existe ese bloqueo. Los sandboxes resuelven DNS con resolvers públicos (`AGENTS_SANDBOX_DNS`).
 
 ## Producción
 
-- Stack actual `agents` de Komodo en reko-3, sin auto-update y conservado durante la preparación. `just release` sólo publica artefactos por SHA/digest; los antiguos `just deploy image|sandbox|whatsapp` están retirados y fallan sin operar. El despliegue/corte se autoriza y prepara aparte.
+- Stack actual `agents` de Komodo en reko-3, sin auto-update y conservado durante la preparación. `just release` sólo publica artefactos por SHA/digest; los antiguos `just deploy image|sandbox|whatsapp` están retirados y fallan sin operar. El despliegue/corte se autoriza y prepara aparte. `just deploy plan|inspect|rehearse` prepara el traslado de datos de la primera beta, sin aplicar el corte; límites y respaldos en [deploy/README.md](deploy/README.md).
 - Datos: `/srv/agents/{data,cliproxy,postgres}`; respaldos: `/srv/agents/backups/agents-AAAA-MM-DD.dump`. El primer `pg_dump` espera a las tablas de la app y DBOS para no respaldar una base recién creada todavía vacía; luego corre cada 24 h y conserva 14 días.
+- `just transfer audit|apply|recover`: [ejecutor puntual del traslado beta1](deploy/transfer.md), tras autorización de Angel para trasladar usuarios/agentes y tomar copia local previa. Exige CI exact-head; preserva origen, Angelk separado y el backup diario existente. S3 y automatización de backup de la DB nueva siguen pendientes. `just cutover plan|rehearse` conserva el catálogo/modelo local histórico, sin SSH/DB/Docker; su `apply` no es el ejecutor real.
+- `just backup plan|check|init|push|verify`: transporte S3/S3-compatible cifrado con restic para respaldos existentes, **deshabilitado por defecto**. Configuración/secrets en Komodo, sin cambiarlos en la app; [activación, comandos y límites](deploy/backup-s3.md). No crea calendario nuevo ni convierte los dumps diarios en backup completo de perfiles/archivos.
 - Secretos y PIN de administrador: **1Password, bóveda Cuby, ítem `agents`**. No perder `AGENTS_MASTER_KEY`: cifra las keys y el vault de la app. `.env.production` contiene el acceso operativo con prefijo `AGENTS_PROD_`, modo 600 e ignorado por git; nunca se copia al entorno de la app.
 - El POC Buyer nunca se desplegó en producción: no había `/srv/buyer` ni stack `buyer`, por lo que no existe un archivo de datos del POC que restaurar. No se migran las keys ni los datos de dev; cada persona registra su credencial GPT en Ajustes.
 - Panel: [Agents en Grafana](https://grafana.cubytest.space/d/cuby-agents/agents). Las alertas de Agents usan el receptor ntfy de la plataforma, tema `cuby-agents`.
 
 ## Interfaz
 
-React + **shadcn/ui**, Radix y Tailwind CSS 4, con iconos Lucide y el **tema Cuby de Nova** (`~/dev/work/nova.cuby.mx`, referencia `07d8528`). Tokens claros/oscuros, Inter Variable y JetBrains Mono Variable empaquetadas localmente, escala relativa `--ui-scale: 1.125` y tamaños compartidos de controles e iconos. No hay fuentes ni estilos cargados desde un CDN.
+React + **shadcn/ui**, Radix y Tailwind CSS 4, con iconos Lucide y el **tema Cuby de Nova** (`~/dev/work/nova.cuby.mx`, referencia `07d8528`). Tokens claros/oscuros, Inter Variable y JetBrains Mono Variable empaquetadas localmente, escala relativa `--ui-scale: 1` (bajada de 1.125 el 31-oct para una letra más chica en general) y tamaños compartidos de controles e iconos. No hay fuentes ni estilos cargados desde un CDN.
 
-Shell de aplicación con sidebar plegable (también ⌘/Ctrl-B), transición suave de 240 ms —sin animación si se prefiere movimiento reducido—, perfil y apariencia al pie, cabecera fija y canvas interior con scroll independiente. En móvil, menú Sheet. Login e invitaciones comparten el shell de acceso con logo de Agents, tarjeta central y fondo de puntos estático. Se conserva el estilo de Nova sin traer sus rutas IoT, autenticación ni enlaces externos.
+Shell de aplicación con el **Sidebar de shadcn** (variante inset, plegable a riel de iconos con ⌘/Ctrl-B; el estado se recuerda en la cookie `sidebar_state`). Su ancho se arrastra desde el borde, como en Nova (`components/sidebar-resizer.tsx`, `lib/sidebar-width.ts`): 14–32 rem, ← / → con el foco, doble clic o Inicio para volver a 18 rem, guardado en `localStorage`; mientras tanto se ilumina el borde izquierdo del panel, que sigue sus esquinas redondeadas, al estilo de ChatGPT y Claude.ai: Nuevo agente, Galería, búsqueda (⌘/Ctrl-K), la lista completa de **tus agentes** (los tuyos y los compartidos contigo, también para un admin; los de los demás siguen en la Galería) ordenada por actividad, con personaje fijo, punto de estado y marcas de **compartido** y **administrado** (catálogo del admin, aún sin backend: `managed` siempre es falso). Plegado, el riel muestra a los agentes como sus personajes animados (sólo ahí; nombre en tooltip), con scroll si son muchos. El menú del tile de la persona tiene **Configuración**, Apariencia y **Cerrar sesión** (con confirmación: para volver a entrar hace falta un enlace de un admin; `POST /api/logout` borra la sesión de la base, no sólo la cookie). Configuración es un modal al estilo de Claude.ai (`components/app-settings.tsx`, Dialog y Tabs verticales de Radix, como el del agente), sin tarjetas y con la etiqueta de cada campo a la izquierda (`label.field`, columna `--field-label`), con API Key, Accesos (Accesos a sitios, Servidores MCP y API Keys; los dos últimos siguen siendo de cada agente hasta el hilo #24 de Bubble), Monitor y Administración; los enlaces viejos `#/settings`, `#/monitor` y `#/admin` lo abren en su sección. La búsqueda filtra los agentes por nombre sin distinguir acentos y busca en `GET /api/search` lo dicho y respondido en sus conversaciones (`server/src/search.ts`, ILIKE, 30 resultados); un resultado abre el agente en esa conversación (reabre el tab si estaba cerrado). Los primitivos `ThreadList*` de assistant-ui listan los hilos de un runtime, así que siguen sólo en las pestañas de conversación. Cabecera fija y canvas interior con scroll independiente; en móvil, el sidebar es un Sheet. Login e invitaciones comparten el shell de acceso con logo de Agents, tarjeta central y fondo de puntos estático.
 
 Símbolo de Agents generado con la herramienta nativa `image_gen` a través de `codex exec`, usando el isotipo de Cuby como referencia de familia visual (azul y acento rojo-naranja). `web/src/assets/agents-logo.png`: PNG transparente de 512 px; `web/public/favicon.png`: 64 px; `web/public/favicon.ico`: 16/32/48 px. Los favicons se derivan de la misma imagen, no de generaciones independientes. No se modifica el logo oficial de Cuby.
 
@@ -187,26 +201,44 @@ Las nuevas corridas conservan la última imagen del navegador en `AGENTS_DATA/sn
 
 - Componentes editables: `web/src/components/ui/`; configuración del generador: `web/components.json`.
 - Tokens: `web/src/cuby-theme.css`, port local de `services/spa/src/routes/layout.css` de Nova; no se sincronizan automáticamente entre repositorios. Layouts de Agents: `web/src/styles.css`.
-- Shells: `web/src/components/app-shell.tsx` y `auth-shell.tsx`. Preferencia visual: `web/src/lib/theme.ts`; bootstrap de primer pintado: `web/index.html`.
+- Shells: `web/src/components/app-shell.tsx` (marco), `app-sidebar.tsx` (sidebar) y `auth-shell.tsx`; `components/ui/sidebar.tsx` y `tooltip.tsx` vienen de shadcn sin tocar los componentes existentes. Preferencia visual: `web/src/lib/theme.ts`; bootstrap de primer pintado: `web/index.html`.
 - Utilidades de clases: `web/src/lib/utils.ts`; alias `@/` → `web/src/`.
 - Agregar componentes desde `web/`: `bunx shadcn@latest add <componente>`. Revisar el diff y conservar las personalizaciones locales (incluida la traducción de controles).
 - `just check` valida los tipos y ejecuta pruebas del server y de proyección cron de la web; `cd web && bun run build` compila la web. La carga del detalle del agente es diferida para no incluir el renderizador markdown en el bundle inicial de la galería.
 
-## Desarrollo (todo corre en reko-3)
+## Desarrollo (server y web en tu Mac, sandboxes en reko-2)
 
-```bash
-just dev              # sube el entorno, abre tmux cuby-agents con el rsync en bucle y los logs
-just dev up           # sólo subir (genera .env.dev en reko-3 la primera vez; PIN dev 1234)
-just dev fake on|off  # LLM falso con guion en lugar de CLIProxyAPI
-just sandbox build    # reconstruir la imagen del sandbox
-just sandbox egress   # verificar el firewall de salida desde la red de sandboxes
-just dev test         # pruebas del server contra la base agents_test del Postgres de dev
-just dev design       # flujo HTTP aislado, GPT simulado y comprobación con sandbox/Chrome reales
-just dev sharing      # tres personas compartidas: permisos, espera y turnos tras reiniciar la API
-just dev psql         # consola del Postgres de dev (desechable)
-just dev stop         # cerrar tmux y bajar el entorno
+```
+MacBook                                              reko-2 (Colima, arm64)
+ tmux cuby-agents, una ventana por proceso:
+  tunnel   data/dev/docker.sock ──ssh──────────────► Docker de Colima
+  db       Postgres 18 propio, data/dev/pg :5433        └─ sandboxes agents-sandbox:dev
+  cliproxy CLIProxyAPI 8.0.40 :8317 (como prod)            red agents-dev-sandbox
+  fake     fake-llm :8318 (just dev fake on)                │
+  server   bun --watch :8787  ◄───────── tailnet ───────────┘ el sandbox marca al backend
+  web      Vite :5173 con HMR local → /api, /hooks, /ws al server
 ```
 
-Producción: `just prod psql` abre la base en tmux `cuby-agents-prod` (túnel SSH + psql de sólo lectura, prompt `PROD`); `just prod tunnel` sólo el túnel y `just prod stop` cierra. Lee `.env.production` (copia de `.env.production.example`, chmod 600). Cambiar la cuota de alguien o el tope global tarda ~1–2 s en llegar a la cola (DBOS relee su configuración cada segundo).
+```bash
+just dev              # init + tmux cuby-agents; web en http://localhost:5173 (PIN admin 1234)
+just dev init         # una vez: .env.dev local (chmod 600), cluster Postgres, CLIProxyAPI y red en reko-2
+just dev ps           # estado de cada ventana y sandboxes de dev en reko-2
+just dev logs [win]   # data/dev/logs/<win>.log (tunnel, db, cliproxy, fake, server, web)
+just dev restart [win] # por omisión server y web
+just dev fake on|off  # LLM falso con guion en lugar de CLIProxyAPI (reinicia el server)
+just sandbox build    # reconstruir agents-sandbox:dev en reko-2
+just dev test         # pruebas del server contra agents_test del Postgres de dev
+just dev design       # flujo HTTP aislado, GPT simulado y comprobación con sandbox/Chromium reales en reko-2
+just dev sharing      # tres personas compartidas: permisos, espera y turnos tras reiniciar la API
+just dev psql         # consola del Postgres de dev (desechable)
+just dev stop         # cerrar tmux y apagar Postgres
+```
 
-https://agents-dev.cubytest.space (sólo LAN o tailnet).
+- Todo está en `scripts/dev/` (`env.sh` tiene las rutas, puertos y el host de reko-2). Datos, logs y el socket del túnel viven en `data/dev/` (gitignored); borrarlo da un dev limpio.
+- El sandbox llega al backend por la IP de tailnet del Mac (`tailscale ip -4`; se fuerza con `AGENTS_DEV_HOST_IP`).
+- La imagen de dev es **arm64 con Chromium de Debian**: Chrome for Testing no publica Linux arm64. Producción (amd64, reko-3) sigue con Chrome; cambian user-agent y versión.
+- En reko-2 **no hay firewall de salida**: los sandboxes de dev ven la LAN y la tailnet. El bloqueo de egress sólo aplica en reko-3 (producción).
+- WhatsApp está apagado en dev (`FEATURES.whatsapp` y sin `AGENTS_WHATSAPP_URL`). El panel de monitor muestra 0 de memoria libre porque el server lee `/proc`, que no existe en macOS.
+- Para GPT real, registra tu key en Ajustes: el server reescribe `data/dev/cliproxy/config.yaml` y CLIProxyAPI la recarga.
+
+Producción: `just prod psql` abre la base en tmux `cuby-agents-prod` (túnel SSH + psql de sólo lectura, prompt `PROD`); `just prod tunnel` sólo el túnel y `just prod stop` cierra. Lee `.env.production` (copia de `.env.production.example`, chmod 600). Cambiar la cuota de alguien o el tope global tarda ~1–2 s en llegar a la cola (DBOS relee su configuración cada segundo).

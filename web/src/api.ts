@@ -61,6 +61,17 @@ export type Agent = {
 	setup_design_id?: string | null;
 	harness?: Harness;
 	shares?: number[]; // the people it is shared with (they run tasks; configuration is the owner's)
+	managed?: boolean; // made from the admin's catalog (not built yet: always false for now)
+};
+/** GET /api/search: a match in what someone said to an agent, or what it answered. */
+export type SearchHit = {
+	kind: 'message' | 'answer';
+	agent_id: number;
+	conversation_id: number;
+	conversation_title: string;
+	run_id: number | null;
+	snippet: string;
+	at: number;
 };
 export type Contract = { name: string; prompt: string };
 export type AgentTool = { id: string; name: string; description: string };
@@ -80,6 +91,51 @@ export type DesignMessage = {
 	questionRound?: number;
 	answers?: InterviewAnswers;
 	attachments?: { id: string; name: string; mime: string; size: number }[];
+	/** The model's reasoning summary for this reply (shown folded). */
+	reasoning?: string;
+	/** The designer's searches in this reply, what they found and the secrets it asked for. */
+	searches?: DesignSearch[];
+	findings?: Finding[];
+	secrets?: SecretRequest[];
+};
+export type DesignProgress = {
+	phase: 'reading' | 'thinking' | 'searching' | 'questions' | 'writing' | 'contract';
+	reasoning: string;
+	searches: { tool: string; query: string; results?: number; error?: string; done: boolean }[];
+	started: number;
+};
+export type DesignSearch = { tool: string; query: string; results: number; error?: string };
+export type FindingField = {
+	name: string;
+	description: string;
+	secret: boolean;
+	target: 'header' | 'env';
+	template: string | null;
+	value: string | null;
+};
+export type Finding = {
+	id: string;
+	kind: 'mcp' | 'cli' | 'skill';
+	name: string;
+	title: string;
+	description: string;
+	version: string | null;
+	url: string | null;
+	fields: FindingField[];
+	mcp?: { transport: 'http'; url: string; oauth: boolean } | { transport: 'stdio'; command: string; args: string[] };
+	status?: 'pending' | 'added' | 'skipped';
+	added?: { access?: string; skill?: string; source?: string };
+};
+export type SecretRequest = { name: string; description: string; domains: string[]; saved?: boolean };
+export type AccessSuggestion = {
+	kind: 'site' | 'mcp' | 'key';
+	id: number;
+	name: string;
+	detail: string;
+	reason: string;
+	granted: boolean;
+	/** Chosen before the agent exists: granted when it is approved. */
+	accepted?: boolean;
 };
 export type Design = {
 	id: string;
@@ -112,6 +168,12 @@ export type Design = {
 	schedules?: { cron: string; message: string }[] | null;
 	currentSchedules?: { name: string; cron: string; message: string; status: string; timezone?: string }[];
 	scheduleTimezone?: string;
+	/** The person's accesses the designer suggests; `granted`: the agent (or the one being set up) has it. */
+	accessSuggestions?: AccessSuggestion[];
+	/** What the isolated harness test checks. */
+	harnessChecks?: string[];
+	/** While the designer answers: what it is doing, written as it streams. */
+	progress?: DesignProgress | null;
 	initialization: {
 		task: Task | null;
 		error: string | null;
@@ -129,6 +191,9 @@ export type Conversation = {
 	started_at: number;
 	archived_at: number | null;
 	runs: number;
+	last_at?: number; // its latest message or run («Recientes»)
+	/** It has a run in the queue or working now. */
+	live?: boolean;
 };
 export type WorkRecord = { task: Task; events: TaskEvent[]; artifacts: Artifact[] };
 export type ConversationInput = {
@@ -149,6 +214,34 @@ export type ConversationPage = {
 	hasEarlier: boolean;
 	before: number | null;
 };
+/** A person's API Key (#24): the variable, where the proxy may put it, and who has it. */
+export type AccessKey = {
+	id: number;
+	name: string;
+	domains: string[];
+	expose_real: boolean;
+	updated_at: number;
+	agents: number[];
+};
+export type AccessPair = { name: string; secret: boolean; value: string | null };
+/** A person's MCP server (#24); secret values never come back. */
+export type AccessMcp = {
+	id: number;
+	name: string;
+	description: string;
+	transport: 'http' | 'stdio';
+	url: string | null;
+	command: string | null;
+	args: string[];
+	headers: AccessPair[];
+	env: AccessPair[];
+	domains: string[];
+	expose_real: boolean;
+	oauth: boolean;
+	updated_at: number;
+	agents: number[];
+};
+export type AccessView = { keys: AccessKey[]; mcp: AccessMcp[]; proxyReady: boolean };
 export type Credential = {
 	id: number;
 	name: string;

@@ -10,6 +10,30 @@ export type ScheduleDraft = {
 	cron: string;
 };
 export const SCHEDULE_TZ = 'America/Mexico_City';
+
+const CITIES: Record<string, string> = {
+	Mexico_City: 'Ciudad de México',
+	Cancun: 'Cancún',
+	Merida: 'Mérida',
+	Mazatlan: 'Mazatlán',
+	Bogota: 'Bogotá',
+	New_York: 'Nueva York',
+	Los_Angeles: 'Los Ángeles',
+	Sao_Paulo: 'São Paulo',
+};
+/** A time zone for people: «Hora de Ciudad de México (GMT-6)» instead of «America/Mexico_City». */
+export function zoneLabel(timezone: string) {
+	const id = timezone.split('/').pop() ?? timezone;
+	const city = CITIES[id] ?? id.replace(/_/g, ' ');
+	try {
+		const offset = new Intl.DateTimeFormat('es-MX', { timeZone: timezone, timeZoneName: 'shortOffset' })
+			.formatToParts(new Date())
+			.find((p) => p.type === 'timeZoneName')?.value;
+		return timezone === 'UTC' ? 'UTC' : `Hora de ${city}${offset ? ` (${offset})` : ''}`;
+	} catch {
+		return timezone;
+	}
+}
 export function cronFromDraft(draft: ScheduleDraft) {
 	if (draft.frequency === 'custom') {
 		const cron = draft.cron.trim();

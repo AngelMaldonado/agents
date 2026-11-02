@@ -1,28 +1,44 @@
 // Each person's own: provider keys (write-only) and site logins for their agents (write-only).
 import { useEffect, useState } from 'react';
-import { api, ago, type Agent, type Credential, type Person } from './api';
+import { api, ago, type Agent, type Credential } from './api';
 import { Button } from '@/components/ui/button';
+import { DeleteButton, EditButton, FormActions } from '@/components/actions';
 import { Input } from '@/components/ui/input';
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
+import { KeysSection, McpSection, useAccess } from './Access';
+import { AddMenu, AgentPicker, FormDialog, GrantToggle, SectionHead } from '@/components/access-ui';
 
 type KeyRow = { provider: 'openai'; last4: string; updated_at: number };
 type ProxyRow = { url: string; last4: string; updated_at: number };
 type Check = { total: number; catalog: { id: string; label: string; served: boolean }[] };
 
-export function Settings({ me, agents }: { me: Person; agents: Agent[] }) {
-	const mine = agents.filter((a) => a.person_id === me.id);
+/** Configuración → GPT: the person's own CLIProxyAPI, or their OpenAI key. Secrets are stored encrypted. */
+export function ProviderSettings() {
 	return (
-		<div className="page">
-			<div className="page-head">
-				<div>
-					<h1>Ajustes</h1>
-					<p className="muted">Credenciales y accesos de {me.name}. Los secretos se guardan cifrados.</p>
-				</div>
-			</div>
+		<>
 			<Proxy />
 			<Keys />
-			<Vault agents={mine} />
-		</div>
+		</>
+	);
+}
+
+/**
+ * Configuración → Accesos, in three clear kinds, all the person's own and granted to their agents:
+ * logins for web pages (the vault), MCP servers and API Keys for CLI tools (Access.tsx, #24).
+ */
+export function Accesses({ agents }: { agents: Agent[] }) {
+	const access = useAccess();
+	return (
+		<>
+			<Vault agents={agents} />
+			{access.error && (
+				<p role="alert" className="error mb-4">
+					{access.error}
+				</p>
+			)}
+			<McpSection agents={agents} access={access} />
+			<KeysSection agents={agents} access={access} />
+		</>
 	);
 }
 
@@ -52,11 +68,11 @@ function Proxy() {
 	};
 	return (
 		<section className="panel">
-			<h2>Tu CLIProxyAPI</h2>
-			<p className="muted">
-				Si tienes un CLIProxyAPI con tu cuenta de GPT, todas tus tareas saldrán por él y la key de abajo no hace falta.
-				La key no se vuelve a mostrar; los agentes nunca la ven.
-			</p>
+			<SectionHead
+				title="Tu CLIProxyAPI"
+				security="La key se guarda cifrada y no se vuelve a mostrar. La usa el servidor; los agentes nunca la ven."
+			/>
+			<p className="muted">Si lo tienes, todas tus tareas salen por él y la key de OpenAI no hace falta.</p>
 			<form
 				className="form"
 				onSubmit={(e) => {
@@ -69,13 +85,13 @@ function Proxy() {
 					});
 				}}
 			>
-				<div className="grid items-end gap-4 xl:grid-cols-[minmax(0,1.3fr)_minmax(0,1fr)_auto]">
-					<label>
-						URL del proxy
+				<div className="field-list">
+					<label className="field">
+						<span>URL del proxy</span>
 						<Input value={url} onChange={(e) => setUrl(e.target.value)} placeholder="https://proxy.ejemplo.com" />
 					</label>
-					<label>
-						API key del proxy
+					<label className="field">
+						<span>API key del proxy</span>
 						<Input
 							type="password"
 							value={key}
@@ -84,7 +100,7 @@ function Proxy() {
 							autoComplete="off"
 						/>
 					</label>
-					<div className="row wrap">
+					<div className="field-actions row wrap">
 						<Button disabled={busy || !url.trim() || !key.trim()}>
 							{busy ? 'Probando…' : proxy ? 'Reemplazar' : 'Guardar'}
 						</Button>
@@ -98,9 +114,10 @@ function Proxy() {
 								>
 									Probar
 								</Button>
-								<Button
+								<DeleteButton
+									label="Quitar"
 									type="button"
-									variant="ghost"
+
 									disabled={busy}
 									onClick={() =>
 										run(async () => {
@@ -109,9 +126,7 @@ function Proxy() {
 											setCheck(null);
 										})
 									}
-								>
-									Quitar
-								</Button>
+								/>
 							</>
 						)}
 					</div>
@@ -153,11 +168,11 @@ function Keys() {
 	}, []);
 	return (
 		<section className="panel">
-			<h2>O tu API key de OpenAI</h2>
-			<p className="muted">
-				Se usa sólo si no tienes un CLIProxyAPI propio. Las tareas consumen tu cuenta. La key no se vuelve a mostrar, ni
-				siquiera al admin.
-			</p>
+			<SectionHead
+				title="O tu API key de OpenAI"
+				security="Se guarda cifrada y no se vuelve a mostrar, ni siquiera al admin. Los agentes nunca la ven."
+			/>
+			<p className="muted">Sólo si no tienes CLIProxyAPI; las tareas consumen tu cuenta.</p>
 			<KeyRowForm
 				provider="openai"
 				label="OpenAI (GPT)"
@@ -213,13 +228,12 @@ function KeyRowForm({
 			/>
 			<Button disabled={!value.trim()}>{row ? 'Reemplazar' : 'Guardar'}</Button>
 			{row && (
-				<Button
+				<DeleteButton
+					label="Quitar"
 					type="button"
-					variant="ghost"
+
 					onClick={async () => onSaved((await api(`/keys/${provider}`, { method: 'DELETE' })).keys)}
-				>
-					Quitar
-				</Button>
+				/>
 			)}
 			{error && (
 				<p role="alert" className="error">
@@ -230,10 +244,13 @@ function KeyRowForm({
 	);
 }
 
-function Vault({ agents }: { agents: Agent[] }) {
+/** scope: one agent's settings, as in KeysSection (a switch per access; a new one is granted to it alone). */
+export function Vault({ agents, scope }: { agents: Agent[]; scope?: Agent }) {
 	const [creds, setCreds] = useState<Credential[]>([]);
 	const [uses, setUses] = useState<any[]>([]);
-	const [form, setForm] = useState({ name: '', loginUrl: '', username: '', password: '' });
+	const empty = { name: '', loginUrl: '', username: '', password: '' };
+	const [form, setForm] = useState(empty);
+	const [adding, setAdding] = useState(false);
 	const [error, setError] = useState('');
 	const load = () =>
 		api('/vault').then((r) => {
@@ -243,130 +260,181 @@ function Vault({ agents }: { agents: Agent[] }) {
 	useEffect(() => {
 		void load();
 	}, []);
-	const toggle = async (c: Credential, agentId: number) => {
-		const next = c.agents.includes(agentId) ? c.agents.filter((a) => a !== agentId) : [...c.agents, agentId];
+	// From an agent's Accesos: only the ones it uses.
+	const shown = scope ? creds.filter((c) => c.agents.includes(scope.id)) : creds;
+	const grant = async (c: Credential, next: number[]) =>
 		setCreds((await api(`/vault/${c.id}/grants`, { method: 'PUT', body: { agents: next } })).credentials);
+	const open = (c: Credential | null) => {
+		setError('');
+		setForm(c ? { ...empty, name: c.name, loginUrl: c.login_url } : empty);
+		setAdding(true);
 	};
 	return (
 		<section className="panel">
-			<h2>Accesos a sitios</h2>
+			<SectionHead
+				title="Accesos a sitios"
+				onAdd={() => open(null)}
+				action={
+					scope && (
+						<AddMenu
+							options={creds
+								.filter((c) => !c.agents.includes(scope.id))
+								.map((c) => ({ id: c.id, label: c.name, detail: c.origin }))}
+							onPick={(id) => {
+								const c = creds.find((x) => x.id === id)!;
+								void grant(c, [...c.agents, scope.id]);
+							}}
+							onNew={() => open(null)}
+							newLabel="Nuevo acceso sólo para este agente"
+						/>
+					)
+				}
+				security={
+					<>
+						Usuario y contraseña se guardan cifrados. El agente sólo conoce el nombre: <code>agents-login nombre</code>{' '}
+						llena el formulario sin mostrarle el secreto, y sólo en el dominio del acceso. Quitárselo borra sus cookies
+						de ese sitio. Sin segundo factor por ahora: si un sitio lo pide, el agente pide ayuda.
+					</>
+				}
+			/>
 			<p className="muted">
-				El agente conoce sólo el nombre: <code>agents-login nombre</code> llena el formulario sin mostrar el secreto al
-				modelo. Sólo los agentes autorizados pueden usar el acceso, y sólo en su dominio.
+				{scope
+					? 'Los que usa este agente: agrega uno tuyo o crea uno sólo para él; apagarlo se lo quita.'
+					: 'Usuarios y contraseñas de páginas web para tus agentes.'}
 			</p>
 			<Table className="vault">
 				<TableHeader>
 					<TableRow>
 						<TableHead>Nombre</TableHead>
 						<TableHead>Sitio</TableHead>
-						<TableHead>Agentes con acceso</TableHead>
-						<TableHead>
-							<span className="sr-only">Acciones</span>
+						{!scope && <TableHead>Agentes</TableHead>}
+						<TableHead className={scope ? 'text-right' : undefined}>
+							{scope ? 'Acciones' : <span className="sr-only">Acciones</span>}
 						</TableHead>
 					</TableRow>
 				</TableHeader>
 				<TableBody>
-					{creds.map((c) => (
+					{shown.map((c) => (
 						<TableRow key={c.id}>
 							<TableCell>
 								<code>{c.name}</code>
 							</TableCell>
 							<TableCell className="text-xs">{c.origin}</TableCell>
-							<TableCell>
-								{agents.map((a) => (
-									<label key={a.id} className="chip">
-										<input type="checkbox" checked={c.agents.includes(a.id)} onChange={() => toggle(c, a.id)} />
-										{a.name}
-									</label>
-								))}
-								{!agents.length && <span className="muted small">Crea un agente primero</span>}
-							</TableCell>
-							<TableCell>
-								<Button
-									variant="danger-ghost"
-									size="sm"
-									onClick={async () =>
-										confirm(`¿Borrar ${c.name}?`) &&
-										setCreds((await api(`/vault/${c.id}`, { method: 'DELETE' })).credentials)
-									}
-								>
-									Borrar
-								</Button>
+							{!scope && (
+								<TableCell>
+									<AgentPicker agents={agents} value={c.agents} onChange={(next) => void grant(c, next)} />
+								</TableCell>
+							)}
+							<TableCell className="text-right whitespace-nowrap">
+								<div className="inline-flex items-center justify-end gap-1">
+									<EditButton onClick={() => open(c)} />
+									{/* From an agent, deleting would take it from every agent: that stays in Configuración. */}
+									{!scope && (
+										<DeleteButton
+											onClick={async () =>
+												confirm(`¿Borrar ${c.name}?`) &&
+												setCreds((await api(`/vault/${c.id}`, { method: 'DELETE' })).credentials)
+											}
+										/>
+									)}
+									{/* Assigned here: switching it off takes it away from this agent (and from the table). */}
+									{scope && (
+										<GrantToggle
+											on
+											what={c.name}
+											onChange={(on) =>
+												void grant(c, on ? [...c.agents, scope.id] : c.agents.filter((a) => a !== scope.id))
+											}
+										/>
+									)}
+								</div>
 							</TableCell>
 						</TableRow>
 					))}
-					{!creds.length && (
+					{!shown.length && (
 						<TableRow>
 							<TableCell colSpan={4} className="py-8 text-center text-muted-foreground">
-								Sin accesos guardados.
+								{scope ? 'Este agente no usa accesos a sitios.' : 'Sin accesos guardados.'}
 							</TableCell>
 						</TableRow>
 					)}
 				</TableBody>
 			</Table>
-			<form
-				className="form mt-6 border-t pt-5"
-				onSubmit={async (e) => {
-					e.preventDefault();
-					setError('');
-					try {
-						setCreds((await api('/vault', { body: form })).credentials);
-						setForm({ name: '', loginUrl: '', username: '', password: '' });
-					} catch (err) {
-						setError((err as Error).message);
-					}
-				}}
+			<FormDialog
+				open={adding}
+				onOpenChange={setAdding}
+				title={creds.some((c) => c.name === form.name) ? `Reemplazar ${form.name}` : 'Agregar un acceso'}
+				description="Guardar con un nombre existente lo reemplaza; el usuario y la contraseña se vuelven a escribir."
 			>
-				<h3 className="!mt-0 !mb-0">Agregar o reemplazar un acceso</h3>
-				<div className="grid gap-4 md:grid-cols-2 2xl:grid-cols-4">
-					<label>
-						Nombre del acceso
-						<Input
-							placeholder="p. ej. proveedor"
-							value={form.name}
-							onChange={(e) => setForm({ ...form, name: e.target.value })}
-						/>
-					</label>
-					<label>
-						URL de inicio de sesión
-						<Input
-							placeholder="https://sitio.com/login"
-							value={form.loginUrl}
-							onChange={(e) => setForm({ ...form, loginUrl: e.target.value })}
-						/>
-					</label>
-					<label>
-						Usuario
-						<Input
-							value={form.username}
-							onChange={(e) => setForm({ ...form, username: e.target.value })}
-							autoComplete="off"
-						/>
-					</label>
-					<label>
-						Contraseña
-						<Input
-							type="password"
-							value={form.password}
-							onChange={(e) => setForm({ ...form, password: e.target.value })}
-							autoComplete="new-password"
-						/>
-					</label>
-				</div>
-				<div>
-					<Button>Guardar acceso</Button>
-				</div>
-				{error && (
-					<p role="alert" className="error">
-						{error}
-					</p>
-				)}
-				<p className="muted small">
-					Sin segundo factor por ahora: si un sitio lo pide, el agente se declara atascado y lo salta.
-				</p>
-			</form>
-			<h3>Últimos usos</h3>
-			<UsesTable uses={uses} />
+				<form
+					className="form"
+					onSubmit={async (e) => {
+						e.preventDefault();
+						setError('');
+						try {
+							let list: Credential[] = (await api('/vault', { body: form })).credentials;
+							// From an agent's settings, a new access is granted to that agent (and only to it).
+							const c = scope && list.find((x) => x.name.toLowerCase() === form.name.trim().toLowerCase());
+							if (c && !c.agents.includes(scope.id))
+								list = (
+									await api(`/vault/${c.id}/grants`, { method: 'PUT', body: { agents: [...c.agents, scope.id] } })
+								).credentials;
+							setCreds(list);
+							setAdding(false);
+						} catch (err) {
+							setError((err as Error).message);
+						}
+					}}
+				>
+					<div className="field-list">
+						<label className="field">
+							<span>Nombre del acceso</span>
+							<Input
+								placeholder="p. ej. proveedor"
+								value={form.name}
+								onChange={(e) => setForm({ ...form, name: e.target.value })}
+							/>
+						</label>
+						<label className="field">
+							<span>URL de inicio de sesión</span>
+							<Input
+								placeholder="https://sitio.com/login"
+								value={form.loginUrl}
+								onChange={(e) => setForm({ ...form, loginUrl: e.target.value })}
+							/>
+						</label>
+						<label className="field">
+							<span>Usuario</span>
+							<Input
+								value={form.username}
+								onChange={(e) => setForm({ ...form, username: e.target.value })}
+								autoComplete="off"
+							/>
+						</label>
+						<label className="field">
+							<span>Contraseña</span>
+							<Input
+								type="password"
+								value={form.password}
+								onChange={(e) => setForm({ ...form, password: e.target.value })}
+								autoComplete="new-password"
+							/>
+						</label>
+					</div>
+					{error && (
+						<p role="alert" className="error">
+							{error}
+						</p>
+					)}
+					<FormActions submitLabel="Guardar acceso" disabled={false} onCancel={() => setAdding(false)} />
+				</form>
+			</FormDialog>
+			{!scope && (
+				<>
+					<h3>Últimos usos</h3>
+					<UsesTable uses={uses} />
+				</>
+			)}
 		</section>
 	);
 }

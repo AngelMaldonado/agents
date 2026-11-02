@@ -1,0 +1,38 @@
+{
+	"schema": 1,
+	"kind": "synthetic-cutover-control-rehearsal",
+	"ok": true,
+	"planSha256": "d1474ee2ebec9945e5c34b46762468e5725959ff11e50cf5fc91593b54573c65",
+	"cases": {
+		"pending-backups-block-before-admission": true,
+		"happy-path-control-only": true,
+		"failure-preflight": true,
+		"failure-close-admission": true,
+		"failure-drain": true,
+		"failure-stop-writers": true,
+		"failure-confirm-frozen": true,
+		"failure-final-snapshot": true,
+		"failure-prepare-target": true,
+		"failure-start-target": true,
+		"failure-accept-target": true,
+		"failure-admit-production": true
+	},
+	"liveExecutorImplemented": false,
+	"readyForCutover": false,
+	"remoteCalls": 0,
+	"databasesAccessed": 0,
+	"backupsCreated": 0,
+	"s3Requests": 0,
+	"realAcceptanceTested": false,
+	"deploymentEnabled": false,
+	"backups": {
+		"state": "pending",
+		"workAuthorizedNow": false,
+		"skipAuthorized": false
+	},
+	"validation": {
+		"focusedTestsPassed": 12,
+		"drainSqlExecutedAgainstDatabase": false,
+		"dockerCommandsExecuted": false
+	}
+}

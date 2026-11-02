@@ -1,0 +1,558 @@
+{
+	"schemaVersion": 3,
+	"rehearsalOnly": true,
+	"readyForCutover": false,
+	"sourceChangedByPreparation": false,
+	"release": "v0.0.1-beta",
+	"releaseSha": "f21d03be79c550e2fc77f42a3d1f3a6bb478f5a3",
+	"releaseManifestSha256": "52c9dbd1124134774806312a53e3aff81766af6da440654db6d56d2fae383b3c",
+	"operatorSourceFilesInHashOrder": [
+		"scripts/deploy/remote.py",
+		"scripts/deploy/restore.mjs",
+		"scripts/deploy/dbos.mjs",
+		"scripts/deploy/data-copy.mjs",
+		"scripts/deploy/signatures.mjs",
+		"scripts/deploy/boot.mjs",
+		"scripts/deploy/network.mjs",
+		"scripts/egress-check.sh"
+	],
+	"run": "20261031T155740Z-03c3066b",
+	"operatorSourceSha256": "ae61faf420eab57c21d214992894182fa78e5780004b8f5dd4cdbe0bf42c397f",
+	"imageTransitionDecisionSha256": "8efedc69ddc75f0e9c92dcd95ee35a6bb2ad8cd6fc9659c117c483a45f1c1d79",
+	"snapshotConsistency": "online-rehearsal-only-not-a-coordinated-cutover-backup",
+	"publishedSignatures": [
+		{
+			"digest": "sha256:8a8d92f6ad22e024e3defba54261e903e60b24e43a18f5efd0d1e13a534916a8",
+			"repository": "registry.cubytest.space/cuby/agents-app",
+			"sha": "f21d03be79c550e2fc77f42a3d1f3a6bb478f5a3",
+			"version": "0.0.1-beta",
+			"signaturesVerified": 1,
+			"algorithm": "ECDSA-SHA256",
+			"platform": "linux/amd64",
+			"manifestConfigAndPayloadHashesVerified": true
+		},
+		{
+			"digest": "sha256:04771072a9d1064e52c034b1f59a1db7c46f695c760568cc9af76d20d5bebd40",
+			"repository": "registry.cubytest.space/cuby/agents-sandbox",
+			"sha": "f21d03be79c550e2fc77f42a3d1f3a6bb478f5a3",
+			"version": "0.0.1-beta",
+			"signaturesVerified": 1,
+			"algorithm": "ECDSA-SHA256",
+			"platform": "linux/amd64",
+			"manifestConfigAndPayloadHashesVerified": true
+		}
+	],
+	"keyCustody": {
+		"runtimeMatchesPrivateFile": {
+			"AGENTS_MASTER_KEY": true,
+			"AGENTS_ADMIN_PIN": true,
+			"AGENTS_PROXY_KEY": true
+		},
+		"activeKeyRotated": false,
+		"offHostEscrowVerified": false
+	},
+	"databaseRehearsal": {
+		"ok": true,
+		"preserved": {
+			"people": 6,
+			"agents": 9,
+			"activeAgents": 8,
+			"runs": 255,
+			"conversations": 13
+		},
+		"totalPeopleIncludingExistingProduction": 7,
+		"removedTestAgents": 9,
+		"secretsDecrypted": 19,
+		"secretsReencrypted": 19,
+		"existingProductionIdentityMap": [
+			{
+				"fromProduction": 2,
+				"toRehearsal": 9
+			}
+		],
+		"agentDefinitionsPreservedExceptAuthorizedImageRevision": true,
+		"dbos": {
+			"terminalOnly": true,
+			"testQueueExcluded": 1,
+			"unreferencedTerminalHistoryExcludedOnlyInCopy": true,
+			"workflowsPreserved": 688,
+			"workflowsExcluded": 213,
+			"schedulesPreserved": 1,
+			"schedulesExcluded": 0,
+			"scheduleDefinitionsUnchanged": true,
+			"workflowsExecuted": 0
+		},
+		"stateMapping": [
+			{
+				"agent": 10,
+				"source": "agents-dev-agent-10",
+				"destination": "agents-prod-beta1-agent-10"
+			},
+			{
+				"agent": 11,
+				"source": "agents-dev-agent-11",
+				"destination": "agents-prod-beta1-agent-11"
+			},
+			{
+				"agent": 12,
+				"source": "agents-dev-agent-12",
+				"destination": "agents-prod-beta1-agent-12"
+			},
+			{
+				"agent": 13,
+				"source": "agents-dev-agent-13",
+				"destination": "agents-prod-beta1-agent-13"
+			},
+			{
+				"agent": 14,
+				"source": "agents-dev-agent-14",
+				"destination": "agents-prod-beta1-agent-14"
+			},
+			{
+				"agent": 15,
+				"source": "agents-dev-agent-15",
+				"destination": "agents-prod-beta1-agent-15"
+			},
+			{
+				"agent": 16,
+				"source": "agents-dev-agent-16",
+				"destination": "agents-prod-beta1-agent-16"
+			},
+			{
+				"agent": 17,
+				"source": "agents-dev-agent-17",
+				"destination": "agents-prod-beta1-agent-17"
+			},
+			{
+				"agent": 18,
+				"source": "agents-dev-agent-18",
+				"destination": "agents-prod-beta1-agent-18"
+			}
+		],
+		"sessions": {
+			"policy": "production-preserved-development-reinvite",
+			"devSessionsExcluded": 6,
+			"devInvitesExcluded": 0,
+			"productionSessionsPreserved": true,
+			"developmentAdminPrivilegesTransferred": false
+		},
+		"defaultSandboxUpdatedInCopy": true,
+		"imageTransition": {
+			"decision": "angel-beta-existing-images-2026-10-31",
+			"authorizedBy": "Angel (operador)",
+			"ownerApprovalsFabricated": false,
+			"sourceImageDifferences": [
+				{
+					"agent": 10,
+					"revision": 4,
+					"historicalImage": "sha256:b90578f77f8e2cb6c2b39b9515629348248404505d952f78fad467c8e812ad8e",
+					"effectiveSourceImage": "sha256:ea53467b01328e245e1fa00b04f9f1ff1bd88e12f27df7b6ad57a2b7931fab08"
+				},
+				{
+					"agent": 11,
+					"revision": 1,
+					"historicalImage": "sha256:b90578f77f8e2cb6c2b39b9515629348248404505d952f78fad467c8e812ad8e",
+					"effectiveSourceImage": "sha256:ea53467b01328e245e1fa00b04f9f1ff1bd88e12f27df7b6ad57a2b7931fab08"
+				},
+				{
+					"agent": 12,
+					"revision": 1,
+					"historicalImage": "sha256:b90578f77f8e2cb6c2b39b9515629348248404505d952f78fad467c8e812ad8e",
+					"effectiveSourceImage": "sha256:ea53467b01328e245e1fa00b04f9f1ff1bd88e12f27df7b6ad57a2b7931fab08"
+				},
+				{
+					"agent": 13,
+					"revision": 1,
+					"historicalImage": "sha256:b90578f77f8e2cb6c2b39b9515629348248404505d952f78fad467c8e812ad8e",
+					"effectiveSourceImage": "sha256:ea53467b01328e245e1fa00b04f9f1ff1bd88e12f27df7b6ad57a2b7931fab08"
+				}
+			],
+			"changes": [
+				{
+					"agent": 10,
+					"fromRevision": 4,
+					"toRevision": 5,
+					"fromImage": "sha256:ea53467b01328e245e1fa00b04f9f1ff1bd88e12f27df7b6ad57a2b7931fab08",
+					"image": "sha256:04771072a9d1064e52c034b1f59a1db7c46f695c760568cc9af76d20d5bebd40",
+					"imageRef": "registry.cubytest.space/cuby/agents-sandbox@sha256:04771072a9d1064e52c034b1f59a1db7c46f695c760568cc9af76d20d5bebd40"
+				},
+				{
+					"agent": 11,
+					"fromRevision": 1,
+					"toRevision": 2,
+					"fromImage": "sha256:ea53467b01328e245e1fa00b04f9f1ff1bd88e12f27df7b6ad57a2b7931fab08",
+					"image": "sha256:04771072a9d1064e52c034b1f59a1db7c46f695c760568cc9af76d20d5bebd40",
+					"imageRef": "registry.cubytest.space/cuby/agents-sandbox@sha256:04771072a9d1064e52c034b1f59a1db7c46f695c760568cc9af76d20d5bebd40"
+				},
+				{
+					"agent": 12,
+					"fromRevision": 1,
+					"toRevision": 2,
+					"fromImage": "sha256:ea53467b01328e245e1fa00b04f9f1ff1bd88e12f27df7b6ad57a2b7931fab08",
+					"image": "sha256:04771072a9d1064e52c034b1f59a1db7c46f695c760568cc9af76d20d5bebd40",
+					"imageRef": "registry.cubytest.space/cuby/agents-sandbox@sha256:04771072a9d1064e52c034b1f59a1db7c46f695c760568cc9af76d20d5bebd40"
+				},
+				{
+					"agent": 13,
+					"fromRevision": 1,
+					"toRevision": 2,
+					"fromImage": "sha256:ea53467b01328e245e1fa00b04f9f1ff1bd88e12f27df7b6ad57a2b7931fab08",
+					"image": "sha256:04771072a9d1064e52c034b1f59a1db7c46f695c760568cc9af76d20d5bebd40",
+					"imageRef": "registry.cubytest.space/cuby/agents-sandbox@sha256:04771072a9d1064e52c034b1f59a1db7c46f695c760568cc9af76d20d5bebd40"
+				},
+				{
+					"agent": 14,
+					"fromRevision": 1,
+					"toRevision": 2,
+					"fromImage": "sha256:ea53467b01328e245e1fa00b04f9f1ff1bd88e12f27df7b6ad57a2b7931fab08",
+					"image": "sha256:04771072a9d1064e52c034b1f59a1db7c46f695c760568cc9af76d20d5bebd40",
+					"imageRef": "registry.cubytest.space/cuby/agents-sandbox@sha256:04771072a9d1064e52c034b1f59a1db7c46f695c760568cc9af76d20d5bebd40"
+				},
+				{
+					"agent": 15,
+					"fromRevision": 4,
+					"toRevision": 5,
+					"fromImage": "sha256:9794748a91d75ded5099de20c2a359b787e4cee8b33eb98c2b1650675ba553b4",
+					"image": "sha256:04771072a9d1064e52c034b1f59a1db7c46f695c760568cc9af76d20d5bebd40",
+					"imageRef": "registry.cubytest.space/cuby/agents-sandbox@sha256:04771072a9d1064e52c034b1f59a1db7c46f695c760568cc9af76d20d5bebd40"
+				},
+				{
+					"agent": 17,
+					"fromRevision": 4,
+					"toRevision": 5,
+					"fromImage": "sha256:ea53467b01328e245e1fa00b04f9f1ff1bd88e12f27df7b6ad57a2b7931fab08",
+					"image": "sha256:04771072a9d1064e52c034b1f59a1db7c46f695c760568cc9af76d20d5bebd40",
+					"imageRef": "registry.cubytest.space/cuby/agents-sandbox@sha256:04771072a9d1064e52c034b1f59a1db7c46f695c760568cc9af76d20d5bebd40"
+				},
+				{
+					"agent": 18,
+					"fromRevision": 2,
+					"toRevision": 3,
+					"fromImage": "sha256:9794748a91d75ded5099de20c2a359b787e4cee8b33eb98c2b1650675ba553b4",
+					"image": "sha256:04771072a9d1064e52c034b1f59a1db7c46f695c760568cc9af76d20d5bebd40",
+					"imageRef": "registry.cubytest.space/cuby/agents-sandbox@sha256:04771072a9d1064e52c034b1f59a1db7c46f695c760568cc9af76d20d5bebd40"
+				}
+			],
+			"historicalRevisionsUnchanged": true,
+			"retiredAgentsUnchanged": true
+		},
+		"pendingBeforeCutover": [
+			"new production logins by invitation and integration acceptance",
+			"final runtime URL/proxy/network checks",
+			"repeat signature/image availability checks at the authorized cutover",
+			"coordinated final backup and approval"
+		]
+	},
+	"proposedSandboxProbes": [
+		{
+			"agent": 10,
+			"ok": true,
+			"approved": false,
+			"image": "registry.cubytest.space/cuby/agents-sandbox@sha256:04771072a9d1064e52c034b1f59a1db7c46f695c760568cc9af76d20d5bebd40",
+			"imageId": "sha256:04771072a9d1064e52c034b1f59a1db7c46f695c760568cc9af76d20d5bebd40",
+			"inputSha256": "bffdc33c9930b6c8a8fe6760089800a69082b7245c75389fdc8ae2d54ce10893",
+			"runtimeDigest": "a2c7743dae5b5d6286446cc333119c9a6e19ea48a61a57fe7515b2fc1d61740d",
+			"toolCount": 6
+		},
+		{
+			"agent": 11,
+			"ok": true,
+			"approved": false,
+			"image": "registry.cubytest.space/cuby/agents-sandbox@sha256:04771072a9d1064e52c034b1f59a1db7c46f695c760568cc9af76d20d5bebd40",
+			"imageId": "sha256:04771072a9d1064e52c034b1f59a1db7c46f695c760568cc9af76d20d5bebd40",
+			"inputSha256": "537d02b9288a6c3edc88c2eb459f596b75ce0e217441308d6103c6b8d8a24d35",
+			"runtimeDigest": "3220f07a9825e990a76b13410e7cb7f0c714f1bd429d91518a33ee9d075e489c",
+			"toolCount": 5
+		},
+		{
+			"agent": 12,
+			"ok": true,
+			"approved": false,
+			"image": "registry.cubytest.space/cuby/agents-sandbox@sha256:04771072a9d1064e52c034b1f59a1db7c46f695c760568cc9af76d20d5bebd40",
+			"imageId": "sha256:04771072a9d1064e52c034b1f59a1db7c46f695c760568cc9af76d20d5bebd40",
+			"inputSha256": "dd54e5d20ac960acd8b0acbfc3b56f6f64793cbefbdc722996deac247a2956ce",
+			"runtimeDigest": "7c35e853991768d8e2e8950502f0eb79f3ade040b0637e9778474d059bfbe6d4",
+			"toolCount": 10
+		},
+		{
+			"agent": 13,
+			"ok": true,
+			"approved": false,
+			"image": "registry.cubytest.space/cuby/agents-sandbox@sha256:04771072a9d1064e52c034b1f59a1db7c46f695c760568cc9af76d20d5bebd40",
+			"imageId": "sha256:04771072a9d1064e52c034b1f59a1db7c46f695c760568cc9af76d20d5bebd40",
+			"inputSha256": "dd430cce4e17975d50ad9bf66d0f572e90046f5622c962978544723e35b3c139",
+			"runtimeDigest": "4e90bf9979c8c5068e7e475275b5ffde8f2f483be95b00887bd4b9c71300c8f9",
+			"toolCount": 6
+		},
+		{
+			"agent": 14,
+			"ok": true,
+			"approved": false,
+			"image": "registry.cubytest.space/cuby/agents-sandbox@sha256:04771072a9d1064e52c034b1f59a1db7c46f695c760568cc9af76d20d5bebd40",
+			"imageId": "sha256:04771072a9d1064e52c034b1f59a1db7c46f695c760568cc9af76d20d5bebd40",
+			"inputSha256": "5cf9115644b628d87e30158ec088156cb0c9615387be3aeb9721cc334c9152ef",
+			"runtimeDigest": "1b4bf99329d8ce4a52756bf7423532d45e9c84cdcfebe45d8167873ea8e095e1",
+			"toolCount": 6
+		},
+		{
+			"agent": 15,
+			"ok": true,
+			"approved": false,
+			"image": "registry.cubytest.space/cuby/agents-sandbox@sha256:04771072a9d1064e52c034b1f59a1db7c46f695c760568cc9af76d20d5bebd40",
+			"imageId": "sha256:04771072a9d1064e52c034b1f59a1db7c46f695c760568cc9af76d20d5bebd40",
+			"inputSha256": "dd9736ecc9057090eb7d9695cdd960fdd8e2d6c39567a92d694aa11d3d15a0d2",
+			"runtimeDigest": "1d80e5afde62c306f4de7842ee775eb965ed3fc3bb299c04d8ce9932d67c9415",
+			"toolCount": 6
+		},
+		{
+			"agent": 16,
+			"ok": true,
+			"approved": false,
+			"image": "registry.cubytest.space/cuby/agents-sandbox@sha256:04771072a9d1064e52c034b1f59a1db7c46f695c760568cc9af76d20d5bebd40",
+			"imageId": "sha256:04771072a9d1064e52c034b1f59a1db7c46f695c760568cc9af76d20d5bebd40",
+			"inputSha256": "68e9460c8017f44d029cd6ab82b9a42fe815ef05e9409930cb829957cc3ece3e",
+			"runtimeDigest": "a13c5af1ea2111519e4f7affe3cbb28bc43827e48f52a57842bd61a31d0c35e4",
+			"toolCount": 6
+		},
+		{
+			"agent": 17,
+			"ok": true,
+			"approved": false,
+			"image": "registry.cubytest.space/cuby/agents-sandbox@sha256:04771072a9d1064e52c034b1f59a1db7c46f695c760568cc9af76d20d5bebd40",
+			"imageId": "sha256:04771072a9d1064e52c034b1f59a1db7c46f695c760568cc9af76d20d5bebd40",
+			"inputSha256": "553c244988020c0ebfea933f29f74bfc29f29e7ac040fe1dbcada0ebb4e8c2ff",
+			"runtimeDigest": "e604cedde80fafaa81acd2f28c0325b703a8752ca22b7d3146b671ee213a92ac",
+			"toolCount": 6
+		},
+		{
+			"agent": 18,
+			"ok": true,
+			"approved": false,
+			"image": "registry.cubytest.space/cuby/agents-sandbox@sha256:04771072a9d1064e52c034b1f59a1db7c46f695c760568cc9af76d20d5bebd40",
+			"imageId": "sha256:04771072a9d1064e52c034b1f59a1db7c46f695c760568cc9af76d20d5bebd40",
+			"inputSha256": "2addad79da9e23614d76a2ea4488ba70f1bec8f7a55bd139af4c81b58fd7be6f",
+			"runtimeDigest": "5185904c82e09ec5e41b6c0990223111fe4e80afac8ccd859a97fb43a3a6d702",
+			"toolCount": 5
+		}
+	],
+	"preparedRecovery": {
+		"ok": true,
+		"tablesCompared": 55,
+		"allRowsIdentical": true
+	},
+	"archivesVerified": [
+		"agent-10",
+		"agent-11",
+		"agent-12",
+		"agent-13",
+		"agent-14",
+		"agent-15",
+		"agent-16",
+		"agent-17",
+		"agent-18",
+		"development-cliproxy",
+		"development-data",
+		"production-cliproxy",
+		"production-data"
+	],
+	"filteredData": {
+		"filesCopied": 97,
+		"sourceFiles": 217,
+		"orphanedOrExcludedFilesNotCopied": 120,
+		"retainedFilesHashVerified": true,
+		"sourceChanged": false
+	},
+	"applicationBoot": {
+		"ok": true,
+		"health": {
+			"ready": true,
+			"version": "0.0.1-beta",
+			"sha": "f21d03be79c550e2fc77f42a3d1f3a6bb478f5a3"
+		},
+		"peopleVisibilityChecked": 7,
+		"syntheticSessionsOnly": true,
+		"realBrowserLoginTested": false,
+		"cronPausedOnlyInRecoveryCopy": true,
+		"modelCalls": 0,
+		"network": "none",
+		"dockerSocketMounted": false,
+		"whatsapp404": true,
+		"web200": true
+	},
+	"proxyNetwork": {
+		"ok": true,
+		"proxies": [
+			{
+				"person": 2,
+				"status": 200,
+				"ok": true,
+				"unavailableAgentModels": []
+			},
+			{
+				"person": 3,
+				"status": 200,
+				"ok": true,
+				"unavailableAgentModels": []
+			},
+			{
+				"person": 4,
+				"status": 200,
+				"ok": true,
+				"unavailableAgentModels": []
+			},
+			{
+				"person": 5,
+				"status": 200,
+				"ok": true,
+				"unavailableAgentModels": []
+			},
+			{
+				"person": 8,
+				"status": 200,
+				"ok": true,
+				"unavailableAgentModels": []
+			}
+		],
+		"inferenceRequests": 0,
+		"secretsExported": false,
+		"networkNamespace": "production-server"
+	},
+	"sandboxEgress": {
+		"ok": true,
+		"checks": [
+			"ok   open    internet (DNS + TCP)             example.com:443",
+			"ok   open    backend, same bridge             agents-prod-server:8787",
+			"ok   closed  reko-3 LAN IP (Traefik)          192.168.20.250:443",
+			"ok   closed  LAN router                       192.168.20.1:53",
+			"ok   closed  reko-3 tailnet IP (SSH)          100.64.0.17:22",
+			"ok   closed  host via gateway (SSH)           172.16.12.1:22",
+			"ok   closed  host via gateway (dockerd)       172.16.12.1:9323",
+			"ok   closed  cloud metadata                   169.254.169.254:80"
+		],
+		"secretsMounted": false
+	},
+	"liveMetadataUnchanged": true,
+	"liveActivityMayContinue": true,
+	"backupChecksums": {
+		"agent-10.tar": "e88fd4fc456e5bc98e5182952faae612811f73a6c34c006c74cb00dc3824e575",
+		"agent-11.tar": "5c5c7c536e31e3375ff871a9d83b7c473f4d7dba1d62a02e03142bbe0b87e905",
+		"agent-12.tar": "4bf56fcbeb5b1004e3381aff759249203190fc530e6e8058adc492e622974e79",
+		"agent-13.tar": "9934385b357c9ead0af8c8b78d2b2f39339a9d742574d0c39881e3158233fcef",
+		"agent-14.tar": "74b3af0f23f491bf27eb5ffb6869183e44f4ad91b843fc1eeee4083819f95151",
+		"agent-15.tar": "df0cfead110848aa4d5294ed2fd7afc5acfda8437e1ba98db20824554e399b47",
+		"agent-16.tar": "121a7e051ccb21e1019813a88aaf526537e6cd19b32e65522a31d191c976e84d",
+		"agent-17.tar": "07880587d794ff4ff7b74562a4bff749abe5d6a8a935c12334f0691ebcdcb20d",
+		"agent-18.tar": "4e47a32229f0c101abcb999fc80e54005389ee6bb4dad6c7664cc52a9e384678",
+		"development-cliproxy.tar": "bd958a3711fd3cb33ee59f4c8d7715a9f32a26cdac311e29277e5d65ce6d4cfb",
+		"development-data.tar": "581dbbe3539848f23bc24cfb2db5f567867bcea0dae9ed12906e195f58cbf074",
+		"development.dump": "47e62da191890cedd0db1de52d12fc39c9abd7264d024dc8df56371bb8482802",
+		"prepared.dump": "dfa3b2f4fba3e6e8a1d78b106956df229318a05dbee2e8af126cf2e6b6aa7efa",
+		"production-cliproxy.tar": "3ef0ad077e3fed039343983cef648df2c6bebb140a161f811cdccf74ee3ad4a1",
+		"production-data.tar": "e2019de2d05de38901a722a0f57a0cf63e629ebd7b68a4559c3786350d56f1cc",
+		"production.dump": "9d0ac2e7aedef57cde3749a1011090a020fd488156be31a341c3b076c9a06b44"
+	},
+	"cleanupFailures": [],
+	"configurationAudit": {
+		"unchangedInfrastructureServices": {
+			"postgres": true,
+			"cliproxy": true
+		},
+		"routingLabelsUnchanged": true,
+		"networkDefinitionsUnchanged": true,
+		"candidateServices": ["backup", "cliproxy", "postgres", "server"],
+		"databaseTarget": "agents_beta1",
+		"databaseAuthentication": {
+			"productionFileMatchesEffectiveDatabasePassword": true,
+			"authenticatedReadOnlyConnection": true,
+			"database": "agents",
+			"readonly": "on",
+			"secretsExported": false
+		},
+		"candidateSha256": "e77224b90f01e92b98d8c76e3fa74fb13612c82b1da9593a2f771299abaddb93"
+	},
+	"runtimeAudit": {
+		"dbosPayloadOwnership": {
+			"agents-dev-postgres-1": {
+				"eventDispatchRows": 0,
+				"orphanInputs": 0,
+				"orphanOutputs": 0,
+				"orphanCheckpoints": 0
+			},
+			"agents-postgres-1": {
+				"eventDispatchRows": 0,
+				"orphanInputs": 0,
+				"orphanOutputs": 0,
+				"orphanCheckpoints": 0
+			}
+		},
+		"containers": [
+			{
+				"name": "/agents-server-1",
+				"started": "2026-10-29T23:45:30.199529967Z",
+				"image": "registry.cubytest.space/cuby/agents:c655568"
+			},
+			{
+				"name": "/agents-postgres-1",
+				"started": "2026-10-27T16:18:58.062765746Z",
+				"image": "postgres:18.6-alpine"
+			},
+			{
+				"name": "/agents-backup-1",
+				"started": "2026-10-27T16:25:42.69080907Z",
+				"image": "postgres:18.6-alpine"
+			},
+			{
+				"name": "/agents-cliproxy-1",
+				"started": "2026-10-27T16:18:58.062175506Z",
+				"image": "eceasy/cli-proxy-api:v8.0.40"
+			},
+			{
+				"name": "/agents-dev-server-1",
+				"started": "2026-10-29T21:26:14.48483855Z",
+				"image": "oven/bun:1.4"
+			},
+			{
+				"name": "/agents-dev-web-1",
+				"started": "2026-10-28T17:43:57.400749582Z",
+				"image": "oven/bun:1.4"
+			},
+			{
+				"name": "/agents-dev-whatsapp-1",
+				"started": "2026-10-29T21:26:14.482614883Z",
+				"image": "agents-whatsapp:dev"
+			},
+			{
+				"name": "/agents-dev-postgres-1",
+				"started": "2026-10-26T20:03:57.631201237Z",
+				"image": "postgres:18.6-alpine"
+			}
+		],
+		"temporaryContainers": [],
+		"temporaryVolumes": []
+	},
+	"limitations": [
+		"online backups are not a coordinated final cutover snapshot or offsite recovery",
+		"off-host key escrow not verified",
+		"real browser login, real inference/task and final admission not exercised",
+		"development users require new invitations on production domain; old dev-signed links do not work there",
+		"historical image artifacts remain unavailable; no executable image rollback is claimed",
+		"cutover/apply not implemented or authorized; concrete execution review and explicit window approval still required"
+	],
+	"backups": "private on reko-3 only under /home/woz/.local/state/agents-migration/; never copied to Mac",
+	"priorImageTransitionRehearsal": {
+		"run": "20261031T130556Z-88d57d2b",
+		"commit": "c6878fb897466ee70e21fae3483ff7b223e61632"
+	},
+	"failedReadinessAttempts": [
+		{
+			"run": "20261031T154339Z-fe974dd0",
+			"phase": "private-data-plan",
+			"cleanupFailures": []
+		},
+		{
+			"run": "20261031T155118Z-da17906b",
+			"phase": "published-app-private-access",
+			"cleanupFailures": []
+		}
+	]
+}

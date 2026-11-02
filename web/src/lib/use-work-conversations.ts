@@ -11,6 +11,9 @@ export function useWorkConversations(
 	setConversations: Dispatch<SetStateAction<Conversation[]>>,
 	loaded: boolean,
 	enabled: boolean,
+	// The selected conversation's transcript: loaded and polled only while it is on screen (the chat
+	// view). The hub needs the list, not a transcript.
+	follow = enabled,
 ) {
 	const storageKey = `agents.conversation.${viewerId}.${agent.id}`;
 	const [selected, setSelected] = useState<number | null>(() => {
@@ -122,12 +125,16 @@ export function useWorkConversations(
 		[agent.id],
 	);
 	useEffect(() => {
-		if (selected !== null && enabled) void load(selected);
-	}, [selected, enabled, load]);
+		if (selected !== null && follow) void load(selected);
+	}, [selected, follow, load]);
 	useEffect(() => {
 		const offT = onTask((t) => {
 			if (t.agent_id !== agent.id) return;
 			setAgentTask((old) => (!old || t.id >= old.id ? t : old));
+			// «Recientes» shows which chats are working (parallel ones too).
+			setConversations((cs) =>
+				cs.map((c) => (c.id === t.conversation_id && c.live !== isLive(t) ? { ...c, live: isLive(t) } : c)),
+			);
 			revisions.current.set(t.conversation_id, (revisions.current.get(t.conversation_id) ?? 0) + 1);
 			setPages((p) => {
 				const page = p[t.conversation_id];
@@ -143,7 +150,7 @@ export function useWorkConversations(
 					},
 				};
 			});
-			if (enabled && selectedRef.current === t.conversation_id) void load(t.conversation_id);
+			if (follow && selectedRef.current === t.conversation_id) void load(t.conversation_id);
 		});
 		const offE = onEvent((runId, event) => {
 			setPages((p) => {
@@ -167,15 +174,15 @@ export function useWorkConversations(
 			offT();
 			offE();
 		};
-	}, [agent.id, enabled, load]);
+	}, [agent.id, follow, load]);
 	// Poll durable inbox state, not GPT. No implicit model retry.
 	useEffect(() => {
-		if (!enabled || selected === null) return;
+		if (!follow || selected === null) return;
 		const timer = setInterval(() => {
 			if (!pagesRef.current[selected]?.loading) void load(selected);
 		}, 2500);
 		return () => clearInterval(timer);
-	}, [enabled, selected, load]);
+	}, [follow, selected, load]);
 	const loadList = useCallback(async () => {
 		const ticket = ++listTicket.current,
 			data = await api(`/agents/${agent.id}/conversations`);

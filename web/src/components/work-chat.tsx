@@ -8,6 +8,7 @@ import {
 	useMemo,
 	useRef,
 	useState,
+	type ReactNode,
 } from 'react';
 import {
 	AssistantRuntimeProvider,
@@ -66,6 +67,10 @@ type Props = {
 	// Shared agents: busyWith names who the agent works for now (not me); directs says whose tasks I may answer.
 	busyWith?: string | null;
 	directs?: (t: Task) => boolean;
+	/** Under the input (the chat view: who ran its work, for how long, at what cost), in place of the default hint. */
+	footer?: ReactNode;
+	/** Next to «Adjuntar» (the chat view: the button that opens the work panel, like Automejora's contract). */
+	composerActions?: ReactNode;
 };
 type ChatContext = {
 	unsent: boolean;
@@ -681,7 +686,10 @@ export function WorkChat(props: Props) {
 										}}
 									/>
 									<div className="designer-composer-actions">
-										<AttachButton onFiles={(f) => void attach.add(f)} disabled={busy || !!props.loading} />
+										<div className="mr-auto flex items-center gap-1">
+											<AttachButton onFiles={(f) => void attach.add(f)} disabled={busy || !!props.loading} />
+											{props.composerActions}
+										</div>
 										{attach.files.length && !unsent ? (
 											<Button
 												type="button"
@@ -701,20 +709,23 @@ export function WorkChat(props: Props) {
 										)}
 									</div>
 								</ComposerPrimitive.Root>
-								<p className="text-xs text-muted-foreground" role={props.busyWith ? 'status' : undefined}>
-									{props.busyWith ? (
-										<>
-											<strong>Ocupado</strong> con la tarea de {props.busyWith}. Tu mensaje esperará a que termine y
-											luego el agente lo atiende como una tarea nueva.
-										</>
-									) : props.waitingForComputer ? (
-										'El agente trabaja en otra conversación. Tu mensaje esperará su turno.'
-									) : task && isLive(task) ? (
-										'El agente está trabajando: lo que envíes queda en cola y lo recibe al terminar su paso actual.'
-									) : (
-										'Una conversación puede continuar durante varias ejecuciones.'
-									)}
-								</p>
+								{(props.busyWith || props.waitingForComputer || (task && isLive(task)) || !props.footer) && (
+									<p className="text-xs text-muted-foreground" role={props.busyWith ? 'status' : undefined}>
+										{props.busyWith ? (
+											<>
+												<strong>Ocupado</strong> con la tarea de {props.busyWith}. Tu mensaje esperará a que termine y
+												luego el agente lo atiende como una tarea nueva.
+											</>
+										) : props.waitingForComputer ? (
+											'El agente trabaja en otra conversación. Tu mensaje esperará su turno.'
+										) : task && isLive(task) ? (
+											'El agente está trabajando: lo que envíes queda en cola y lo recibe al terminar su paso actual.'
+										) : (
+											'Una conversación puede continuar durante varias ejecuciones.'
+										)}
+									</p>
+								)}
+								{props.footer}
 							</>
 						)}
 					</div>

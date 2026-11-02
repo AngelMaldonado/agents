@@ -1,0 +1,14 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" fill="#E22706" stroke="#E22706" stroke-linecap="round" stroke-linejoin="round">
+  <g id="bot">
+    <g id="antennas">
+      <path d="M22 19 17 8M42 19 47 8" fill="none" stroke-width="7"/>
+      <circle cx="17" cy="8" r="4.5" stroke="none"/>
+      <circle cx="47" cy="8" r="4.5" stroke="none"/>
+    </g>
+    <rect x="12" y="18" width="40" height="40" rx="9" fill="none" stroke-width="7"/>
+    <g id="eyes" stroke="none">
+      <circle cx="24" cy="38" r="4.5"/>
+      <circle cx="40" cy="38" r="4.5"/>
+    </g>
+  </g>
+</svg>

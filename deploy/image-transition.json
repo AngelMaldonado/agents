@@ -1,0 +1,11 @@
+{
+	"id": "angel-beta-existing-images-2026-10-31",
+	"release": "0.0.1-beta",
+	"releaseSha": "f21d03be79c550e2fc77f42a3d1f3a6bb478f5a3",
+	"sandboxImage": "registry.cubytest.space/cuby/agents-sandbox@sha256:04771072a9d1064e52c034b1f59a1db7c46f695c760568cc9af76d20d5bebd40",
+	"scope": "active-non-test-agents",
+	"authorizedBy": "Angel (operador)",
+	"instruction": "si, usa los containers que ya estan para la release",
+	"execution": "rehearsal-only",
+	"cutoverAuthorized": false
+}

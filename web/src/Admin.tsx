@@ -4,6 +4,8 @@ import { FEATURES } from '../../sandbox/features';
 import { api, ago, type Person } from './api';
 import { UsesTable } from './Settings';
 import { Button } from '@/components/ui/button';
+import { DeleteButton, IconButton } from '@/components/actions';
+import { Link2 } from 'lucide-react';
 import { Input } from '@/components/ui/input';
 import { Textarea } from '@/components/ui/textarea';
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
@@ -247,21 +249,38 @@ function Panel({ onChanged }: { onChanged: () => void }) {
 			{FEATURES.whatsapp && <WhatsAppAdmin />}
 			<section className="panel">
 				<h2>Límites</h2>
-				<div className="settings-grid">
-					<label>Computadoras a la vez, todos juntos (1–60){num('maxConcurrent')}</label>
-					<label>Minutos máximos por tarea{num('maxMinutes')}</label>
-					<label>Tope de costo por tarea (US$){num('maxCostUsd')}</label>
-					<label>Minutos que espera un agente atascado{num('blockedWaitMinutes')}</label>
-					<label>
-						Imagen del sandbox
+				<div className="field-list">
+					<label className="field">
+						<span>Computadoras a la vez, todos juntos (1–60)</span>
+						{num('maxConcurrent')}
+					</label>
+					<label className="field">
+						<span>Minutos máximos por tarea</span>
+						{num('maxMinutes')}
+					</label>
+					<label className="field">
+						<span>Tope de costo por tarea (US$)</span>
+						{num('maxCostUsd')}
+					</label>
+					<label className="field">
+						<span>Minutos que espera un agente atascado</span>
+						{num('blockedWaitMinutes')}
+					</label>
+					<label className="field">
+						<span>Imagen del sandbox</span>
 						<Input value={draft.sandboxImage} onChange={(e) => setDraft({ ...draft, sandboxImage: e.target.value })} />
 					</label>
 				</div>
-				<label>
-					Catálogo de modelos (uno por línea: <code>proveedor/modelo | nombre</code>)
+				<label className="field mt-3">
+					<span>
+						Catálogo de modelos{' '}
+						<span className="muted small block font-normal">
+							uno por línea: <code>proveedor/modelo | nombre</code>
+						</span>
+					</span>
 					<Textarea rows={6} value={models} onChange={(e) => setModels(e.target.value)} className="mono" />
 				</label>
-				<div className="row wrap mt-4">
+				<div className="field-actions row wrap mt-4">
 					<Button
 						onClick={async () => {
 							const list = models
@@ -326,19 +345,16 @@ function Panel({ onChanged }: { onChanged: () => void }) {
 								<TableCell className="text-xs">{ago(p.created_at)}</TableCell>
 								<TableCell>
 									<div className="row">
-										<Button
-											variant="ghost"
-											size="sm"
+										<IconButton
+											icon={Link2}
+											label="Crear enlace de acceso"
+
 											onClick={async () => {
 												const { code } = await api(`/admin/people/${p.id}/invite`, { method: 'POST' });
 												setLink(`${location.origin}/#/invite/${code}`);
 											}}
-										>
-											Enlace
-										</Button>
-										<Button
-											variant="danger-ghost"
-											size="sm"
+										/>
+										<DeleteButton
 											onClick={async () => {
 												if (confirm(`¿Borrar a ${p.name} con sus agentes, tareas, keys y accesos?`)) {
 													await api(`/admin/people/${p.id}`, { method: 'DELETE' });
@@ -346,9 +362,7 @@ function Panel({ onChanged }: { onChanged: () => void }) {
 													onChanged();
 												}
 											}}
-										>
-											Borrar
-										</Button>
+										/>
 									</div>
 								</TableCell>
 							</TableRow>

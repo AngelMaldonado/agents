@@ -162,8 +162,11 @@ const fake = Bun.serve({
 			return Response.json({ data: [{ id: 'gpt-6-sol' }, { id: 'gpt-6.1-sol' }] });
 		if (new URL(req.url).pathname !== '/v1/responses') return new Response(null, { status: 404 });
 		const body = (await req.json()) as any;
-		if (body.stream) return businessResponse(body);
-		assert.equal(body.tools.length, 0);
+		// The designer streams too and may offer its registry searches (#26): it is told apart by the
+		// structured reply it asks for. It gets plain JSON, which the server also reads.
+		const designer = body.text?.format?.name === 'agent_contract';
+		if (!designer) return businessResponse(body);
+		assert((body.tools ?? []).every((t: any) => ['buscar_mcp', 'buscar_cli', 'buscar_skills'].includes(t.name)));
 		requests++;
 		return Response.json({
 			status: 'completed',
@@ -326,6 +329,21 @@ try {
 	assert.deepEqual((await api(`/designs/${design.id}`)).design.interview, design.interview);
 	ready = true;
 	({ design } = await api(`/designs/${design.id}/messages`, answerBody(design)));
+	// The platform's last round before a contract (#26): the deliverable and, for a new agent, the
+	// confirmation of the shared understanding. The model saying «ready» does not skip it.
+	assert.equal(design.ready, false);
+	assert.equal(design.contract, null);
+	assert.deepEqual(
+		design.interview.pending.questions.map((q: any) => q.id),
+		['entregable', 'confirmar'],
+	);
+	({ design } = await api(`/designs/${design.id}/messages`, {
+		version: design.version,
+		answers: {
+			round: design.interview.pending.round,
+			values: { entregable: { selected: ['markdown'], other: '' }, confirmar: { selected: ['si'], other: '' } },
+		},
+	}));
 	assert.equal(design.ready, true);
 	assert.equal((await api('/agents')).agents.length, 0);
 	console.log(

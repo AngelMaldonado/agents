@@ -1,0 +1,18 @@
+{
+	"id": "angel-transfer-beta1-2026-10-31",
+	"authorizedBy": "Angel (operador)",
+	"request": "Traslada los usuarios y agentes porfavor",
+	"backupConfirmation": "Sí",
+	"backupQuestion": "¿Autorizas una copia local de seguridad en reko-3 previa al traslado, dejando S3 y la automatización de respaldos pendientes?",
+	"source": "agents-dev",
+	"destination": "agents",
+	"releaseSha": "f21d03be79c550e2fc77f42a3d1f3a6bb478f5a3",
+	"excludeTestOnlyAtDestination": true,
+	"preserveOriginalDatabasesAndVolumes": true,
+	"preserveSeparateProductionIdentity": true,
+	"localCoordinatedBackupAuthorized": true,
+	"cutoverAuthorized": true,
+	"enableS3": false,
+	"addBackupSchedule": false,
+	"realInferenceAcceptanceAuthorized": false
+}

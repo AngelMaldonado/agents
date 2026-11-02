@@ -17,25 +17,39 @@ import {
 	Check,
 	ChevronRight,
 	FileText,
+	FlaskConical,
 	LoaderCircle,
 	PanelRightClose,
+	PanelRightOpen,
+	Pencil,
+	Blocks,
+	CalendarClock,
+	History,
 	RotateCcw,
 	BrainCircuit,
 	MessageSquare,
 } from 'lucide-react';
 import type { Agent, Design, PublicSettings, InterviewAnswers } from '@/api';
 import { Button } from '@/components/ui/button';
-import { Badge } from '@/components/ui/badge';
+import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip';
+import { useSlidePanel } from '@/lib/use-slide-panel';
+import { IconButton } from '@/components/actions';
+import { Character } from '@/Character';
 import { OptionSelect } from '@/components/option-select';
 import { ResizableHandle, ResizablePanel, ResizablePanelGroup } from '@/components/ui/resizable';
 import { ScrollArea } from '@/components/ui/scroll-area';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { ContractMarkdown } from './design-content';
-import { HarnessPanel, HarnessChanges, HarnessTests, SchedulesPanel } from './harness-content';
+import { HarnessPanel, HarnessTests, SchedulesPanel } from './harness-content';
+import { Input } from '@/components/ui/input';
+import { DesignFindings, FindingsContext, SearchCall, type FindingsActions } from './design-findings';
+import { DesignerProgress, ReasoningPart } from './design-progress';
+import { IMPROVE_REQUEST, takeImproveRequest } from '@/lib/sidebar-events';
 import { InterviewCard, InterviewContext, type InterviewDrafts, type InterviewDraft } from './interview-card';
 import { AttachButton, AttachmentChips, SentAttachments, useAttachments } from './attachments';
 import { CopyMessage } from './message-actions';
-import { ReferencePopover, useReferenceMentions } from './references';
+import { ComposerReferenceChip, ReferencePopover, referenceFormatter, useReferenceMentions } from './references';
+import { LexicalComposerInput } from '@assistant-ui/react-lexical';
 
 type Props = {
 	design: Design | null;
@@ -54,6 +68,13 @@ type Props = {
 	onAnswer: (answers: InterviewAnswers) => Promise<void>;
 	onApprove: () => void;
 	onValidate: () => void;
+	/** Grants a suggested access (to a new agent: when its proposal is approved). */
+	onGrant?: (kind: string, id: number) => Promise<void>;
+	/** The owner adds or skips a tool the designer found, or saves a secret it asked for. */
+	onFinding?: FindingsActions['decide'];
+	onSecret?: FindingsActions['saveSecret'];
+	/** Renames the proposal (its contract's name). */
+	onRename?: (name: string) => Promise<void>;
 	onBack?: () => void;
 	notice?: string;
 	active?: boolean;
@@ -114,7 +135,7 @@ function ArtifactCard() {
 		</button>
 	);
 }
-function ContractPreview({ value, text }: { value: string; text: string }) {
+function ContractPreview({ value, text, notice }: { value: string; text: string; notice?: string }) {
 	return (
 		<TabsContent value={value} className="designer-preview">
 			<ScrollArea
@@ -123,10 +144,87 @@ function ContractPreview({ value, text }: { value: string; text: string }) {
 				viewportProps={{ tabIndex: 0, 'aria-label': 'Contenido del contrato' }}
 			>
 				<div className="designer-preview-content">
+					{notice && (
+						<p className="mb-4 flex items-start gap-2 rounded-md border bg-muted/40 px-3 py-2 text-2xs text-muted-foreground">
+							<MessageSquare className="mt-px size-3.5 shrink-0 text-primary" aria-hidden="true" />
+							{notice}
+						</p>
+					)}
 					<ContractMarkdown text={text} />
 				</div>
 			</ScrollArea>
 		</TabsContent>
+	);
+}
+/** The agent's name in the contract's header: a click edits it (Enter or leaving saves, Escape cancels). */
+function NameField({
+	name,
+	editable,
+	onRename,
+}: {
+	name: string;
+	editable: boolean;
+	onRename?: (name: string) => Promise<void>;
+}) {
+	const [editing, setEditing] = useState(false);
+	const [value, setValue] = useState(name);
+	const [saving, setSaving] = useState(false);
+	useEffect(() => {
+		if (!editing) setValue(name);
+	}, [name, editing]);
+	if (!editable || !onRename) return <h2 className="min-w-0 flex-1 truncate text-xs font-semibold">{name}</h2>;
+	const commit = async () => {
+		const next = value.trim();
+		if (!next || next === name) return setEditing(false);
+		setSaving(true);
+		try {
+			await onRename(next);
+		} finally {
+			setSaving(false);
+			setEditing(false);
+		}
+	};
+	if (editing)
+		return (
+			<Input
+				autoFocus
+				value={value}
+				maxLength={40}
+				disabled={saving}
+				aria-label="Nombre del agente"
+				className="h-7 min-w-0 flex-1 px-2 text-xs font-semibold"
+				onChange={(e) => setValue(e.target.value)}
+				onFocus={(e) => e.currentTarget.select()}
+				onBlur={() => void commit()}
+				onKeyDown={(e) => {
+					if (e.key === 'Enter') {
+						e.preventDefault();
+						void commit();
+					} else if (e.key === 'Escape') {
+						e.preventDefault();
+						e.stopPropagation(); // not the panel's Escape (closing it)
+						setValue(name);
+						setEditing(false);
+					}
+				}}
+			/>
+		);
+	return (
+		<h2 className="min-w-0 flex-1 text-xs font-semibold">
+			<button
+				type="button"
+				className="group/name -mx-1.5 flex max-w-full items-center gap-1.5 rounded-md px-1.5 py-1 text-left hover:bg-accent"
+				onClick={() => setEditing(true)}
+				title="Renombrar el agente"
+			>
+				<span className="truncate">{name}</span>
+				<Pencil
+					className="size-3 shrink-0 text-muted-foreground opacity-0 transition-opacity group-hover/name:opacity-100 group-focus-visible/name:opacity-100"
+					aria-hidden="true"
+				/>
+				<span className="sr-only">(renombrar)</span>
+			</button>
+		</h2>
 	);
 }
 function MessageText({ text }: TextMessagePartProps) {
@@ -144,7 +242,9 @@ function DesignMessage() {
 		<MessagePrimitive.Root className={`designer-message designer-message-${role}`}>
 			<span className="sr-only">{role === 'user' ? 'Tú' : 'IA'}</span>
 			<div className="designer-message-content">
-				<MessagePrimitive.Parts components={{ Text: MessageText }} />
+				<MessagePrimitive.Parts
+					components={{ Text: MessageText, Reasoning: ReasoningPart, tools: { Fallback: SearchCall } }}
+				/>
 			</div>
 			{files?.length ? (
 				<SentAttachments
@@ -152,6 +252,8 @@ function DesignMessage() {
 					href={(fileId) => `/api/designs/${sent!.designId}/files/${files.find((f) => f.name === fileId)?.id ?? ''}`}
 				/>
 			) : null}
+			{/* What it found goes right under the text that mentions it, before the round's questions. */}
+			{role === 'assistant' && <DesignFindings index={Number(id.split(':').at(-1))} />}
 			{role === 'assistant' && <InterviewCard index={Number(id.split(':').at(-1))} />}
 			{id === artifact.lastAssistant && <ArtifactCard />}
 			<CopyMessage />
@@ -173,7 +275,19 @@ export function DesignChat(props: Props) {
 		const saved: ThreadMessageLike[] = (design?.messages ?? []).map((m, i) => ({
 			id: `${design!.id}:${i}`,
 			role: m.role,
-			content: [{ type: 'text', text: m.content || (m.attachments?.length ? 'Archivos adjuntos' : '') }],
+			content: [
+				// Its reasoning (folded), then its searches as finished tool calls, then its answer.
+				...(m.reasoning ? [{ type: 'reasoning' as const, text: m.reasoning }] : []),
+				// The designer's searches, as finished tool calls before its answer.
+				...(m.searches ?? []).map((x, j) => ({
+					type: 'tool-call' as const,
+					toolCallId: `${design!.id}:${i}:${j}`,
+					toolName: x.tool,
+					args: { consulta: x.query },
+					result: { results: x.results, error: x.error },
+				})),
+				{ type: 'text' as const, text: m.content || (m.attachments?.length ? 'Archivos adjuntos' : '') },
+			],
 		}));
 		if (pending && (design?.version ?? 0) <= pending.version)
 			saved.push({ id: 'pending-user', role: 'user', content: [{ type: 'text', text: pending.text }] });
@@ -227,6 +341,22 @@ export function DesignChat(props: Props) {
 			setPending(null);
 		}
 	};
+	// «Usar para mejorar» a chat (hub, sidebar, the chat's menu): the composer starts citing it, so the
+	// designer gets what happened there; the owner finishes saying what went wrong.
+	const agentId = props.agent?.id;
+	useEffect(() => {
+		if (agentId === undefined) return;
+		const take = () => {
+			const chat = takeImproveRequest(agentId);
+			if (!chat) return;
+			const mention = `@[${chat.title.replace(/[[\]\n]/g, ' ').slice(0, 120)}](conversation:${chat.id})`;
+			runtime.thread.composer.setText(`${mention} Esto salió mal en esta conversación: `);
+			requestAnimationFrame(() => document.querySelector<HTMLElement>('#designer-message [contenteditable]')?.focus());
+		};
+		take();
+		window.addEventListener(IMPROVE_REQUEST, take);
+		return () => window.removeEventListener(IMPROVE_REQUEST, take);
+	}, [agentId, runtime]);
 	const sendFiles = () =>
 		runtime.thread.composer.getState().text.trim()
 			? runtime.thread.composer.send()
@@ -292,6 +422,7 @@ function DesignWorkspace(
 	useEffect(() => {
 		if (!wide && open) closeButton.current?.focus({ preventScroll: true });
 	}, [wide, open]);
+	const slide = useSlidePanel(open && !!artifact, () => setOpen(false));
 	const close = () => {
 		setOpen(false);
 		requestAnimationFrame(() => {
@@ -332,14 +463,15 @@ function DesignWorkspace(
 				<Button
 					type="button"
 					variant="outline"
-					size="icon-sm"
-					onClick={(e) => show(e.currentTarget)}
-					aria-label="Abrir contrato"
-					title="Abrir contrato"
+					size="sm"
+					onClick={(e) => (open ? close() : show(e.currentTarget))}
+					aria-label={open ? 'Cerrar contrato' : 'Abrir contrato'}
+					title={open ? 'Cerrar contrato' : 'Abrir contrato'}
 					aria-expanded={open}
 					aria-controls={open ? panelId : undefined}
 				>
 					<FileText aria-hidden="true" />
+					Contrato
 				</Button>
 			)}
 			{design && (
@@ -405,16 +537,15 @@ function DesignWorkspace(
 								Recuperando conversación…
 							</p>
 						)}
-						{working && (
-							<p role="status" className="designer-thinking">
-								<LoaderCircle className="size-4 animate-spin" aria-hidden="true" />
-								{props.validating || design?.validation_pending
-									? 'Probando el harness aislado…'
-									: design?.ready
-										? 'Procesando…'
-										: 'Pensando en la siguiente decisión…'}
-							</p>
-						)}
+						{working &&
+							(props.validating || design?.validation_pending ? (
+								<p role="status" className="designer-thinking">
+									<LoaderCircle className="size-4 animate-spin" aria-hidden="true" />
+									Probando el harness aislado…
+								</p>
+							) : (
+								<DesignerProgress progress={design?.progress} fallback="Enviando tu mensaje" />
+							))}
 					</div>
 					<div className="pointer-events-none sticky bottom-3 flex h-0 shrink-0 justify-center">
 						<ThreadPrimitive.ScrollToBottom asChild>
@@ -444,18 +575,16 @@ function DesignWorkspace(
 					>
 						{agent && <ReferencePopover mention={mention} />}
 						<AttachmentChips files={props.attach.files} onRemove={props.attach.remove} />
-						<ComposerPrimitive.Input
+						{/* Lexical instead of a textarea: a cited job or conversation is a chip here too. */}
+						<LexicalComposerInput
 							onPaste={props.attach.onPaste}
 							id="designer-message"
 							aria-label="Mensaje para la IA"
 							placeholder={agent ? 'Quiero mejorar…' : 'Describe el agente que necesitas…'}
-							className="designer-composer-input"
-							minRows={2}
-							maxRows={6}
-							maxLength={8000}
-							autoFocus={false}
+							className="designer-composer-input designer-composer-lexical"
+							formatter={referenceFormatter}
+							directiveChip={ComposerReferenceChip}
 							submitMode="enter"
-							addAttachmentOnPaste={false}
 						/>
 						<div className="designer-composer-actions">
 							<div className="flex min-w-0 flex-wrap items-center gap-2" aria-label="Opciones del prompt">
@@ -508,11 +637,16 @@ function DesignWorkspace(
 			}}
 		>
 			<div className="designer-artifact-header">
-				<FileText className="size-4 shrink-0 text-muted-foreground" aria-hidden="true" />
-				<h2 className="min-w-0 flex-1 truncate text-xs font-semibold">{artifact.name}</h2>
-				<Badge variant="outline">
-					{approved ? 'Aprobado' : design?.ready ? 'Listo para revisar' : design ? 'Borrador' : 'Vigente'}
-				</Badge>
+				{agent ? (
+					<Character seed={agent.seed} state="idle" size={24} still />
+				) : (
+					<FileText className="size-4 shrink-0 text-muted-foreground" aria-hidden="true" />
+				)}
+				<NameField
+					name={artifact.name}
+					editable={!!design?.contract && design.status === 'draft' && !working && !loading}
+					onRename={props.onRename}
+				/>
 				<Button
 					ref={closeButton}
 					variant="ghost"
@@ -526,20 +660,32 @@ function DesignWorkspace(
 			<Tabs value={preview} onValueChange={setPreview} className="min-h-0 flex-1 gap-0">
 				<div className="shrink-0 overflow-x-auto border-b px-4 py-2">
 					<TabsList aria-label="Vista del contrato">
-						<TabsTrigger value="contract">Contrato</TabsTrigger>
-						{design?.harness && (
-							<>
-								<TabsTrigger value="harness">Harness</TabsTrigger>
-								<TabsTrigger value="schedules">Horarios</TabsTrigger>
-								<TabsTrigger value="changes">Cambios</TabsTrigger>
-								<TabsTrigger value="tests">Pruebas</TabsTrigger>
-							</>
-						)}
-						<TabsTrigger value="effective">Prompt completo</TabsTrigger>
-						{agent && <TabsTrigger value="current">Vigente</TabsTrigger>}
+						{[
+							{ value: 'contract', label: 'Contrato', Icon: FileText, show: true },
+							{ value: 'harness', label: 'Harness', Icon: Blocks, show: !!design?.harness },
+							{ value: 'schedules', label: 'Horarios', Icon: CalendarClock, show: !!design?.harness },
+							{ value: 'tests', label: 'Pruebas', Icon: FlaskConical, show: !!design?.harness },
+							{ value: 'current', label: 'Vigente', Icon: History, show: !!agent },
+						]
+							.filter((t) => t.show)
+							.map(({ value, label, Icon }) => (
+								<TabsTrigger key={value} value={value} aria-label={label} title={label}>
+									<Icon aria-hidden="true" />
+									<span className="work-tab-label">{label}</span>
+								</TabsTrigger>
+							))}
 					</TabsList>
 				</div>
-				<ContractPreview value="contract" text={artifact.prompt} />
+				{/* The full prompt the agent receives (contract + platform rules + harness): read only. */}
+				<ContractPreview
+					value="contract"
+					text={design?.effectivePrompt ?? props.effectivePrompt ?? artifact.prompt}
+					notice={
+						approved
+							? undefined
+							: 'Es el prompt completo que recibirá el agente. Para cambiar el contrato, escribe tus observaciones en el chat.'
+					}
+				/>
 				{design?.harness && (
 					<>
 						<TabsContent value="harness" className="designer-preview">
@@ -549,7 +695,12 @@ function DesignWorkspace(
 								viewportProps={{ tabIndex: 0, 'aria-label': 'Contenido del harness' }}
 							>
 								<div className="designer-preview-content">
-									<HarnessPanel value={design.harness} />
+									<HarnessPanel
+										value={design.harness}
+										accesses={design.accessSuggestions}
+										onGrant={design.status === 'draft' && !working && !loading ? props.onGrant : undefined}
+										newAgent={!design.agent_id}
+									/>
 								</div>
 							</ScrollArea>
 						</TabsContent>
@@ -564,17 +715,6 @@ function DesignWorkspace(
 								</div>
 							</ScrollArea>
 						</TabsContent>
-						<TabsContent value="changes" className="designer-preview">
-							<ScrollArea
-								type="auto"
-								className="designer-preview-scroll"
-								viewportProps={{ tabIndex: 0, 'aria-label': 'Cambios propuestos' }}
-							>
-								<div className="designer-preview-content">
-									<HarnessChanges design={design} agent={agent} />
-								</div>
-							</ScrollArea>
-						</TabsContent>
 						<TabsContent value="tests" className="designer-preview">
 							<ScrollArea
 								type="auto"
@@ -583,6 +723,7 @@ function DesignWorkspace(
 							>
 								<div className="designer-preview-content">
 									<HarnessTests
+										checks={design.harnessChecks ?? []}
 										report={design.harness_validation}
 										version={design.version}
 										pending={props.validating || (working && design.validation_pending)}
@@ -592,14 +733,6 @@ function DesignWorkspace(
 						</TabsContent>
 					</>
 				)}
-				<ContractPreview
-					value="effective"
-					text={
-						design?.effectivePrompt ??
-						props.effectivePrompt ??
-						'Las reglas obligatorias aparecerán con la primera propuesta.'
-					}
-				/>
 				{agent && (
 					<ContractPreview
 						value="current"
@@ -607,59 +740,63 @@ function DesignWorkspace(
 					/>
 				)}
 			</Tabs>
+			{/* Only the actions: what they do and why one is disabled go in their tooltips. */}
 			<div className="designer-artifact-footer">
-				<p className="mb-3 text-xs text-muted-foreground">
-					{agent
-						? 'Aprueba contrato, modelo, harness y horarios. Se aplican en corridas nuevas; conservan conversación y memoria. No conceden accesos de plataforma.'
-						: 'Prueba y aprueba contrato, modelo, harness y horarios antes de inicializar. Conversar o probar no crea un agente.'}
-				</p>
 				{design?.harness && !approved && (
-					<Button
-						type="button"
-						variant="outline"
-						className="mb-2 w-full whitespace-normal"
-						onClick={() => {
-							setPreview('tests');
-							props.onValidate();
-						}}
-						disabled={testBlocked}
-					>
-						{props.validating || (working && design.validation_pending)
-							? 'Probando harness…'
-							: tested
-								? 'Volver a probar harness'
-								: 'Probar harness'}
-					</Button>
+					<Tooltip>
+						<TooltipTrigger asChild>
+							<span className="min-w-0 flex-1" tabIndex={testBlocked ? 0 : undefined}>
+								<Button
+									type="button"
+									variant="outline"
+									className="w-full"
+									onClick={() => {
+										setPreview('tests');
+										props.onValidate();
+									}}
+									disabled={testBlocked}
+								>
+									<FlaskConical aria-hidden="true" />
+									{props.validating || (working && design.validation_pending)
+										? 'Probando…'
+										: tested
+											? 'Volver a probar'
+											: 'Probar harness'}
+								</Button>
+							</span>
+						</TooltipTrigger>
+						<TooltipContent side="top" className="max-w-xs">
+							{text.trim()
+								? 'Tienes un mensaje sin enviar.'
+								: !design.ready
+									? 'Continúa la conversación para resolver las decisiones pendientes.'
+									: 'Prueba el harness de esta revisión en una computadora aislada.'}
+						</TooltipContent>
+					</Tooltip>
 				)}
-				<Button className="w-full whitespace-normal" onClick={props.onApprove} disabled={blocked}>
-					<Check className="size-4" aria-hidden="true" />
-					{agent ? 'Aprobar y aplicar mejora' : 'Aprobar e inicializar agente'}
-				</Button>
-				{design?.ready && !tested && !approved && (
-					<p className="mt-2 text-2xs text-muted-foreground">
-						Falta una prueba correcta de esta misma revisión antes de aprobar.
-					</p>
-				)}
-				{!design?.ready && !approved && (
-					<p className="mt-2 text-2xs text-muted-foreground">
-						Continúa la conversación para resolver las decisiones pendientes.
-					</p>
-				)}
-				{agent && !props.canApply && (
-					<p className="mt-2 text-2xs text-muted-foreground">
-						Puedes preparar la propuesta; para aplicarla, termina o cancela la corrida activa.
-					</p>
-				)}
-				{!!text.trim() && (
-					<p className="mt-2 text-2xs text-muted-foreground">
-						Tienes un mensaje sin enviar. Envíalo o bórralo antes de aprobar.
-					</p>
-				)}
-				{design && (
-					<p className="mt-3 text-2xs text-muted-foreground">
-						{design.tokens.toLocaleString('es-MX')} tokens · versión {design.version}
-					</p>
-				)}
+				<Tooltip>
+					<TooltipTrigger asChild>
+						<span className="min-w-0 flex-1" tabIndex={blocked ? 0 : undefined}>
+							<Button className="w-full" onClick={props.onApprove} disabled={blocked}>
+								<Check className="size-4" aria-hidden="true" />
+								{agent ? 'Aprobar y aplicar' : 'Aprobar e inicializar'}
+							</Button>
+						</span>
+					</TooltipTrigger>
+					<TooltipContent side="top" className="max-w-xs">
+						{text.trim()
+							? 'Tienes un mensaje sin enviar. Envíalo o bórralo antes de aprobar.'
+							: !design?.ready && !approved
+								? 'Continúa la conversación para resolver las decisiones pendientes.'
+								: design?.ready && !tested && !approved
+									? 'Falta una prueba correcta de esta misma revisión antes de aprobar.'
+									: agent && !props.canApply
+										? 'Para aplicarla, termina o cancela la corrida activa.'
+										: agent
+											? 'Aprueba contrato, modelo, harness y horarios. Se aplican en corridas nuevas; conservan conversación y memoria. No conceden accesos de plataforma.'
+											: 'Prueba y aprueba contrato, modelo, harness y horarios antes de inicializar. Conversar o probar no crea un agente.'}
+					</TooltipContent>
+				</Tooltip>
 			</div>
 		</section>
 	);
@@ -675,73 +812,115 @@ function DesignWorkspace(
 				unsent: !!text.trim(),
 			}}
 		>
-			<ArtifactContext.Provider value={link}>
-				<div ref={root} className="designer designer-page" data-artifact-open={open && !!artifact}>
-					{!agent && (
-						<header className="designer-toolbar">
-							{props.onBack && (
-								<Button variant="ghost" size="icon" onClick={props.onBack} aria-label="Volver a agentes">
-									<ArrowLeft />
-								</Button>
-							)}
-							<div className="min-w-0 flex-1">
-								<h1 className="sr-only text-sm sm:not-sr-only sm:truncate">Diseña tu agente</h1>
-							</div>
-						</header>
-					)}
-					{props.notice && (
-						<p role="status" className="shrink-0 border-b border-success/30 bg-success/5 px-4 py-3 text-xs">
-							{props.notice}
-						</p>
-					)}
-					{props.error && (
-						<div role="alert" className="designer-alert border-destructive/30 bg-destructive/5">
-							<span className="min-w-0 flex-1">{props.error}</span>
-							{/proveedor GPT|gateway GPT|CLIProxyAPI|API key|cuenta GPT/i.test(props.error) && (
-								<a href="#/settings" className="text-primary underline">
-									Ajustes de GPT
-								</a>
-							)}
-							<Button variant="outline" size="xs" onClick={props.onReload} disabled={working || loading}>
-								Recargar borrador
-							</Button>
-						</div>
-					)}
-					{design?.stale && (
-						<p role="alert" className="designer-alert border-warning/30 bg-warning-soft text-warning-on-soft">
-							El agente cambió desde que empezaste. Inicia una propuesta nueva para no sobrescribir su configuración.
-						</p>
-					)}
-					<div className="designer-workspace">
-						{wide ? (
-							<ResizablePanelGroup orientation="horizontal" id="design-workspace">
-								<ResizablePanel id="conversation" minSize="34%" defaultSize={open && artifact ? '50%' : '100%'}>
-									{conversation}
-								</ResizablePanel>
-								{open && contract && (
-									<>
-										<ResizableHandle
-											withHandle
-											className="designer-resize-handle bg-transparent focus-visible:bg-transparent focus-visible:ring-0"
-											aria-label="Redimensionar chat y contrato"
-										/>
-										<ResizablePanel id="contract" minSize="34%" maxSize="66%" defaultSize="50%">
-											{contract}
-										</ResizablePanel>
-									</>
+			<FindingsContext.Provider
+				value={
+					design && props.onFinding && props.onSecret
+						? {
+								messages: design.messages,
+								blocked: working || loading || approved,
+								decide: props.onFinding,
+								saveSecret: props.onSecret,
+							}
+						: null
+				}
+			>
+				<ArtifactContext.Provider value={link}>
+					<div ref={root} className="designer designer-page" data-artifact-open={open && !!artifact}>
+						{!agent && (
+							<header className="designer-toolbar">
+								{props.onBack && (
+									<Button variant="ghost" size="icon" onClick={props.onBack} aria-label="Volver a agentes">
+										<ArrowLeft />
+									</Button>
 								)}
-							</ResizablePanelGroup>
-						) : (
-							<>
-								<div className="h-full min-h-0" hidden={open && !!artifact} inert={open && !!artifact}>
-									{conversation}
+								<div className="min-w-0 flex-1">
+									<h1 className="sr-only text-sm sm:not-sr-only sm:truncate">Diseña tu agente</h1>
 								</div>
-								{open && contract}
-							</>
+							</header>
 						)}
+						{props.notice && (
+							<p role="status" className="shrink-0 border-b border-success/30 bg-success/5 px-4 py-3 text-xs">
+								{props.notice}
+							</p>
+						)}
+						{props.error && (
+							<div role="alert" className="designer-alert border-destructive/30 bg-destructive/5">
+								<span className="min-w-0 flex-1">{props.error}</span>
+								{/proveedor GPT|gateway GPT|CLIProxyAPI|API key|cuenta GPT/i.test(props.error) && (
+									<a href="#/settings" className="text-primary underline">
+										Ajustes de GPT
+									</a>
+								)}
+								<Button variant="outline" size="xs" onClick={props.onReload} disabled={working || loading}>
+									Recargar borrador
+								</Button>
+							</div>
+						)}
+						{design?.stale && (
+							<p role="alert" className="designer-alert border-warning/30 bg-warning-soft text-warning-on-soft">
+								El agente cambió desde que empezaste. Inicia una propuesta nueva para no sobrescribir su configuración.
+							</p>
+						)}
+						<div className="designer-workspace">
+							{wide && artifact && !open && (
+								// Where the contract's own close button was: open it again from the same spot.
+								<IconButton
+									icon={PanelRightOpen}
+									label="Abrir contrato"
+									aria-expanded={false}
+									className="panel-reopen designer-panel-reopen"
+									onClick={(e) => show(e.currentTarget)}
+								/>
+							)}
+							{wide ? (
+								<ResizablePanelGroup
+									orientation="horizontal"
+									id="design-workspace"
+									className="slide-split"
+									data-animating={slide.animating}
+								>
+									<ResizablePanel id="conversation" minSize="34%">
+										{conversation}
+									</ResizablePanel>
+									{contract && (
+										<>
+											<ResizableHandle
+												withHandle
+												hidden={!open}
+												disabled={!open}
+												className="designer-resize-handle bg-transparent focus-visible:bg-transparent focus-visible:ring-0"
+												aria-label="Redimensionar chat y contrato"
+											/>
+											{/* Stays mounted and slides open and closed. */}
+											<ResizablePanel
+												id="contract"
+												panelRef={slide.ref}
+												minSize="34%"
+												maxSize="66%"
+												defaultSize="50%"
+												collapsible
+												collapsedSize={0}
+												onResize={slide.onResize}
+											>
+												<div className="h-full min-w-0" inert={!open} aria-hidden={!open}>
+													{contract}
+												</div>
+											</ResizablePanel>
+										</>
+									)}
+								</ResizablePanelGroup>
+							) : (
+								<>
+									<div className="h-full min-h-0" hidden={open && !!artifact} inert={open && !!artifact}>
+										{conversation}
+									</div>
+									{open && contract}
+								</>
+							)}
+						</div>
 					</div>
-				</div>
-			</ArtifactContext.Provider>
+				</ArtifactContext.Provider>
+			</FindingsContext.Provider>
 		</InterviewContext.Provider>
 	);
 }

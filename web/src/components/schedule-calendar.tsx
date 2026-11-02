@@ -9,7 +9,14 @@ import esLocale from '@fullcalendar/core/locales/es';
 import type { DatesSetArg } from '@fullcalendar/core';
 import { DateTime } from 'luxon';
 import { CalendarDays, ChevronLeft, ChevronRight, Plus } from 'lucide-react';
-import { cronFromDraft, expandSchedules, type Schedule, type ScheduleDraft } from '@/lib/schedules';
+import {
+	cronFromDraft,
+	expandSchedules,
+	nextRuns,
+	zoneLabel,
+	type Schedule,
+	type ScheduleDraft,
+} from '@/lib/schedules';
 import { Button } from '@/components/ui/button';
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from '@/components/ui/dialog';
 import { Input } from '@/components/ui/input';
@@ -19,10 +26,22 @@ import { OptionSelect } from '@/components/option-select';
 type Props = {
 	schedules: Schedule[];
 	timezone: string;
-	add: (cron: string, message: string) => Promise<string | null>;
-	toggle: (schedule: Schedule) => Promise<string | null>;
-	remove: (schedule: Schedule) => Promise<string | null>;
+	add?: (cron: string, message: string) => Promise<string | null>;
+	toggle?: (schedule: Schedule) => Promise<string | null>;
+	remove?: (schedule: Schedule) => Promise<string | null>;
+	/** A proposal (the designer's): only the agenda and each schedule's prompt, nothing to change. */
+	readOnly?: boolean;
+	height?: number;
 };
+const when = (d: Date, timezone: string) =>
+	d.toLocaleString('es-MX', {
+		timeZone: timezone,
+		weekday: 'short',
+		day: 'numeric',
+		month: 'short',
+		hour: '2-digit',
+		minute: '2-digit',
+	});
 const views = [
 	{ id: 'dayGridMonth', label: 'Mes' },
 	{ id: 'timeGridWeek', label: 'Semana' },
@@ -38,7 +57,7 @@ const days = [
 	{ id: 0, label: 'Domingo' },
 ];
 
-export function ScheduleCalendar({ schedules, timezone, add, toggle, remove }: Props) {
+export function ScheduleCalendar({ schedules, timezone, add, toggle, remove, readOnly = false, height = 480 }: Props) {
 	const calendar = useRef<FullCalendar>(null);
 	const container = useRef<HTMLDivElement>(null);
 	const [view, setView] = useState(() => (window.innerWidth < 768 ? 'listWeek' : 'timeGridWeek'));
@@ -109,21 +128,23 @@ export function ScheduleCalendar({ schedules, timezone, add, toggle, remove }: P
 						Agenda de horarios
 					</h2>
 					<p className="mt-1 text-xs text-muted-foreground">
-						{timezone} · Cada bloque marca un disparo, no la duración de una tarea.
+						{zoneLabel(timezone)} · Cada bloque marca un disparo, no la duración de una tarea.
 					</p>
 				</div>
-				<Button
-					size="sm"
-					onClick={() =>
-						setCreation({
-							date: DateTime.now().setZone(timezone).set({ hour: 9, minute: 0 }).toISO()!,
-							fromCalendar: false,
-						})
-					}
-				>
-					<Plus aria-hidden="true" />
-					Nuevo horario
-				</Button>
+				{!readOnly && (
+					<Button
+						size="sm"
+						onClick={() =>
+							setCreation({
+								date: DateTime.now().setZone(timezone).set({ hour: 9, minute: 0 }).toISO()!,
+								fromCalendar: false,
+							})
+						}
+					>
+						<Plus aria-hidden="true" />
+						Nuevo horario
+					</Button>
+				)}
 			</div>
 			<div className="schedule-toolbar mb-3 flex flex-wrap items-center gap-2">
 				<Button
@@ -170,7 +191,7 @@ export function ScheduleCalendar({ schedules, timezone, add, toggle, remove }: P
 					headerToolbar={false}
 					datesSet={datesSet}
 					events={preview.events}
-					height={480}
+					height={height}
 					firstDay={1}
 					fixedWeekCount={false}
 					allDaySlot={false}
@@ -184,11 +205,18 @@ export function ScheduleCalendar({ schedules, timezone, add, toggle, remove }: P
 					scrollTime="08:00:00"
 					slotLabelFormat={{ hour: '2-digit', minute: '2-digit', hour12: false }}
 					eventTimeFormat={{ hour: '2-digit', minute: '2-digit', hour12: false }}
-					dateClick={(info) => setCreation({ date: info.dateStr, fromCalendar: true })}
-					eventClick={(info) => inspect(info.event.extendedProps.scheduleName)}
+					dateClick={readOnly ? undefined : (info) => setCreation({ date: info.dateStr, fromCalendar: true })}
+					eventClick={(info) =>
+						readOnly
+							? document.getElementById(`schedule-${info.event.extendedProps.scheduleName}`)?.scrollIntoView({
+									behavior: 'smooth',
+									block: 'nearest',
+								})
+							: inspect(info.event.extendedProps.scheduleName)
+					}
 				/>
 			</div>
-			<p className="mt-3 text-2xs text-muted-foreground">
+			<p className="mt-3 text-2xs text-muted-foreground" hidden={readOnly}>
 				Haz clic en una fecha/hora para crear un horario o usa Nuevo horario. Las recurrencias se ejecutan con cron de
 				DBOS; no se arrastran ni tienen excepciones por ocurrencia. Los horarios en pausa se muestran sólo como
 				referencia.
@@ -204,27 +232,48 @@ export function ScheduleCalendar({ schedules, timezone, add, toggle, remove }: P
 					No se pudo proyectar {preview.invalid.length} horario(s). Sus reglas se conservan en la lista; revisa el cron.
 				</p>
 			)}
-			<div className="mt-4 grid min-w-0 gap-2" aria-label="Horarios guardados">
-				{schedules.length ? (
-					schedules.map((schedule) => (
-						<Button
-							key={schedule.name}
-							variant="outline"
-							className="h-auto! justify-start whitespace-normal px-3 py-3 text-left"
-							onClick={() => inspect(schedule.name)}
-						>
-							<span className="min-w-0">
-								<span className="block break-words font-medium">{schedule.message}</span>
-								<span className="mt-1 block break-words text-2xs text-muted-foreground">
-									{schedule.status === 'PAUSED' ? 'En pausa' : 'Activo'} · <code>{schedule.cron}</code>
+			{readOnly ? (
+				<ul className="mt-4 grid min-w-0 gap-3" aria-label="Horarios propuestos">
+					{schedules.map((s) => (
+						<li key={s.name} id={`schedule-${s.name}`} className="min-w-0 rounded-lg border p-3 text-xs">
+							<p className="flex flex-wrap items-baseline gap-x-2 gap-y-1">
+								<code className="font-medium">{s.cron}</code>
+								{s.status === 'PAUSED' && <span className="text-muted-foreground">en pausa</span>}
+							</p>
+							<p className="mt-1 text-2xs text-muted-foreground">
+								Próximas:{' '}
+								{nextRuns(s.cron, 3, timezone)
+									.map((d) => when(d, timezone))
+									.join(' · ') || 'no se pudo calcular'}
+							</p>
+							<p className="mt-3 mb-1 text-2xs font-medium text-muted-foreground">Prompt</p>
+							<p className="whitespace-pre-wrap break-words">{s.message}</p>
+						</li>
+					))}
+				</ul>
+			) : (
+				<div className="mt-4 grid min-w-0 gap-2" aria-label="Horarios guardados">
+					{schedules.length ? (
+						schedules.map((schedule) => (
+							<Button
+								key={schedule.name}
+								variant="outline"
+								className="h-auto! justify-start whitespace-normal px-3 py-3 text-left"
+								onClick={() => inspect(schedule.name)}
+							>
+								<span className="min-w-0">
+									<span className="block break-words font-medium">{schedule.message}</span>
+									<span className="mt-1 block break-words text-2xs text-muted-foreground">
+										{schedule.status === 'PAUSED' ? 'En pausa' : 'Activo'} · <code>{schedule.cron}</code>
+									</span>
 								</span>
-							</span>
-						</Button>
-					))
-				) : (
-					<p className="muted text-xs">Todavía no hay horarios. Crea el primero en la agenda.</p>
-				)}
-			</div>
+							</Button>
+						))
+					) : (
+						<p className="muted text-xs">Todavía no hay horarios. Crea el primero en la agenda.</p>
+					)}
+				</div>
+			)}
 			<Dialog
 				open={!!creation}
 				onOpenChange={(value) => {
@@ -243,11 +292,11 @@ export function ScheduleCalendar({ schedules, timezone, add, toggle, remove }: P
 					<DialogHeader>
 						<DialogTitle>Nuevo horario</DialogTitle>
 						<DialogDescription>
-							Se repetirá en {timezone} a partir de guardar. La fecha elegida indica el día de recurrencia, no una
-							primera ejecución diferida. Si está ocupado, entrará como seguimiento.
+							Se repetirá en {zoneLabel(timezone)} a partir de guardar. La fecha elegida indica el día de recurrencia,
+							no una primera ejecución diferida. Si está ocupado, entrará como seguimiento.
 						</DialogDescription>
 					</DialogHeader>
-					{creation && (
+					{creation && add && (
 						<ScheduleForm
 							key={creation.date}
 							date={creation.date}
@@ -285,7 +334,7 @@ export function ScheduleCalendar({ schedules, timezone, add, toggle, remove }: P
 						<div className="grid min-w-0 gap-4">
 							<p className="whitespace-pre-wrap break-words">{schedule.message}</p>
 							<p className="text-xs text-muted-foreground">
-								{schedule.status === 'PAUSED' ? 'En pausa' : 'Activo'} · {schedule.timezone || timezone}
+								{schedule.status === 'PAUSED' ? 'En pausa' : 'Activo'} · {zoneLabel(schedule.timezone || timezone)}
 								<br />
 								<code className="break-words">{schedule.cron}</code>
 							</p>
@@ -309,7 +358,7 @@ export function ScheduleCalendar({ schedules, timezone, add, toggle, remove }: P
 											variant="destructive"
 											size="sm"
 											disabled={busy}
-											onClick={() => void perform(() => remove(schedule))}
+											onClick={() => void perform(() => remove!(schedule))}
 										>
 											Confirmar eliminación
 										</Button>
@@ -317,7 +366,7 @@ export function ScheduleCalendar({ schedules, timezone, add, toggle, remove }: P
 								</div>
 							) : (
 								<div className="flex flex-wrap justify-between gap-2">
-									<Button variant="outline" disabled={busy} onClick={() => void perform(() => toggle(schedule))}>
+									<Button variant="outline" disabled={busy} onClick={() => void perform(() => toggle!(schedule))}>
 										{schedule.status === 'PAUSED' ? 'Reanudar horario' : 'Pausar horario'}
 									</Button>
 									<Button variant="danger-ghost" disabled={busy} onClick={() => setDeleting(true)}>
@@ -344,7 +393,7 @@ function ScheduleForm({
 	date: string;
 	fromCalendar: boolean;
 	timezone: string;
-	add: Props['add'];
+	add: NonNullable<Props['add']>;
 	onDone: () => void;
 	onBusy: (value: boolean) => void;
 }) {
@@ -386,9 +435,9 @@ function ScheduleForm({
 				}
 			}}
 		>
-			<fieldset disabled={busy} className="grid min-w-0 gap-4">
-				<label>
-					Repetir
+			<fieldset disabled={busy} className="field-list min-w-0">
+				<label className="field">
+					<span>Repetir</span>
 					<OptionSelect
 						label="Repetir horario"
 						value={frequency}
@@ -404,8 +453,8 @@ function ScheduleForm({
 					/>
 				</label>
 				{frequency !== 'custom' && (
-					<label>
-						Hora
+					<label className="field">
+						<span>Hora</span>
 						<Input
 							aria-label="Hora del horario"
 							type="time"
@@ -416,8 +465,8 @@ function ScheduleForm({
 					</label>
 				)}
 				{frequency === 'weekly' && (
-					<fieldset>
-						<legend className="mb-2 text-xs font-medium">Días de la semana</legend>
+					<div className="field" role="group" aria-labelledby="schedule-days">
+						<span id="schedule-days">Días de la semana</span>
 						<div className="flex flex-wrap gap-2">
 							{days.map((day) => (
 								<Button
@@ -438,11 +487,11 @@ function ScheduleForm({
 								</Button>
 							))}
 						</div>
-					</fieldset>
+					</div>
 				)}
 				{frequency === 'monthly' && (
-					<label>
-						Día del mes
+					<label className="field">
+						<span>Día del mes</span>
 						<Input
 							type="number"
 							min={1}
@@ -451,12 +500,14 @@ function ScheduleForm({
 							onChange={(event) => setMonthDay(event.target.valueAsNumber)}
 							required
 						/>
-						<span className="text-2xs text-muted-foreground">Si el mes no tiene ese día, no se dispara ese mes.</span>
+						<span className="field-hint text-2xs text-muted-foreground">
+							Si el mes no tiene ese día, no se dispara ese mes.
+						</span>
 					</label>
 				)}
 				{frequency === 'custom' && (
-					<label>
-						Expresión cron
+					<label className="field">
+						<span>Expresión cron</span>
 						<Input
 							value={custom}
 							onChange={(event) => setCustom(event.target.value)}
@@ -465,8 +516,8 @@ function ScheduleForm({
 						/>
 					</label>
 				)}
-				<label>
-					Mensaje del horario
+				<label className="field">
+					<span>Mensaje del horario</span>
 					<Textarea
 						aria-label="Mensaje del horario"
 						value={message}
@@ -484,7 +535,7 @@ function ScheduleForm({
 				</p>
 			) : (
 				<p className="text-2xs text-muted-foreground">
-					Regla resultante: <code>{cron}</code> · {timezone}
+					Regla resultante: <code>{cron}</code> · {zoneLabel(timezone)}
 				</p>
 			)}
 			{error && (

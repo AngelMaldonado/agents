@@ -1,6 +1,6 @@
 {
 	"publicationEnabled": true,
-	"deploymentEnabled": false,
+	"deploymentEnabled": true,
 	"baseline": "0.0.1-beta",
 	"repository": "AngelMaldonado/agents",
 	"workBranch": "wip",

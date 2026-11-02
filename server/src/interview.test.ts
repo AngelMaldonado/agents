@@ -1,6 +1,9 @@
 import { expect, test } from 'bun:test';
 import {
 	canReview,
+	CONFIRM_QUESTION,
+	DELIVERABLE_QUESTION,
+	finalRound,
 	FALLBACK_QUESTIONS,
 	interview,
 	interviewReply,
@@ -31,6 +34,45 @@ test('a model cannot skip the human interview, even with a complete contract and
 	expect(gated.questions.length).toBe(1);
 	expect(canReview({ messages: asked })).toBe(false);
 });
+test("the last round is the platform's: the deliverable and, for a new agent, the confirmation", () => {
+	const answered: InterviewMessage[] = [...asked, { role: 'user', content: 'ok', answers: { round: 1, values } }];
+	const final = finalRound({ messages: answered });
+	expect(final.map((q) => q.id)).toEqual(['entregable', 'confirmar']);
+	expect(DELIVERABLE_QUESTION.options.map((o) => o.label)).toEqual(['HTML', 'Markdown']); // + «Otra respuesta» in the UI
+	const last = interviewReply(answered, reply, final);
+	expect(last.ready).toBe(false);
+	expect(last.contract).toBeNull();
+	expect(last.questions as unknown[]).toEqual([DELIVERABLE_QUESTION, CONFIRM_QUESTION]);
+	expect(last.message).toContain('elige qué entregable');
+	expect(canReview({ messages: answered })).toBe(false);
+	const done = (confirm: string): InterviewMessage[] => [
+		...answered,
+		{ role: 'assistant', content: last.message, questions: last.questions, questionRound: 2 },
+		{
+			role: 'user',
+			content: 'Otro',
+			answers: {
+				round: 2,
+				values: {
+					entregable: { selected: ['other'], other: 'Un reporte por WhatsApp cada mañana' },
+					confirmar: { selected: [confirm], other: '' },
+				},
+			},
+		},
+	];
+	expect(finalRound({ messages: done('si') })).toEqual([]);
+	expect(interviewReply(done('si'), reply, [])).toEqual(reply);
+	expect(canReview({ messages: done('si') })).toBe(true);
+	// «Falta algo»: the designer keeps asking, and the confirmation comes back (the deliverable does not).
+	expect(finalRound({ messages: done('falta') }).map((q) => q.id)).toEqual(['confirmar']);
+	// Improving an agent whose contract already defines its deliverable: no platform round.
+	expect(
+		finalRound({ messages: answered, agent_id: 7, contract: { prompt: '# Rol\n\n## Entregable\nHTML.' } }),
+	).toEqual([]);
+	expect(finalRound({ messages: answered, agent_id: 7, contract: { prompt: '# Rol' } }).map((q) => q.id)).toEqual([
+		'entregable',
+	]);
+});
 test('unanswered questions and plain yes/chat cannot be mistaken for submitted answers', () => {
 	expect(interviewReply([...asked, { role: 'user', content: 'Sí. ¿Pero cómo funciona?' }], reply).ready).toBe(false);
 	expect(interview(asked).pending?.round).toBe(1);
@@ -45,7 +87,9 @@ test('only complete validated answers close a round; one round need not end the 
 	const messages: InterviewMessage[] = [...asked, { role: 'user', ...answer }];
 	expect(answer.content).toContain('Mi prompt ya define el alcance');
 	expect(interview(messages)).toEqual({ completed: 1, pending: null });
-	expect(canReview({ messages })).toBe(true);
+	// An improvement whose agent already defines its deliverable: one round is enough.
+	expect(canReview({ messages, agent_id: 3, contract: { prompt: '## Entregable\nMarkdown' } })).toBe(true);
+	expect(canReview({ messages })).toBe(false); // a new agent also answers the platform's last round
 	expect(interviewReply(messages, reply)).toEqual(reply);
 	const more = interviewReply(messages, { ...reply, questions });
 	expect(more.contract).toBeNull();

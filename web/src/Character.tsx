@@ -206,11 +206,26 @@ function draw(ctx: CanvasRenderingContext2D, seed: string, state: CharState, t: 
 	}
 }
 
-export function Character({ seed, state, size = 128 }: { seed: string; state: CharState; size?: number }) {
+/** still: one frame, no animation loop (lists with many characters, like the sidebar). */
+export function Character({
+	seed,
+	state,
+	size = 128,
+	still = false,
+}: {
+	seed: string;
+	state: CharState;
+	size?: number;
+	still?: boolean;
+}) {
 	const ref = useRef<HTMLCanvasElement>(null);
 	useEffect(() => {
 		const ctx = ref.current?.getContext('2d');
 		if (!ctx) return;
+		if (still) {
+			draw(ctx, seed, state, 0);
+			return;
+		}
 		let raf = 0;
 		const loop = (t: number) => {
 			draw(ctx, seed, state, t);
@@ -218,7 +233,7 @@ export function Character({ seed, state, size = 128 }: { seed: string; state: Ch
 		};
 		raf = requestAnimationFrame(loop);
 		return () => cancelAnimationFrame(raf);
-	}, [seed, state]);
+	}, [seed, state, still]);
 	return (
 		<canvas
 			ref={ref}

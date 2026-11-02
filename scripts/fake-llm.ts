@@ -7,6 +7,7 @@
 //   [blocked]     gets stuck and asks for help        [vault]       logs in with "local-test"
 //   [cookie-set]  leaves a cookie on example.com      [cookie-get]  shows example.com's cookies
 //   [texto]       answers without tools or files    [lento]       ~20 s of work (to get messages mid-run)
+//   [proxy]       curls httpbin.org with $TEST_KEY (the egress proxy of API keys, #24)
 //   [adjunto]     reads the attachments in ~/work/in/
 //   "anota el número N"  writes N to ~/work/nota.txt
 //   "qué número anotaste"  reads it back and quotes what the conversation says
@@ -29,6 +30,16 @@ const SCRIPTS: { match: RegExp; steps: Step[] }[] = [
 				bash: `mkdir -p ~/site && printf '%s' '<html><body style="margin:0;background:#123"><div style="width:200px;height:200px;margin:100px;background:#e84;animation:s 1s linear infinite"></div><style>@keyframes s{to{transform:rotate(360deg)}}</style></body></html>' > ~/site/anim.html && (cd ~/site && nohup python3 -m http.server 8001 >/dev/null 2>&1 &) && sleep 1 && agent-browser open http://localhost:8001/anim.html && sleep 40 && echo listo`,
 			},
 			{ text: 'Miré la animación 40 s.' },
+		],
+	},
+	{
+		// The egress proxy (#24): a granted TEST_KEY bound to httpbin.org; httpbin echoes what arrived.
+		match: /\[proxy\]/,
+		steps: [
+			{
+				bash: 'echo "variable: ${TEST_KEY:0:4}…"; [ -n "$HTTPS_PROXY" ] && echo "con proxy"; curl -s https://httpbin.org/headers -H "Authorization: Bearer $TEST_KEY" | grep -i \'"authorization"\'',
+			},
+			{ text: (c) => `Resultado del proxy:\n\n\`\`\`\n${c.lastOutput.trim()}\n\`\`\`` },
 		],
 	},
 	{
@@ -180,11 +191,13 @@ function sse(events: unknown[]) {
 	return events.map((e: any) => `event: ${e.type}\ndata: ${JSON.stringify(e)}\n\n`).join('');
 }
 
+// `just dev` runs it next to the real CLIProxyAPI (which keeps 8317), on FAKE_LLM_PORT.
+const PORT = Number(process.env.FAKE_LLM_PORT ?? 8317);
 let seq = 0;
 Bun.serve({
-	port: 8317,
+	port: PORT,
 	async fetch(req) {
-		// Also plays a person's own CLIProxyAPI in Ajustes: URL http://fake-llm:8317, key fake-proxy-key.
+		// Also plays a person's own CLIProxyAPI in Ajustes: URL http://127.0.0.1:8318 in `just dev`, key fake-proxy-key.
 		if (req.url.endsWith('/v1/models')) {
 			if (req.headers.get('authorization') !== 'Bearer fake-proxy-key')
 				return Response.json({ error: 'bad key' }, { status: 401 });
@@ -272,4 +285,4 @@ Bun.serve({
 		return new Response(sse(ev), { headers: { 'content-type': 'text/event-stream' } });
 	},
 });
-console.log('fake LLM (OpenAI Responses) on :8317');
+console.log(`fake LLM (OpenAI Responses) on :${PORT}`);
