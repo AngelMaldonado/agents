@@ -140,6 +140,29 @@ try {
 		if (prs.length !== 1) throw new Error('No hay una PR inequívoca.');
 		const pr = prs[0];
 		emit(`PR ${pr.url}\n`);
+		// A PR just created or pushed has no checks for a few seconds, and `gh pr checks --watch` fails
+		// right away on «no checks reported» instead of waiting: wait until GitHub registers them.
+		for (let attempt = 0; ; attempt++) {
+			const count = await command(
+				'gh',
+				[
+					'pr',
+					'view',
+					String(pr.number),
+					'--repo',
+					config.repository,
+					'--json',
+					'statusCheckRollup',
+					'--jq',
+					'.statusCheckRollup | length',
+				],
+				true,
+			);
+			if (Number(count) > 0) break;
+			if (attempt >= 36) throw new Error('GitHub no registró checks de la PR en 3 minutos; revisa Actions.');
+			if (attempt === 0) emit('Esperando a que GitHub registre los checks…\n');
+			await new Promise((done) => setTimeout(done, 5000));
+		}
 		await command('gh', [
 			'pr',
 			'checks',
