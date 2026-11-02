@@ -162,8 +162,11 @@ const fake = Bun.serve({
 			return Response.json({ data: [{ id: 'gpt-6-sol' }, { id: 'gpt-6.1-sol' }] });
 		if (new URL(req.url).pathname !== '/v1/responses') return new Response(null, { status: 404 });
 		const body = (await req.json()) as any;
-		if (body.stream) return businessResponse(body);
-		assert.equal(body.tools.length, 0);
+		// The designer streams too and may offer its registry searches (#26): it is told apart by the
+		// structured reply it asks for. It gets plain JSON, which the server also reads.
+		const designer = body.text?.format?.name === 'agent_contract';
+		if (!designer) return businessResponse(body);
+		assert((body.tools ?? []).every((t: any) => ['buscar_mcp', 'buscar_cli', 'buscar_skills'].includes(t.name)));
 		requests++;
 		return Response.json({
 			status: 'completed',
