@@ -98,3 +98,21 @@ test('the designer distinguishes provisioning, harness approval and implementati
 	expect(skill).toContain('ni garantiza que una integración o una dependencia externa funcione');
 	expect(skill).not.toContain('No prometas código generado de plugins, instalaciones externas');
 });
+
+test('the designer chooses the agent memory by the kind of data', () => {
+	const skill = readFileSync(new URL('../skills/grill-me.md', import.meta.url), 'utf8');
+	expect(skill).toContain('## Memoria del agente');
+	expect(skill).toContain('**La conversación no es memoria confiable.**');
+	for (const option of ['**Sin memoria**', '**Sólo Markdown**', '**Sólo SQLite**', '**Ambos**'])
+		expect(skill).toContain(option);
+	expect(skill).toContain('**Requiere bash.**');
+	expect(skill).toContain('la imagen no trae la CLI `sqlite3`');
+	expect(skill).toContain('`VACUUM INTO`');
+	expect(skill).toContain('encabezado exacto `## Memoria`');
+	expect(skill).toContain('sin respaldo externo');
+	// Automejora: the memory already holds the owner's data.
+	expect(skill).toContain('En mejora (Automejora), la memoria ya existe y tiene datos');
+	expect(skill).toContain('**Migrar sin perder datos.**');
+	expect(skill).toContain('Nunca indiques borrar archivos o tablas con datos del dueño');
+	expect(skill).toContain('**No puedes ver `~/work`**');
+});
