@@ -247,6 +247,8 @@ try {
 				AGENTS_DATABASE_URL: url.href,
 				AGENTS_DATA: dir,
 				AGENTS_INSTANCE: instance,
+				// No image keepers for a throwaway instance (they would stay on the host after the run).
+				AGENTS_KEEP_IMAGES: '0',
 				AGENTS_MASTER_KEY: masterKey,
 				AGENTS_PROXY_KEY: 'fixture-internal-key-not-a-secret',
 				AGENTS_WHATSAPP_URL: 'http://127.0.0.1:9',
@@ -1014,6 +1016,9 @@ try {
 	try {
 		for (const c of (await docker(`/containers/json?all=true&filters=${filter}`)) ?? [])
 			if (c.Labels?.['agents.instance'] === instance) await docker(`/containers/${c.Id}?force=true&v=true`, 'DELETE');
+		const keepers = encodeURIComponent(JSON.stringify({ label: [`agents.keep=${instance}`] }));
+		for (const c of (await docker(`/containers/json?all=true&filters=${keepers}`)) ?? [])
+			if (c.Labels?.['agents.keep'] === instance) await docker(`/containers/${c.Id}?force=true`, 'DELETE');
 		for (const v of (await docker(`/volumes?filters=${filter}`))?.Volumes ?? [])
 			if (v.Labels?.['agents.instance'] === instance)
 				await docker(`/volumes/${encodeURIComponent(v.Name)}?force=true`, 'DELETE');
