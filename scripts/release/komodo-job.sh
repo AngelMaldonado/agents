@@ -13,7 +13,7 @@ source .git/agents-release.env
 set +a
 # The read-only repo mount must never expose the signing envfile to build/verify.
 rm -f .git/agents-release.env
-case "${AGENTS_RELEASE_COMPONENT:?}" in agents-app|agents-sandbox) ;; *) exit 2 ;; esac
+case "${AGENTS_RELEASE_COMPONENT:?}" in agents-app|agents-sandbox|agents-proxy) ;; *) exit 2 ;; esac
 : "${AGENTS_RELEASE_TOOLS_IMAGE:?Imagen inmutable obligatoria}"
 if ! [[ "$AGENTS_RELEASE_TOOLS_IMAGE" =~ ^registry\.cubytest\.space/cuby/agents-release-tools@sha256:[a-f0-9]{64}$ ]]; then
   echo 'Tools image requiere referencia del registry aprobado por digest, no ID local ni tag.' >&2

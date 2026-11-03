@@ -84,6 +84,9 @@ async function describe() {
 	return { title, body };
 }
 
+/** Nothing to do (wip already in main): said plainly, not as an error. */
+class NothingToRelease extends Error {}
+
 let fd, lock, work;
 try {
 	emit(`Agents release · ${config.platform} · logs ${logfile}\n`);
@@ -103,6 +106,12 @@ try {
 			throw new Error('Hay cambios sin commit; no se corrigen ni confirman automáticamente.');
 		if ((await command('git', ['branch', '--show-current'], true)) !== config.workBranch)
 			throw new Error('Ejecuta desde wip.');
+		// Before ten minutes of tests: with nothing in wip that main lacks there is no PR to open.
+		await command('git', ['fetch', '--quiet', 'origin', config.releaseBranch]);
+		if (Number(await command('git', ['rev-list', '--count', `origin/${config.releaseBranch}..HEAD`], true)) === 0)
+			throw new NothingToRelease(
+				`wip no tiene commits nuevos sobre ${config.releaseBranch}: nada que integrar ni publicar (la última release ya lo trae).`,
+			);
 		await command('gh', ['auth', 'status']);
 		if (
 			(await command('gh', ['variable', 'get', 'AGENTS_RELEASE_ENABLED', '--repo', config.repository], true)) !== 'true'
@@ -287,10 +296,13 @@ try {
 		await command('node', [resolve(work, 'scripts/release/publish.mjs')], false, { cwd: work, env });
 	}
 } catch (error) {
-	emit(
-		`ERROR: ${error.message}\nSe detiene. Merge/artefactos publicados no se revierten. Revisa GitHub y los IDs Komodo antes de reintentar.\n`,
-	);
-	process.exitCode = 1;
+	if (error instanceof NothingToRelease) emit(`${error.message}\n`);
+	else {
+		emit(
+			`ERROR: ${error.message}\nSe detiene. Merge/artefactos publicados no se revierten. Revisa GitHub y los IDs Komodo antes de reintentar.\n`,
+		);
+		process.exitCode = 1;
+	}
 } finally {
 	if (work) {
 		const records = resolve(work, '.release');

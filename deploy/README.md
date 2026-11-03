@@ -4,6 +4,8 @@
 2. Komodo → stack `agents` → **Pull** y luego **Deploy** (con `poll_for_updates`, Komodo avisa cuando `:beta` cambió). Las migraciones corren al arrancar.
 3. Verificar `https://agents.cubytest.space/healthz`: versión y SHA vienen dentro de la imagen.
 
+Proxy de salida de las API keys (#24, desde v0.0.6-beta): la release publica también `agents-proxy:beta` (Repo `agents-proxy` en Komodo, con Write para `agents-release`). Para activarlo una vez: `just prod proxyca` genera en `.env.production` (0600, sin mostrar valores) la CA y el secreto; cópialos al Environment del stack como `AGENTS_PROXY_CA_PEM_B64`, `AGENTS_PROXY_CA_CERT_B64` y `AGENTS_PROXY_SECRET`, y el compose ya trae el servicio `proxy` y las tres variables del servidor. Sin esas variables el stack no arranca (`:?`), así que van antes del Deploy. No regeneres la CA: los sandboxes confían en ella.
+
 Rollback: `just release promote <versión>` vuelve a apuntar `:beta` a esa release (verifica las firmas otra vez) y luego Pull + Deploy. El compose del stack es [`agents.compose.yaml`](agents.compose.yaml) y no cambia entre releases. Los agentes siguen en la imagen exacta con la que se validaron; la imagen del sandbox de Administración sólo se guarda si un admin pone otra distinta.
 
 # Preparación del traslado a v0.0.1-beta

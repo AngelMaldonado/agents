@@ -433,7 +433,9 @@ export async function rulesFor(proxyToken: string) {
 /** Settings for the run's sandbox, or null when this instance has no egress proxy configured. */
 export function proxyConfig() {
 	const url = process.env.AGENTS_PROXY_URL,
-		ca = process.env.AGENTS_PROXY_CA_CERT;
+		// Production: base64, one line in the stack's Environment; dev: the PEM itself.
+		b64 = process.env.AGENTS_PROXY_CA_CERT_B64,
+		ca = process.env.AGENTS_PROXY_CA_CERT || (b64 ? Buffer.from(b64, 'base64').toString('utf8') : '');
 	return url && ca ? { url, ca } : null;
 }
 

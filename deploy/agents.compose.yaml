@@ -3,7 +3,9 @@
 # Deploying a beta is: Komodo → stack agents → Pull, then Deploy (poll_for_updates shows when :beta moved).
 # Rollback: `just release promote <version>`, then Pull + Deploy. The version and SHA are inside the app
 # image (/healthz). Agents keep running on the exact sandbox image they were validated on.
-# The stack's Environment keeps AGENTS_ADMIN_PIN, AGENTS_MASTER_KEY, AGENTS_PROXY_KEY and AGENTS_DB_PASSWORD.
+# The stack's Environment keeps AGENTS_ADMIN_PIN, AGENTS_MASTER_KEY, AGENTS_PROXY_KEY and AGENTS_DB_PASSWORD,
+# and the egress proxy's AGENTS_PROXY_SECRET, AGENTS_PROXY_CA_PEM_B64 (its CA key + certificate) and
+# AGENTS_PROXY_CA_CERT_B64 (the certificate the sandboxes trust): `just prod proxyca` makes them.
 name: agents
 services:
   server:
@@ -25,6 +27,10 @@ services:
       AGENTS_COOKIE_SECURE: '1'
       # Durable identity, not the release: do not change.
       AGENTS_APP_VERSION: v2
+      # The egress proxy of API keys (#24): sandboxes reach it on their network; it asks this server.
+      AGENTS_PROXY_URL: http://agents-prod-proxy:8080
+      AGENTS_PROXY_CA_CERT_B64: ${AGENTS_PROXY_CA_CERT_B64:?just prod proxyca, then the stack's Environment}
+      AGENTS_PROXY_SECRET: ${AGENTS_PROXY_SECRET:?just prod proxyca, then the stack's Environment}
     depends_on:
       postgres:
         condition: service_healthy
@@ -45,6 +51,19 @@ services:
       - traefik.http.routers.agents.entrypoints=websecure
       - traefik.http.routers.agents.service=agents
       - traefik.http.services.agents.loadbalancer.server.port=8787
+
+  # The egress proxy of a person's API keys (#24): an agent sees a placeholder (agk_…) and this proxy
+  # swaps it for the real key only towards the key's domains. Same release as the app (:beta).
+  proxy:
+    image: registry.cubytest.space/cuby/agents-proxy:beta
+    restart: unless-stopped
+    environment:
+      AGENTS_BACKEND_URL: http://agents-prod-server:8787
+      AGENTS_PROXY_SECRET: ${AGENTS_PROXY_SECRET:?just prod proxyca, then the stack's Environment}
+      AGENTS_PROXY_CA_PEM_B64: ${AGENTS_PROXY_CA_PEM_B64:?just prod proxyca, then the stack's Environment}
+    networks:
+      sandbox:
+        aliases: [agents-prod-proxy]
 
   # Never runs: it is here so that Pull downloads the sandbox image of the release (the server starts the
   # agents' computers from it), and its stopped container keeps that image from a prune.

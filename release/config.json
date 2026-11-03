@@ -17,6 +17,7 @@
 		"url": "https://komodo.cubytest.space",
 		"appRepo": "agents-app",
 		"sandboxRepo": "agents-sandbox",
+		"proxyRepo": "agents-proxy",
 		"gitAccount": "AngelMaldonado",
 		"credentialsVault": "Cuby",
 		"credentialsItem": "Agents Release"

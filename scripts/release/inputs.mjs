@@ -1,13 +1,22 @@
 import { config, assertToolsImage } from './config.mjs';
 import { assertSha, assertVersion, requireDigest } from './version.mjs';
-export const components = ['agents-app', 'agents-sandbox'];
+// The app, the agents' sandbox and the egress proxy of API keys (#24): built, signed and promoted together.
+export const components = ['agents-app', 'agents-sandbox', 'agents-proxy'];
+/** The Komodo Repo that builds each one (named as the component). */
+export const repoOf = (component, value = config) =>
+	({
+		'agents-app': value.komodo.appRepo,
+		'agents-sandbox': value.komodo.sandboxRepo,
+		'agents-proxy': value.komodo.proxyRepo,
+	})[component];
 export function sourceConfig(value = config) {
 	if (value.komodo.gitAccount !== 'AngelMaldonado') throw new Error('Cuenta GitHub no aprobada.');
 	return { git_provider: 'github.com', git_https: true, git_account: value.komodo.gitAccount, repo: value.repository };
 }
 export function imageRepository(component, rehearsal = false, value = config) {
 	if (!components.includes(component)) throw new Error('Componente inválido.');
-	return `${value.registry}/${rehearsal ? `agents-release-probe${component === 'agents-app' ? '' : '-sandbox'}` : component}`;
+	const probe = { 'agents-app': '', 'agents-sandbox': '-sandbox', 'agents-proxy': '-proxy' }[component];
+	return `${value.registry}/${rehearsal ? `agents-release-probe${probe}` : component}`;
 }
 /**
  * The Repo job's inputs. `promote` (move :beta to a verified digest) gets the digest it must find and no
