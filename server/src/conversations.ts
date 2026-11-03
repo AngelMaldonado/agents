@@ -66,6 +66,27 @@ export async function create(agentId: number, key: unknown) {
 	});
 	return (await get(agentId, id))!;
 }
+/**
+ * The conversation of one WhatsApp chat (number and phone) with an agent, opened on its first message
+ * with the title of who writes. Closed or deleted, the next message opens a new one.
+ */
+export async function whatsappConversation(agentId: number, key: string, title: string) {
+	return tx(async (c) => {
+		if (!(await row('select id from agents where id=$1 and deleted_at is null for update', [agentId], c)))
+			throw new Error('El agente ya no existe.');
+		const open = await row<{ id: number }>(
+			'select id from conversations where agent_id=$1 and whatsapp_key=$2 and archived_at is null and deleted_at is null',
+			[agentId, key],
+			c,
+		);
+		if (open) return open.id;
+		return (await row<{ id: number }>(
+			'insert into conversations(agent_id,pi_session_id,whatsapp_key,title) values($1,gen_random_uuid()::text,$2,$3) returning id',
+			[agentId, key, title.replace(/\s+/g, ' ').trim().slice(0, 80)],
+			c,
+		))!.id;
+	});
+}
 export async function archive(agentId: number, id: number, archived: boolean) {
 	const n = await exec(
 		'update conversations set archived_at=case when $3 then coalesce(archived_at,now()) else null end where agent_id=$1 and id=$2',
@@ -83,7 +104,7 @@ export async function rename(agentId: number, id: number, title: string) {
 	return (await get(agentId, id))!;
 }
 /**
- * Out of every view; its messages, runs and files stay. Principal stays (channels and schedules
+ * Out of every view; its messages, runs and files stay. Principal stays (webhooks and schedules
  * land there), and so does a conversation the agent is working in.
  */
 export async function remove(agentId: number, id: number) {
@@ -94,7 +115,7 @@ export async function remove(agentId: number, id: number) {
 			c,
 		);
 		if (!conv) throw new Error('La conversación no pertenece a este agente.');
-		if (conv.is_default) throw new Error('Principal no se elimina: ahí llegan los canales y los horarios.');
+		if (conv.is_default) throw new Error('Principal no se elimina: ahí llegan los webhooks y los horarios.');
 		if (
 			await row(
 				`select 1 from runs where conversation_id=$1 and status in ('queued','starting','running','blocked') limit 1`,

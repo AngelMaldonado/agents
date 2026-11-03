@@ -4,6 +4,7 @@
 // one chat runtime's threads, not agents, so they stay in the agent view's conversation tabs.
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
+	AtSign,
 	BadgeCheck,
 	Bot,
 	ChevronsUpDown,
@@ -37,6 +38,7 @@ import { CubyBot } from '@/components/cuby-bot';
 import wordmarkUrl from '@/assets/cuby-agents-wordmark.png';
 import { useVersion } from '@/lib/use-version';
 import { ChatDialog } from '@/components/chat-dialog';
+import { SaveButton, useSaving } from '@/components/actions';
 import { SIDEBAR_CHANGED, improveWith, requestShare } from '@/lib/sidebar-events';
 import { useTheme } from '@/lib/theme';
 import { cn } from '@/lib/utils';
@@ -306,6 +308,7 @@ function AgentItem({
 	pinned,
 	onPin,
 	onRename,
+	onAliases,
 	onShare,
 	onDelete,
 	onNavigate,
@@ -318,6 +321,8 @@ function AgentItem({
 	pinned: boolean;
 	onPin: () => void;
 	onRename: () => void;
+	/** Your own aliases for it: for every agent you use, yours or shared. */
+	onAliases: () => void;
 	onShare: () => void;
 	onDelete: () => void;
 	onNavigate: () => void;
@@ -369,6 +374,10 @@ function AgentItem({
 					<DropdownMenuItem onSelect={onPin}>
 						{pinned ? <PinOff aria-hidden="true" /> : <Pin aria-hidden="true" />}
 						{pinned ? 'Desfijar' : 'Fijar'}
+					</DropdownMenuItem>
+					<DropdownMenuItem onSelect={onAliases}>
+						<AtSign aria-hidden="true" />
+						Alias
 					</DropdownMenuItem>
 					{mine && (
 						<DropdownMenuItem onSelect={onShare}>
@@ -476,7 +485,7 @@ function ConversationItem({
 					<DropdownMenuItem
 						variant="destructive"
 						disabled={chat.is_default}
-						title={chat.is_default ? 'Principal no se elimina: ahí llegan los canales y los horarios.' : undefined}
+						title={chat.is_default ? 'Principal no se elimina: ahí llegan los webhooks y los horarios.' : undefined}
 						onSelect={onDelete}
 					>
 						<Trash2 aria-hidden="true" />
@@ -494,28 +503,39 @@ function AgentDialog({
 	onClose,
 	onDone,
 }: {
-	edit: { agent: Agent; action: 'rename' | 'delete' } | null;
+	edit: { agent: Agent; action: 'rename' | 'delete' | 'aliases' } | null;
 	onClose: () => void;
 	onDone: (deleted: Agent | null) => void;
 }) {
 	const [value, setValue] = useState('');
 	const [busy, setBusy] = useState(false);
+	const saving = useSaving();
 	const [error, setError] = useState('');
 	useEffect(() => {
-		setValue(edit?.action === 'rename' ? edit.agent.name : '');
+		setValue(
+			edit?.action === 'rename'
+				? edit.agent.name
+				: edit?.action === 'aliases'
+					? (edit.agent.aliases ?? []).join(', ')
+					: '',
+		);
 		setError('');
 	}, [edit]);
 	const agent = edit?.agent;
 	const deleting = edit?.action === 'delete';
+	const naming = edit?.action === 'aliases';
+	const savedAliases = (agent?.aliases ?? []).join(', ');
 	return (
 		<FormDialog
 			open={!!edit}
 			onOpenChange={(open) => !open && !busy && onClose()}
-			title={deleting ? `¿Eliminar a ${agent?.name}?` : 'Renombrar agente'}
+			title={deleting ? `¿Eliminar a ${agent?.name}?` : naming ? `Alias de ${agent?.name}` : 'Renombrar agente'}
 			description={
 				deleting
 					? 'Se retira de la galería y se eliminan sus horarios; sus conversaciones y trabajos no se purgan. Para confirmar, escribe su nombre exacto.'
-					: 'Cambia sólo el nombre (queda como una revisión nueva de su definición).'
+					: naming
+						? `Tus nombres cortos para este agente, separados por comas: sólo valen para ti. Con @alias le mandas un mensaje desde cualquier chat, y en WhatsApp lo eliges con «alias: …» o /agente alias. Sin alias, responde a @${agent?.handle ?? ''}.`
+						: 'Cambia sólo el nombre (queda como una revisión nueva de su definición).'
 			}
 		>
 			<form
@@ -529,11 +549,20 @@ function AgentDialog({
 						if (deleting) {
 							await api(`/agents/${agent.id}`, { method: 'DELETE', body: { confirmName: value } });
 							onDone(agent);
-						} else {
-							await api(`/agents/${agent.id}`, {
-								method: 'PATCH',
-								body: { name: value.trim(), revision: agent.config_revision },
+						} else if (naming) {
+							await saving.run(() => api(`/agents/${agent.id}/aliases`, { method: 'PUT', body: { aliases: value } }), {
+								hold: true,
 							});
+							onDone(null);
+						} else {
+							await saving.run(
+								() =>
+									api(`/agents/${agent.id}`, {
+										method: 'PATCH',
+										body: { name: value.trim(), revision: agent.config_revision },
+									}),
+								{ hold: true },
+							);
 							onDone(null);
 						}
 					} catch (err) {
@@ -544,11 +573,12 @@ function AgentDialog({
 				}}
 			>
 				<label>
-					{deleting ? `Escribe ${agent?.name}` : 'Nombre'}
+					{deleting ? `Escribe ${agent?.name}` : naming ? 'Alias' : 'Nombre'}
 					<Input
 						value={value}
 						onChange={(e) => setValue(e.target.value)}
-						maxLength={40}
+						maxLength={naming ? 140 : 40}
+						placeholder={naming ? 'rd, radar' : undefined}
 						autoFocus
 						autoComplete="off"
 						spellCheck={false}
@@ -564,12 +594,18 @@ function AgentDialog({
 					<Button type="button" variant="ghost" onClick={onClose} disabled={busy}>
 						Cancelar
 					</Button>
-					<Button
-						variant={deleting ? 'destructive' : 'default'}
-						disabled={busy || (deleting ? value !== agent?.name : !value.trim() || value.trim() === agent?.name)}
-					>
-						{deleting ? 'Eliminar agente' : 'Guardar'}
-					</Button>
+					{deleting ? (
+						<Button variant="destructive" disabled={busy || value !== agent?.name}>
+							Eliminar agente
+						</Button>
+					) : (
+						<SaveButton
+							state={saving.state}
+							disabled={
+								busy || (naming ? value.trim() === savedAliases : !value.trim() || value.trim() === agent?.name)
+							}
+						/>
+					)}
 				</div>
 			</form>
 		</FormDialog>
@@ -762,13 +798,18 @@ export function AppSidebar({
 }) {
 	const { isMobile, setOpenMobile, state, setOpen } = useSidebar();
 	const [query, setQuery] = useState('');
-	const [agentEdit, setAgentEdit] = useState<{ agent: Agent; action: 'rename' | 'delete' } | null>(null);
+	const [agentEdit, setAgentEdit] = useState<{ agent: Agent; action: 'rename' | 'delete' | 'aliases' } | null>(null);
 	const input = useRef<HTMLInputElement>(null);
 	const version = useVersion();
 	const listed = useMemo(() => listedAgents(agents, me), [agents, me]);
 	const names = useMemo(() => new Map(agents.map((a) => [a.id, a.name])), [agents]);
 	const q = query.trim();
-	const shown = q ? listed.filter((a) => fold(a.name).includes(fold(q))) : listed;
+	// Your aliases and its @handle find it too.
+	const byAlias = (a: Agent) => {
+		const w = fold(q).replace(/^@/, '');
+		return [...(a.aliases ?? []), a.handle ?? ''].some((x) => x && x.includes(w));
+	};
+	const shown = q ? listed.filter((a) => fold(a.name).includes(fold(q)) || byAlias(a)) : listed;
 	const search = useSearch(q);
 	const activeAgent = Number(hash.match(/^\/agent\/(\d+)/)?.[1]);
 	const activeChat = Number(hash.match(/^\/agent\/\d+\/chat\/(\d+)/)?.[1]);
@@ -810,6 +851,7 @@ export function AppSidebar({
 			pinned={side.isPinned('agent', a.id)}
 			onPin={() => void side.toggle('agent', a.id)}
 			onRename={() => setAgentEdit({ agent: a, action: 'rename' })}
+			onAliases={() => setAgentEdit({ agent: a, action: 'aliases' })}
 			onShare={() => {
 				close();
 				location.hash = `/agent/${a.id}`;

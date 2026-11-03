@@ -3,7 +3,7 @@
 # AGENTS_PROXY_KEY (openssl rand -hex 24), AGENTS_DB_PASSWORD (openssl rand -hex 24), AGENTS_WHATSAPP_SECRET
 # (openssl rand -hex 24) and IMAGE_TAG to pin a commit.
 # Losing AGENTS_MASTER_KEY makes every saved key and site login unreadable: keep it in 1Password.
-# The sandbox image is built on reko-3 itself: just deploy sandbox. The WhatsApp bridge: just deploy whatsapp.
+# The sandbox image is built on reko-3 itself: just deploy sandbox. The WhatsApp bridge runs from the app image.
 services:
   server:
     image: registry.cubytest.space/cuby/agents:${IMAGE_TAG:-latest}
@@ -91,8 +91,10 @@ services:
 
   # WhatsApp (whatsmeow): the number an admin links in Administración, shared by every agent.
   # Its device session lives in the `whatsmeow` schema of the same database (and its backups).
+  # The WhatsApp bridge (#18): the app image's second binary, any number of linked numbers.
   whatsapp:
-    image: registry.cubytest.space/cuby/agents-whatsapp:${IMAGE_TAG:-latest}
+    image: registry.cubytest.space/cuby/agents:${IMAGE_TAG:-latest}
+    entrypoint: ['/usr/local/bin/agents-whatsapp']
     restart: unless-stopped
     environment:
       AGENTS_URL: http://server:8787

@@ -1176,6 +1176,9 @@
 	.work-steps-live {
 		@apply size-2 animate-pulse rounded-full bg-emerald-500;
 	}
+	.work-loading {
+		@apply mt-4 flex items-center gap-2 text-xs text-muted-foreground;
+	}
 	.work-steps ol {
 		@apply mt-2 grid gap-1;
 	}

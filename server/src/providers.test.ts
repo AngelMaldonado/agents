@@ -7,20 +7,91 @@ const run = url ? test : test.skip;
 if (!url) console.warn('AGENTS_TEST_DATABASE_URL is not set: skipping (run `just dev test`).');
 // The runner must set AGENTS_DATABASE_URL BEFORE Bun loads ANY test module.
 process.env.AGENTS_DATA = '/tmp';
-// A fake WhatsApp bridge, set before any module reads its address.
-const waSent: { phone: string; text: string; files: unknown[] }[] = [];
+// A fake WhatsApp bridge (the API of ../../whatsapp), set before any module reads its address.
+const waSent: { jid: string; phone?: string; group?: string; text: string; files: unknown[] }[] = [];
+const waGroups: { jid: string; group: string; name: string; phones: string[] }[] = [];
+const waLocks: { group: string; locked: boolean }[] = [];
+const waPhotos: { group: string; photo: string }[] = [];
+let waOut = 0;
+const waPairings = new Map<string, { state: string; jid?: string; phone?: string; name?: string; qr?: string }>();
+const waLinked = new Map<string, string>(); // jid → state
+const waUnlinked: string[] = [];
+const waPolls: { id: string; jid: string; phone: string; name: string; options: string[] }[] = [];
+const waTyping: { jid: string; phone?: string; group?: string }[] = [];
 const waBridge = Bun.serve({
 	hostname: '127.0.0.1',
 	port: 0,
 	async fetch(req) {
 		if (req.headers.get('x-agents-secret') !== 'wa-test') return new Response(null, { status: 403 });
-		if (new URL(req.url).pathname === '/send') {
-			waSent.push(await req.json());
+		const path = decodeURIComponent(new URL(req.url).pathname);
+		const send = path.match(/^\/numbers\/(.+)\/send$/);
+		if (send && req.method === 'POST') {
+			const body = await req.json();
+			waSent.push({ jid: send[1], ...body });
+			const ids = [...(body.text?.trim() ? [`out-${++waOut}`] : []), ...(body.files ?? []).map(() => `out-${++waOut}`)];
+			return Response.json({ ok: true, ids });
+		}
+		const photo = path.match(/^\/numbers\/(.+)\/groups\/(.+)\/photo$/);
+		if (photo && req.method === 'POST') {
+			waPhotos.push({ group: photo[2], ...(await req.json()) });
 			return Response.json({ ok: true });
 		}
-		return Response.json({ state: 'connected', phone: '5215500000000' });
+		const lock = path.match(/^\/numbers\/(.+)\/groups\/(.+)\/lock$/);
+		if (lock && req.method === 'POST') {
+			waLocks.push({ group: lock[2], ...(await req.json()) });
+			return Response.json({ ok: true });
+		}
+		const groups = path.match(/^\/numbers\/(.+)\/groups$/);
+		if (groups && req.method === 'POST') {
+			const body = await req.json();
+			const group = `g-${waGroups.length + 1}@g.us`;
+			waGroups.push({ jid: groups[1], group, ...body });
+			return Response.json({ jid: group });
+		}
+		const typing = path.match(/^\/numbers\/(.+)\/typing$/);
+		if (typing && req.method === 'POST') {
+			waTyping.push({ jid: typing[1], ...(await req.json()) });
+			return Response.json({ ok: true });
+		}
+		const poll = path.match(/^\/numbers\/(.+)\/poll$/);
+		if (poll && req.method === 'POST') {
+			const id = `poll-${waPolls.length + 1}`;
+			waPolls.push({ id, jid: poll[1], ...(await req.json()) });
+			return Response.json({ id });
+		}
+		const number = path.match(/^\/numbers\/(.+)$/);
+		if (number && req.method === 'DELETE') {
+			waLinked.delete(number[1]);
+			waUnlinked.push(number[1]);
+			return Response.json({ ok: true });
+		}
+		if (path === '/numbers')
+			return Response.json({
+				numbers: [...waLinked].map(([jid, state]) => ({ jid, state, phone: jid.split(':')[0] })),
+			});
+		if (path === '/pairings' && req.method === 'POST') {
+			const { ref } = await req.json();
+			waPairings.set(ref, { state: 'pairing', qr: 'UVI=' });
+			return Response.json({ state: 'pairing' }, { status: 202 });
+		}
+		const pairing = path.match(/^\/pairings\/(.+)$/);
+		if (pairing) {
+			if (req.method === 'DELETE') waPairings.delete(pairing[1]);
+			return waPairings.has(pairing[1])
+				? Response.json(waPairings.get(pairing[1]))
+				: Response.json({ error: 'no' }, { status: 404 });
+		}
+		return Response.json({ error: 'not found' }, { status: 404 });
 	},
 });
+/** The phone scanned the QR of pairing `ref`: the bridge now has that number. */
+let waDevice = 0; // every link is a new device of the account, with its own JID
+const waScan = (ref: number, phone: string) => {
+	const jid = `${phone}:${++waDevice}@s.whatsapp.net`;
+	waPairings.set(String(ref), { state: 'linked', jid, phone, name: `WA ${phone}` });
+	waLinked.set(jid, 'connected');
+	return jid;
+};
 process.env.AGENTS_WHATSAPP_URL = waBridge.url.origin;
 process.env.AGENTS_WHATSAPP_SECRET = 'wa-test';
 process.env.AGENTS_MASTER_KEY = Buffer.alloc(32, 7).toString('base64');
@@ -373,22 +444,362 @@ run(
 		).toContain(`~/work/in/${sent.message_id}/: mi_captura.png`);
 	},
 );
-run('baseline: WhatsApp remains disabled even with bridge credentials; no writes or outbound messages', async () => {
-	const whatsapp = await import('./whatsapp');
-	const before = await row('select count(*) as n from messages');
+run('WhatsApp: numbers, lists, and one group per (owner of agents, person) where they talk', async () => {
+	const whatsapp = await import('./whatsapp'),
+		agents = await import('./agents');
+	const mk = async (name: string, admin = false) => ({
+		id: (await row<{ id: number }>("insert into people (name, key, avatar_seed) values ($1, $2, 's') returning id", [
+			name,
+			`${name.toLowerCase()}-wa-${Date.now()}`,
+		]))!.id,
+		name,
+		avatar_seed: 's',
+		admin,
+	});
+	const ana = await mk('Ana'),
+		beto = await mk('Beto'),
+		admin = await mk('Admin', true);
 	waSent.length = 0;
-	expect(whatsapp.enabled()).toBe(false);
-	expect(whatsapp.checkSecret('wa-test')).toBe(false);
-	expect(await whatsapp.status()).toEqual({ state: 'off' });
-	expect(await whatsapp.agentView(999)).toEqual({ available: false, phone: null, enabled: false, contacts: [] });
-	await expect(whatsapp.setAgent(999, { enabled: true })).rejects.toThrow('fuera de esta release');
-	await expect(whatsapp.inbound({ id: 'fixture', phone: '5215512345678', text: 'Hola' })).rejects.toThrow(
-		'fuera de esta release',
+	expect(whatsapp.enabled()).toBe(true);
+	expect(whatsapp.checkSecret('wa-test')).toBe(true);
+	expect(whatsapp.checkSecret('otro')).toBe(false);
+
+	// Ana links her number: QR while pairing, linked once the phone scans it (the page or the event).
+	const started = await whatsapp.add(ana, { alias: 'Mi número' });
+	expect(started).toMatchObject({ state: 'pairing', qr: 'UVI=' });
+	const jid = waScan(started.id, '5214441110000');
+	expect(await whatsapp.pairing(ana, started.id)).toMatchObject({
+		state: 'linked',
+		number: { phone: '5214441110000' },
+	});
+	expect(await whatsapp.event({ type: 'linked', ref: String(started.id), jid, phone: '5214441110000' })).toEqual({
+		ok: true,
+	});
+	// Only an admin offers public and private numbers; a public one needs an alias.
+	await expect(whatsapp.add(ana, { scope: 'public', alias: 'Todos' })).rejects.toThrow('Sólo un admin');
+	await expect(whatsapp.add(admin, { scope: 'public' })).rejects.toThrow('alias');
+	const pub = await whatsapp.add(admin, { scope: 'public', alias: 'Compras Cuby' });
+	waScan(pub.id, '5214442220000');
+	await whatsapp.pairing(admin, pub.id);
+	const priv = await whatsapp.add(admin, { scope: 'private', alias: 'Interno' });
+	waScan(priv.id, '5214443330000');
+	await whatsapp.pairing(admin, priv.id);
+	// Somebody else's number is refused (and unlinked from the bridge).
+	const steal = await whatsapp.add(beto, {});
+	const stolen = waScan(steal.id, '5214441110000');
+	expect(await whatsapp.pairing(beto, steal.id)).toMatchObject({
+		state: 'failed',
+		error: expect.stringContaining('otra persona'),
+	});
+	expect(waUnlinked).toContain(stolen);
+
+	// Who sees what: personal → its owner; public → everyone; private → admins.
+	const seen = async (p: typeof ana) => (await whatsapp.numbers(p)).numbers.map((n) => n.label).sort();
+	expect(await seen(ana)).toEqual(['Compras Cuby', 'Mi número']);
+	expect(await seen(beto)).toEqual(['Compras Cuby']);
+	expect(await seen(admin)).toEqual(['Compras Cuby', 'Interno']);
+	await expect(whatsapp.update(beto, pub.id, { alias: 'Mío' })).rejects.toThrow('no lo administras');
+	// Who added a public number does not keep it once their admin session ends.
+	await expect(whatsapp.update({ ...admin, admin: false }, pub.id, { alias: 'Mío' })).rejects.toThrow(
+		'no lo administras',
 	);
-	await expect(whatsapp.pair()).rejects.toThrow('no está configurado');
-	await whatsapp.onRun(999, 'done');
-	expect(waSent).toEqual([]);
-	expect(await row('select count(*) as n from messages')).toEqual(before);
+
+	// The groups live on one number an admin marks (public or private); nobody else picks it.
+	await expect(whatsapp.update(ana, started.id, { groups: true })).rejects.toThrow('Sólo un admin');
+	await whatsapp.update(admin, pub.id, { groups: true });
+	expect((await whatsapp.groupNumber())?.id).toBe(pub.id);
+
+	// Agents of Ana's (Compras, Radar) and of Beto's (Ajeno); Compras is shared with Beto.
+	const compras = await agents.create(ana.id, { name: 'Compras', model: 'openai/gpt-6-sol' });
+	const radar = await agents.create(ana.id, { name: 'Radar', model: 'openai/gpt-6-sol' });
+	const ajeno = await agents.create(beto.id, { name: 'Ajeno', model: 'openai/gpt-6-sol' });
+	await exec('insert into agent_shares (agent_id, person_id) values ($1, $2)', [compras.id, beto.id]);
+
+	// Who may write is the number's lists: a phone in neither is ignored, the block list refused.
+	const pubJid = [...waLinked.keys()].find((j) => j.startsWith('5214442220000'))!;
+	const msg = (phone: string, text: string, extra: Record<string, unknown> = {}) =>
+		whatsapp.event({ type: 'message', number: pubJid, id: `m-${Math.random()}`, phone, name: 'X', text, ...extra });
+	await expect(whatsapp.lists(beto, pub.id)).rejects.toThrow('no lo administras');
+	await expect(
+		whatsapp.setLists(admin, pub.id, { allow: [{ phone: '+52 444 555 6666' }], block: [{ phone: '524445556666' }] }),
+	).rejects.toThrow('repetido');
+	await expect(whatsapp.setLists(admin, pub.id, { allow: [{ phone: '123' }] })).rejects.toThrow(
+		'no es un número válido',
+	);
+	await expect(whatsapp.setLists(admin, pub.id, { allow: [{ phone: '+52 444 222 0000' }] })).rejects.toThrow(
+		'es este mismo número',
+	);
+	const saved = await whatsapp.setLists(admin, pub.id, {
+		allow: [
+			{ phone: '+52 444 111 2222', personId: ana.id },
+			{ phone: '+52 444 555 6666', personId: beto.id },
+			{ phone: '+52 444 777 8888', label: 'Invitada' },
+		],
+		block: [{ phone: '+52 444 999 0000', label: 'Spam', personId: beto.id }],
+	});
+	expect(saved.block).toEqual([{ phone: '524449990000', label: 'Spam' }]); // no person on a blocked phone
+
+	// One group per (owner, person) with at least one agent: Ana with hers, Beto with Ana's shared one and
+	// Beto with his own. The guest has none until Ana switches her on.
+	await whatsapp.syncGroups();
+	const made = () => waGroups.filter((g) => g.jid === pubJid).map((g) => [g.name, g.phones[0]]);
+	expect(made().sort()).toEqual([
+		['Agentes Ana', '524441112222'],
+		['Agentes Ana', '524445556666'],
+		['Agentes Beto', '524445556666'],
+	]);
+	const groupOf = async (owner: number, phone: string) =>
+		(await row<{ id: number; ref: string; status: string }>(
+			'select id, ref, status from whatsapp_groups where number_id = $1 and owner_id = $2 and phone = $3',
+			[pub.id, owner, phone],
+		))!;
+	const anaGroup = await groupOf(ana.id, '524441112222'),
+		betoInAna = await groupOf(ana.id, '524445556666');
+	expect(waSent.find((m) => m.group === anaGroup.ref)?.text).toContain(
+		'Aquí hablas con tus agentes:\n1. Compras\n2. Radar',
+	);
+	expect(waSent.find((m) => m.group === betoInAna.ref)?.text).toContain('los agentes de Ana:\n1. Compras');
+	const contacts = (await whatsapp.agentView(compras.id, ana)).contacts;
+	expect(contacts.map((c) => [c.name, c.kind, c.enabled])).toEqual([
+		['Ana', 'owner', true],
+		['Beto', 'person', true],
+		['Invitada', 'guest', false],
+	]);
+	expect(JSON.stringify(contacts)).not.toContain('"phone"'); // only the opaque key leaves the server
+
+	// The bridge takes a group's messages only from its member; one to one, only «where are my agents».
+	expect(await whatsapp.allowed({ number: pubJid, phone: '5214445556666', group: betoInAna.ref })).toEqual({
+		allowed: true,
+	});
+	expect(await whatsapp.allowed({ number: pubJid, phone: '5214441112222', group: betoInAna.ref })).toEqual({
+		allowed: false,
+	});
+	expect(await whatsapp.allowed({ number: pubJid, phone: '5214445556666', text: 'Hola' })).toEqual({ allowed: false });
+	expect(await whatsapp.allowed({ number: pubJid, phone: '5214445556666', text: '/agentes' })).toEqual({
+		allowed: true,
+	});
+	expect(await msg('5214445556666', '/agentes')).toEqual({ command: true });
+	expect(waSent.at(-1)).toMatchObject({ phone: '5214445556666', text: expect.stringContaining('grupos «Agentes …»') });
+	expect(await msg('5214449990000', 'Hola')).toEqual({ ignored: true });
+
+	// In Beto's group with Ana's agents there is one (Compras): his message is a task of his for it.
+	const inBeto = (text: string, extra: Record<string, unknown> = {}) =>
+		msg('5214445556666', text, { group: betoInAna.ref, ...extra }) as Promise<{ message_id: number }>;
+	const task = await inBeto('Revisa el súper');
+	expect(
+		await row("select agent_id, person_id, sender, context->'whatsapp'->>'group' as grp from messages where id = $1", [
+			task.message_id,
+		]),
+	).toEqual({
+		agent_id: compras.id,
+		person_id: beto.id,
+		sender: 'Beto (+524445556666), con quien tu dueño compartió este agente (no es tu dueño)',
+		grp: String(betoInAna.id),
+	});
+	// The answer goes back into that group, under the agent's name.
+	const runId = (await row<{ id: number }>(
+		`insert into runs (agent_id, person_id, conversation_id, workflow_id, model, status, answer)
+		 values ($1, $2, (select conversation_id from messages where id = $3), $4, 'openai/gpt-6-sol', 'done', 'Listo, ya está.') returning id`,
+		[compras.id, ana.id, task.message_id, `wa-run-${compras.id}`],
+	))!.id;
+	await exec('update messages set run_id = $2 where id = $1', [task.message_id, runId]);
+	waSent.length = 0;
+	await whatsapp.onRun(runId, 'done');
+	expect(waSent).toEqual([{ jid: pubJid, group: betoInAna.ref, text: '*Compras:* Listo, ya está.', files: [] }]);
+	// Stuck on a page: the picture of its browser goes too; the link to take control is only for its owner.
+	waSent.length = 0;
+	await whatsapp.onRun(runId, 'blocked', 'No carga el sitio.', { jpeg: 'AAAA', url: 'https://super.mx' });
+	expect(waSent[0].text).toContain('*Compras:* Necesito tu ayuda: No carga el sitio.');
+	expect(waSent[0].text).not.toContain('/browser');
+	expect(waSent[0].files).toEqual([{ name: 'pantalla.jpg', mime: 'image/jpeg', data: 'AAAA' }]);
+	// While it works on his message, «escribiendo…» stays in that group.
+	await exec("update runs set status = 'running' where id = $1", [runId]);
+	waTyping.length = 0;
+	await whatsapp.keepTyping();
+	expect(waTyping).toEqual([{ jid: pubJid, group: betoInAna.ref }]);
+	await exec("update runs set status = 'done' where id = $1", [runId]);
+
+	// In Ana's group there are two: with nobody spoken to yet, it asks which; the message waits for the answer.
+	const inAna = (text: string, extra: Record<string, unknown> = {}) =>
+		msg('5214441112222', text, { group: anaGroup.ref, ...extra }) as Promise<Record<string, any>>;
+	expect(await inAna('Hola, ¿qué hay de nuevo?')).toEqual({ needsAgent: true });
+	expect(waSent.at(-1)?.text).toContain('¿Para qué agente es?\n1. Compras\n2. Radar');
+	const toRadar = await inAna('2');
+	expect(await row('select agent_id, text from messages where id = $1', [toRadar.message_id])).toEqual({
+		agent_id: radar.id,
+		text: 'Hola, ¿qué hay de nuevo?',
+	});
+	// The last one spoken to gets the next one; a name first switches (and is taken off the message).
+	expect(
+		(await row<{ agent_id: number }>('select agent_id from messages where id = $1', [
+			(await inAna('¿Y el clima?')).message_id,
+		]))!.agent_id,
+	).toBe(radar.id);
+	const named = await inAna('Compras: el precio del huevo');
+	expect(await row('select agent_id, text from messages where id = $1', [named.message_id])).toEqual({
+		agent_id: compras.id,
+		text: 'el precio del huevo',
+	});
+	expect(
+		(await row<{ agent_id: number }>('select agent_id from messages where id = $1', [
+			(await inAna('y del aceite')).message_id,
+		]))!.agent_id,
+	).toBe(compras.id);
+
+	// A notice of Radar's to its owner, from a scheduled run: quoting it goes back to Radar, in that run's
+	// conversation (where it has what it asked), whoever was spoken to last.
+	await exec('update agents set role = $2 where id = $1', [
+		radar.id,
+		'# Radar\n\n## Avisos por WhatsApp\nAvisa a tu dueño.',
+	]);
+	const noon = new Date('2026-11-02T18:00:00Z'),
+		night = new Date('2026-11-03T05:00:00Z');
+	const radarRun = (await row<{ id: number; conversation_id: number }>(
+		`insert into runs (agent_id, person_id, conversation_id, workflow_id, model, status)
+		 values ($1, $2, (select id from conversations where agent_id = $1 and is_default), $3, 'openai/gpt-6-sol', 'running') returning id, conversation_id`,
+		[radar.id, ana.id, `wa-radar-${radar.id}`],
+	))!;
+	expect((await whatsapp.notify(radarRun.id, { to: ['dueño'], text: 'Hay novedades' }, night)).error).toContain(
+		'silencio',
+	);
+	expect((await whatsapp.notify(radarRun.id, { to: ['Nadie'], text: 'x' }, noon)).no_enviado).toEqual([
+		{ para: 'Nadie', motivo: expect.stringContaining('no es un contacto habilitado') },
+	]);
+	waSent.length = 0;
+	const notice = await whatsapp.notify(radarRun.id, { to: ['Ana'], text: '¿Sigo con el radar?' }, noon);
+	expect(notice.enviado_a).toEqual(['Ana']);
+	expect(waSent).toEqual([{ jid: pubJid, group: anaGroup.ref, text: '*Radar:* ¿Sigo con el radar?', files: [] }]);
+	expect(whatsapp.noticeLine(notice)).toBe('Avisó por WhatsApp a Ana.');
+	await exec("update runs set status = 'done' where id = $1", [radarRun.id]);
+	const noticeId = `out-${waOut}`;
+	await inAna('Compras: ¿y el azúcar?'); // somebody else spoken to meanwhile
+	const quoted = await inAna('Sí, sigue por ahora', { quoted: noticeId });
+	expect(await row('select agent_id, conversation_id from messages where id = $1', [quoted.message_id])).toEqual({
+		agent_id: radar.id,
+		conversation_id: radarRun.conversation_id,
+	});
+	// The agent is not told who it is with: /agente switches, /terminar closes its conversation here.
+	expect(await inAna('/agente comp')).toEqual({ command: true, agent: compras.id });
+	expect(waSent.at(-1)?.text).toBe('Ahora hablas con Compras.');
+	expect(await inAna('/terminar')).toEqual({ command: true, ended: true });
+	// /ayuda: the commands and who answers now (after /terminar, still Compras).
+	expect(await inAna('/ayuda')).toEqual({ command: true });
+	expect(waSent.at(-1)?.text).toContain('Ahora hablas con Compras.');
+	expect(waSent.at(-1)?.text).toContain('/agente <nombre o número>');
+
+	// Ana's own aliases: /alias puts one on the current agent; @alias or «alias: …» picks it, and the handle
+	// (the name with dashes) works without any alias.
+	expect(await inAna('/alias cp')).toEqual({ command: true });
+	expect(waSent.at(-1)?.text).toBe('Listo: Compras también responde a @cp.');
+	const viaAlias = await inAna('@cp ¿y la leche?');
+	expect(await row('select agent_id, text from messages where id = $1', [viaAlias.message_id])).toEqual({
+		agent_id: compras.id,
+		text: '¿y la leche?',
+	});
+	const viaHandle = await inAna('@radar ¿novedades?');
+	expect(
+		(await row<{ agent_id: number }>('select agent_id from messages where id = $1', [viaHandle.message_id]))!.agent_id,
+	).toBe(radar.id);
+	expect(await inAna('/alias')).toEqual({ command: true });
+	expect(waSent.at(-1)?.text).toContain('Compras: @compras, @cp');
+	// An alias is one agent's: Radar cannot take «cp», nor Compras the handle of Radar.
+	const aliases = await import('./aliases');
+	await expect(aliases.set(ana, radar.id, ['cp'])).rejects.toThrow('ya es de Compras');
+	await expect(aliases.set(ana, compras.id, ['radar'])).rejects.toThrow('ya es de Radar');
+	await expect(aliases.set(beto, radar.id, ['r'])).rejects.toThrow('Sólo pones alias'); // not shared with Beto
+	// They are personal: Beto's «cp» is his own (Compras is shared with him).
+	expect(await aliases.set(beto, compras.id, ['CP', '@súper'])).toEqual(['cp', 'super']);
+	// In the web, a message that starts with @mentions is for those agents.
+	expect(await aliases.mentions(ana, '@cp @radar revisen el súper')).toEqual({
+		agents: [expect.objectContaining({ id: compras.id }), expect.objectContaining({ id: radar.id })],
+		text: 'revisen el súper',
+	});
+	await expect(aliases.mentions(ana, '@nadie hola')).rejects.toThrow('No tienes un agente @nadie');
+	expect(await aliases.mentions(ana, 'hola @cp')).toBeNull(); // only at the start
+	expect(await inAna('/alias quitar cp')).toEqual({ command: true });
+	expect(waSent.at(-1)?.text).toBe('Quité @cp.');
+	// /actual: who answers now, and whether its conversation here is open.
+	expect(await inAna('/actual')).toEqual({ command: true });
+	expect(waSent.at(-1)?.text).toMatch(/^Hablas con Radar, en una conversación abierta\. También le dices @radar\.$/);
+
+	// Ana switches the guest on for Compras: her group with Ana's agents appears; switched off, it closes.
+	const guestKey = contacts.find((c) => c.kind === 'guest')!.key;
+	await whatsapp.setContact(compras.id, ana, { key: guestKey, enabled: true });
+	await whatsapp.syncGroups();
+	const guestGroup = await groupOf(ana.id, '524447778888');
+	expect(guestGroup.status).toBe('open');
+	await whatsapp.setContact(compras.id, ana, { key: guestKey, enabled: false });
+	await whatsapp.syncGroups();
+	expect((await groupOf(ana.id, '524447778888')).status).toBe('closed');
+	expect(waLocks.at(-1)).toEqual({ group: guestGroup.ref, locked: true });
+	expect(waSent.at(-1)).toMatchObject({
+		group: guestGroup.ref,
+		text: expect.stringContaining('Ya no hay agentes de Ana aquí'),
+	});
+	// Shared again later, the same group opens again.
+	await whatsapp.setContact(compras.id, ana, { key: guestKey, enabled: true });
+	await whatsapp.syncGroups();
+	expect(await groupOf(ana.id, '524447778888')).toMatchObject({ status: 'open', ref: guestGroup.ref });
+	expect(waLocks.at(-1)).toEqual({ group: guestGroup.ref, locked: false });
+	// A closed group takes nothing.
+	expect(await whatsapp.allowed({ number: pubJid, phone: '5214445556666', group: 'g-999@g.us' })).toEqual({
+		allowed: false,
+	});
+	void ajeno;
+
+	// A photo for Ana's groups (a JPEG the browser made square): her open groups on this number get it,
+	// once per version; removed, it is taken off them.
+	await expect(whatsapp.setGroupPhoto(ana, { jpeg: Buffer.from('no es foto').toString('base64') })).rejects.toThrow(
+		'JPEG',
+	);
+	const jpeg = Buffer.concat([Buffer.from([0xff, 0xd8, 0xff, 0xe0]), Buffer.alloc(200)]).toString('base64');
+	expect(await whatsapp.setGroupPhoto(ana, { jpeg })).toMatchObject({
+		photo: `data:image/jpeg;base64,${jpeg}`,
+		updatesOpen: true,
+		groups: 3,
+	});
+	await whatsapp.syncGroups();
+	const anaGroups = [anaGroup.ref, betoInAna.ref, guestGroup.ref].sort();
+	expect(waPhotos.map((p) => p.group).sort()).toEqual(anaGroups);
+	expect(waPhotos.every((p) => p.photo === jpeg)).toBe(true);
+	waPhotos.length = 0;
+	await whatsapp.syncGroups();
+	expect(waPhotos).toEqual([]);
+	await whatsapp.setGroupPhoto(ana, null);
+	await whatsapp.syncGroups();
+	expect(waPhotos.map((p) => [p.group, p.photo]).sort()).toEqual(anaGroups.map((g) => [g, '']));
+
+	// WhatsApp closed the session: the number shows unlinked.
+	await whatsapp.event({ type: 'logged_out', number: jid });
+	waLinked.delete(jid);
+	expect((await whatsapp.numbers(ana)).numbers.find((n) => n.id === started.id)?.state).toBe('unlinked');
+	await whatsapp.remove(ana, started.id);
+	await expect(whatsapp.event({ type: 'nope' })).rejects.toThrow('desconocido');
+	await whatsapp.update(admin, pub.id, { groups: false });
+});
+run('/reload tells the agent, in the same chat, that its current configuration wins', async () => {
+	const agents = await import('./agents'),
+		tasks = await import('./tasks');
+	const a = await agents.create(person, { name: 'Recarga', model: 'openai/gpt-6-sol' }),
+		conv = (await agents.conversations(a.id))[0].id;
+	const r = (await tasks.reloadConversation(a.id, conv, { id: person, name: 'Yo' }, true)) as { message_id: number };
+	const m = await row<{ conversation_id: number; source: string; text: string }>(
+		'select conversation_id, source, text from messages where id = $1',
+		[r.message_id],
+	);
+	expect(m).toMatchObject({ conversation_id: conv, source: 'web' });
+	expect(m!.text).toContain('Configuración recargada (revisión 1)');
+	expect(m!.text).toContain('confirma en una línea');
+	// The owner's live browser session has no harness to reload: it is not stopped.
+	await exec('delete from messages where id = $1', [r.message_id]);
+	await exec(
+		`insert into runs (agent_id, person_id, conversation_id, workflow_id, model, status, kind) values ($1, $2, $3, $4, $5, 'running', 'browser')`,
+		[a.id, person, conv, `reload-browser-${a.id}`, a.model],
+	);
+	await expect(tasks.reloadConversation(a.id, conv, { id: person, name: 'Yo' }, true)).rejects.toThrow(
+		'Cierra el navegador',
+	);
+	await exec("update runs set status = 'done', ended_at = now() where workflow_id = $1", [`reload-browser-${a.id}`]);
 });
 run('a message sent while the agent works waits in its queue and can be removed before it is taken', async () => {
 	const agents = await import('./agents'),
@@ -944,6 +1355,51 @@ run('a reply the server refuses gets one corrective turn with the reason', async
 	expect(retry).toContain('skill inválida');
 	expect(fixed.last_error).toBeNull();
 	expect(fixed.contract).toEqual(designerReply.contract);
+	// A long contract is not refused (the panel only warns): no corrective turn.
+	const long = { ...designerReply, contract: { ...designerReply.contract, prompt: 'x'.repeat(17000) } };
+	queuedReplies.push(long);
+	let count = modelRequests.length;
+	const kept = await designs.message(person, d.id, { text: 'Detalla todo.', version: fixed.version });
+	expect(modelRequests.length).toBe(count + 1);
+	expect(kept.contract?.prompt.length).toBe(17000);
+	// Two refusals in a row still get there; a third gives up with the reason.
+	const bad = {
+		...designerReply,
+		harness: { ...defaultHarness(), skills: [{ name: 'larga', description: 'd', instructions: 'z'.repeat(9000) }] },
+	};
+	queuedReplies.push(bad, bad);
+	count = modelRequests.length;
+	const twice = await designs.message(person, d.id, { text: 'Más detalle.', version: kept.version });
+	expect(modelRequests.length).toBe(count + 3);
+	queuedReplies.push(bad, bad, bad);
+	await expect(designs.message(person, d.id, { text: 'Todavía más.', version: twice.version })).rejects.toThrow(
+		'skill inválida',
+	);
+	queuedReplies.length = 0;
+});
+run('an improvement declared ready without a contract is sent back: it would apply nothing', async () => {
+	const designs = await import('./designs'),
+		agents = await import('./agents');
+	const a = await agents.create(person, {
+		name: 'Sin cambios',
+		model: 'openai/gpt-6-sol',
+		role: 'Revisa PRs por API.',
+	});
+	const d = await designs.create(person, { model: 'openai/gpt-6-sol', agentId: a.id });
+	queuedReplies.push({ ...designerReply, contract: null, ready: true });
+	const before = modelRequests.length;
+	const fixed = await designs.message(person, d.id, { text: 'Usa el navegador para el monorepo.', version: d.version });
+	expect(modelRequests.length).toBe(before + 2);
+	expect(JSON.stringify(modelRequests.at(-1).input.slice(-1))).toContain('sin enviar el contrato');
+	// Once the draft holds its own proposal, ready without a contract keeps it (no extra call).
+	await exec('update agent_designs set contract = $2 where id = $1', [
+		d.id,
+		JSON.stringify({ name: 'Sin cambios', prompt: 'Revisa PRs del monorepo con el navegador.' }),
+	]);
+	queuedReplies.push({ ...designerReply, contract: null, ready: true });
+	await designs.message(person, d.id, { text: 'Así está bien.', version: fixed.version });
+	expect(modelRequests.length).toBe(before + 3);
+	queuedReplies.length = 0;
 });
 run("a ready draft from before the platform's last round gets it instead of losing its proposal", async () => {
 	const designs = await import('./designs');

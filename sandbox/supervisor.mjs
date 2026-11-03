@@ -23,7 +23,7 @@ import {
 	symlinkSync,
 	lstatSync,
 } from 'node:fs';
-import { join, extname } from 'node:path';
+import { join, extname, resolve, basename } from 'node:path';
 import { createHash } from 'node:crypto';
 import { execFile } from 'node:child_process';
 import { defaultHarness, runtimeToolNames } from './harness.ts';
@@ -125,6 +125,12 @@ function onBackend(raw) {
 		case 'cred_res': {
 			const waiter = credWaiters.get(msg.id);
 			credWaiters.delete(msg.id);
+			waiter?.(msg);
+			break;
+		}
+		case 'notify_res': {
+			const waiter = notifyWaiters.get(msg.id);
+			notifyWaiters.delete(msg.id);
 			waiter?.(msg);
 			break;
 		}
@@ -714,6 +720,8 @@ function releaseBlocked(steered) {
 }
 
 const credWaiters = new Map();
+const notifyWaiters = new Map();
+let notifySeq = 0;
 let credSeq = 0;
 
 createServer((req, res) => {
@@ -741,6 +749,38 @@ createServer((req, res) => {
 				res.end(JSON.stringify(r));
 			});
 			send({ t: 'cred', id, name: String(q.name ?? ''), url: String(q.url ?? '') });
+			return;
+		}
+		if (req.method === 'POST' && req.url === '/notify') {
+			// whatsapp_notify: the server decides (contract, contacts, limits) and sends; a file goes along.
+			let q = {};
+			try {
+				q = JSON.parse(body);
+			} catch {}
+			const id = ++notifySeq;
+			const done = (r) => res.end(JSON.stringify(r));
+			let file;
+			if (q.archivo) {
+				const path = resolve(WORK, String(q.archivo));
+				if (!path.startsWith(`${WORK}/`)) return done({ ok: false, error: 'El archivo debe estar dentro de ~/work.' });
+				try {
+					const data = readFileSync(path);
+					if (data.length > 8 * 1024 * 1024) return done({ ok: false, error: 'El archivo pasa de 8 MB.' });
+					file = { name: basename(path), data: data.toString('base64') };
+				} catch {
+					return done({ ok: false, error: `No encontré ${q.archivo}.` });
+				}
+			}
+			const timer = setTimeout(() => {
+				notifyWaiters.delete(id);
+				done({ ok: false, error: 'La plataforma no respondió a tiempo; no se sabe si el aviso salió.' });
+			}, 80_000);
+			notifyWaiters.set(id, (r) => {
+				clearTimeout(timer);
+				const { t: _t, id: _id, ...result } = r;
+				done(result);
+			});
+			send({ t: 'notify', id, to: q.para, text: q.texto, urgent: !!q.urgente, file });
 			return;
 		}
 		res.statusCode = 404;

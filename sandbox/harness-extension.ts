@@ -45,6 +45,20 @@ export default function (pi: ExtensionAPI) {
 			parameters: Type.Object({ name: Type.String({ minLength: 1, maxLength: 120, pattern: '^[^-].*$' }) }),
 			execute: async (_id, p, signal) => command('agents-login', [p.name], signal, 90000),
 		});
+	if (h.tools.includes('whatsapp_notify'))
+		pi.registerTool({
+			name: 'whatsapp_notify',
+			label: 'Avisar por WhatsApp',
+			description:
+				'Manda un aviso por el WhatsApp de este agente a contactos que su dueño habilitó (por su nombre, p. ej. "Cortez"), sólo como dice la sección «Avisos por WhatsApp» de tu contrato. Opcional: un archivo de ~/work/out (ruta relativa a ~/work, p. ej. "out/reporte.pdf"). La plataforma limita los avisos (3 por trabajo, 10 al día por persona) y no los manda de 22:00 a 7:00 salvo urgente. Devuelve a quién llegó y a quién no, y por qué.',
+			parameters: Type.Object({
+				para: Type.Array(Type.String({ minLength: 1, maxLength: 80 }), { minItems: 1, maxItems: 10 }),
+				texto: Type.String({ minLength: 1, maxLength: 3500 }),
+				archivo: Type.Optional(Type.String({ maxLength: 300 })),
+				urgente: Type.Optional(Type.Boolean()),
+			}),
+			execute: async (_id, p, signal) => command('agents-notify', [JSON.stringify(p)], signal, 95000),
+		});
 	if (h.tools.includes('browser'))
 		pi.registerTool({
 			name: 'browser',

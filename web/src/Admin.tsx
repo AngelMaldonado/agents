@@ -1,10 +1,10 @@
 // Behind the shared PIN: global limits, the model catalog, the sandbox image, and people.
 import { useEffect, useState } from 'react';
-import { FEATURES } from '../../sandbox/features';
 import { api, ago, type Person } from './api';
 import { UsesTable } from './Settings';
 import { Button } from '@/components/ui/button';
-import { DeleteButton, IconButton } from '@/components/actions';
+import { DeleteButton, IconButton, SaveButton, useSaving } from '@/components/actions';
+import { CubyWhatsAppAdmin } from '@/components/cuby-whatsapp';
 import { Link2 } from 'lucide-react';
 import { Input } from '@/components/ui/input';
 import { Textarea } from '@/components/ui/textarea';
@@ -87,124 +87,12 @@ function Quota({ person, onSaved }: { person: { id: number; run_quota: number };
 	);
 }
 
-type WhatsAppStatus = {
-	state: 'off' | 'down' | 'unlinked' | 'pairing' | 'connecting' | 'connected';
-	phone?: string;
-	name?: string;
-	qr?: string;
-	error?: string;
-};
-const WA_STATE = {
-	off: 'Sin puente',
-	down: 'El puente no responde',
-	unlinked: 'Sin número',
-	pairing: 'Esperando que escanees el código',
-	connecting: 'Conectando…',
-	connected: 'Conectado',
-} as const;
-/** One WhatsApp number for every agent of this instance; owners turn it on per agent in Canales. */
-function WhatsAppAdmin() {
-	const [s, setS] = useState<WhatsAppStatus | null>(null);
-	const [msg, setMsg] = useState('');
-	const load = () =>
-		api<WhatsAppStatus>('/admin/whatsapp')
-			.then(setS)
-			.catch((e) => setMsg((e as Error).message));
-	useEffect(() => {
-		void load();
-	}, []);
-	// While pairing the code changes every ~20 s; while connecting it settles in a few.
-	useEffect(() => {
-		if (s?.state !== 'pairing' && s?.state !== 'connecting') return;
-		const t = setInterval(() => void load(), 2000);
-		return () => clearInterval(t);
-	}, [s?.state]);
-	const act = async (path: string) => {
-		setMsg('');
-		try {
-			setS(await api<WhatsAppStatus>(path, { method: 'POST' }));
-		} catch (e) {
-			setMsg((e as Error).message);
-		}
-	};
-	return (
-		<section className="panel">
-			<h2>WhatsApp</h2>
-			<p className="muted">
-				Un número compartido por todos los agentes. Cada dueño lo activa en los Canales de su agente y decide qué
-				números pueden escribirle. Usa un número dedicado: es la conexión de WhatsApp Web (whatsmeow), no la API
-				oficial, y WhatsApp puede bloquear números que detecte como automatizados.
-			</p>
-			{!s ? (
-				<p className="muted">Cargando…</p>
-			) : (
-				<>
-					<p>
-						<strong>{WA_STATE[s.state]}</strong>
-						{s.phone ? ` · +${s.phone}${s.name ? ` (${s.name})` : ''}` : ''}
-					</p>
-					{s.error && (
-						<p role="alert" className="error">
-							{s.error}
-						</p>
-					)}
-					{s.state === 'pairing' &&
-						(s.qr ? (
-							<div className="grid justify-items-start gap-2">
-								<img
-									src={`data:image/png;base64,${s.qr}`}
-									alt="Código QR para vincular WhatsApp"
-									width={240}
-									height={240}
-									className="rounded-md bg-white p-2"
-								/>
-								<p className="muted small">
-									En el teléfono: WhatsApp → Dispositivos vinculados → Vincular un dispositivo, y escanea. El código
-									cambia cada ~20 s.
-								</p>
-							</div>
-						) : (
-							<p className="muted">Generando el código…</p>
-						))}
-					<div className="row wrap gap-2">
-						{s.state === 'unlinked' && (
-							<Button onClick={() => void act('/admin/whatsapp/pair')}>Vincular número</Button>
-						)}
-						{(s.state === 'connected' || s.state === 'connecting' || s.state === 'pairing') && (
-							<Button
-								variant="danger-outline"
-								onClick={() => {
-									if (
-										confirm(
-											'¿Desvincular el número? Los agentes dejarán de recibir y enviar por WhatsApp hasta que vincules otro.',
-										)
-									)
-										void act('/admin/whatsapp/logout');
-								}}
-							>
-								{s.state === 'pairing' ? 'Cancelar' : 'Desvincular'}
-							</Button>
-						)}
-						<Button variant="ghost" onClick={() => void load()}>
-							Actualizar
-						</Button>
-					</div>
-				</>
-			)}
-			{msg && (
-				<p role="alert" className="error">
-					{msg}
-				</p>
-			)}
-		</section>
-	);
-}
-
 function Panel({ onChanged }: { onChanged: () => void }) {
 	const [data, setData] = useState<any>(null);
 	const [draft, setDraft] = useState<any>(null);
 	const [models, setModels] = useState('');
 	const [msg, setMsg] = useState('');
+	const saving = useSaving();
 	const [link, setLink] = useState('');
 	const load = () =>
 		api('/admin').then((r) => {
@@ -246,7 +134,6 @@ function Panel({ onChanged }: { onChanged: () => void }) {
 					Salir de admin
 				</Button>
 			</div>
-			{FEATURES.whatsapp && <WhatsAppAdmin />}
 			<section className="panel">
 				<h2>Límites</h2>
 				<div className="field-list">
@@ -281,8 +168,10 @@ function Panel({ onChanged }: { onChanged: () => void }) {
 					<Textarea rows={6} value={models} onChange={(e) => setModels(e.target.value)} className="mono" />
 				</label>
 				<div className="field-actions row wrap mt-4">
-					<Button
+					<SaveButton
+						state={saving.state}
 						onClick={async () => {
+							setMsg('');
 							const list = models
 								.split('\n')
 								.map((l) => l.trim())
@@ -292,20 +181,20 @@ function Panel({ onChanged }: { onChanged: () => void }) {
 									return { id, label: label || id };
 								});
 							try {
-								await api('/admin/settings', { method: 'PUT', body: { ...draft, models: list } });
-								setMsg('Guardado.');
-								await load();
-								onChanged();
+								await saving.run(async () => {
+									await api('/admin/settings', { method: 'PUT', body: { ...draft, models: list } });
+									await load();
+									onChanged();
+								});
 							} catch (err) {
 								setMsg((err as Error).message);
 							}
 						}}
-					>
-						Guardar
-					</Button>
+					/>
 					<span className="muted">{msg}</span>
 				</div>
 			</section>
+			<CubyWhatsAppAdmin />
 			<section className="panel">
 				<h2>Personas</h2>
 				<p className="muted">

@@ -4,7 +4,7 @@
 import { useEffect, useMemo, useState } from 'react';
 import { ComposerPrimitive, unstable_useMentionAdapter, type Unstable_DirectiveFormatter } from '@assistant-ui/react';
 import { Briefcase, MessageSquare } from 'lucide-react';
-import { api, type Conversation, type Task } from '@/api';
+import { api, type Agent, type Conversation, type Task } from '@/api';
 import { Badge } from '@/components/ui/badge';
 
 const REF = /@\[([^\]\n]{1,120})\]\(((run|conversation):(\d+))\)/g;
@@ -136,13 +136,19 @@ export function useReferenceMentions(agentId: number | undefined) {
 }
 
 /** The @ popover: categories first, then the items of the chosen one. */
-export function ReferencePopover({ mention }: { mention: ReturnType<typeof useReferenceMentions> }) {
+export function ReferencePopover({
+	mention,
+	label = 'Citar un trabajo o una conversación',
+}: {
+	mention: ReturnType<typeof unstable_useMentionAdapter>;
+	label?: string;
+}) {
 	return (
 		<ComposerPrimitive.TriggerPopover
 			char="@"
 			adapter={mention.adapter}
 			className="reference-popover"
-			aria-label="Citar un trabajo o una conversación"
+			aria-label={label}
 		>
 			<ComposerPrimitive.TriggerPopover.Directive
 				formatter={mention.directive.formatter}
@@ -170,4 +176,41 @@ export function ReferencePopover({ mention }: { mention: ReturnType<typeof useRe
 			</ComposerPrimitive.TriggerPopoverItems>
 		</ComposerPrimitive.TriggerPopover>
 	);
+}
+
+/**
+ * The work chat's @: the agents you use, by your alias (or their @handle). «@rd revisa…» sends the message to
+ * that agent, in a new conversation of its own, instead of this one; the server reads the leading @words.
+ * Plain text in the composer (no chip): what you see is what the server reads, as in WhatsApp.
+ */
+const agentFormatter: Unstable_DirectiveFormatter = {
+	serialize: (item) => `@${item.id.replace(/^agent:/, '')}`,
+	parse: (text) => [{ kind: 'text', text }],
+};
+export function useAgentMentions(current: number) {
+	const [list, setList] = useState<Agent[]>([]);
+	useEffect(() => {
+		let alive = true;
+		api<{ agents: Agent[] }>('/agents')
+			.then((r) => alive && setList(r.agents.filter((a) => a.usable)))
+			.catch(() => {});
+		return () => {
+			alive = false;
+		};
+	}, []);
+	// A flat list (no category to open first): typing filters it.
+	const items = useMemo(
+		() =>
+			list.map((a) => {
+				const word = a.aliases?.[0] ?? a.handle ?? String(a.id);
+				return {
+					id: `agent:${word}`,
+					type: 'agent',
+					label: `@${word}`,
+					description: a.id === current ? `${a.name} (este)` : a.name,
+				};
+			}),
+		[list, current],
+	);
+	return unstable_useMentionAdapter({ items, formatter: agentFormatter, includeModelContextTools: false });
 }

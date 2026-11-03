@@ -1,9 +1,10 @@
 import { useEffect, useState } from 'react';
-import { Save, Trash2, X } from 'lucide-react';
+import { Trash2, X } from 'lucide-react';
 import { api } from '@/api';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { FormDialog } from '@/components/access-ui';
+import { SaveButton, useSaving } from '@/components/actions';
 
 export type ChatRef = { id: number; agent_id: number; title: string };
 
@@ -19,6 +20,7 @@ export function ChatDialog<T extends ChatRef>({
 }) {
 	const [title, setTitle] = useState('');
 	const [busy, setBusy] = useState(false);
+	const saving = useSaving();
 	const [error, setError] = useState('');
 	useEffect(() => {
 		setTitle(edit?.chat.title ?? '');
@@ -58,7 +60,7 @@ export function ChatDialog<T extends ChatRef>({
 							await api(path, { method: 'DELETE' });
 							onDone(chat!);
 						} else {
-							await api(path, { method: 'PATCH', body: { title } });
+							await saving.run(() => api(path, { method: 'PATCH', body: { title } }), { hold: true });
 							onDone(null);
 						}
 					});
@@ -92,10 +94,7 @@ export function ChatDialog<T extends ChatRef>({
 							Eliminar
 						</Button>
 					) : (
-						<Button type="submit" disabled={busy}>
-							<Save aria-hidden="true" />
-							Guardar
-						</Button>
+						<SaveButton type="submit" disabled={busy} state={saving.state} />
 					)}
 				</div>
 			</form>

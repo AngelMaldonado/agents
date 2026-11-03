@@ -67,7 +67,8 @@ test('global policy distinguishes visible browsing from authorized APIs and depe
 	expect(prompt).toContain('no uses sudo');
 	expect(prompt).toContain('no pidas permiso para cada detalle de implementación');
 	expect(prompt).toContain('no supongas que puedes ejecutar comandos');
-	expect(prompt).not.toContain('WhatsApp');
+	// WhatsApp is part of the product (#18): a message from there gets a short, plain answer.
+	expect(prompt).toContain('Si un mensaje llegó por WhatsApp, responde breve y en texto simple');
 	expect(prompt).not.toContain('Nunca uses `curl`, `wget`, scripts ni APIs');
 });
 

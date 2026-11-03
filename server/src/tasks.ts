@@ -33,7 +33,7 @@ import { grantedNames, resolveCredential } from './vault';
 import { quotaOf } from './people';
 import { stateMount } from './state';
 import { createDelivery, startDelivery, notify } from './channels';
-import { requestRoute, startPrompt, filesFor, render } from './inbox';
+import { requestRoute, startPrompt, filesFor, render, receive } from './inbox';
 import * as whatsapp from './whatsapp';
 import * as secrets from './secrets';
 import * as accesses from './accesses';
@@ -126,8 +126,8 @@ const personQueue = (personId: number) => `person:${personId}`;
 export const RUN_SELECT = `r.id, r.agent_id, r.person_id, r.model, r.status, r.state, r.kind, r.container_id, r.workflow_id,
 	r.priority, r.cost, r.tokens, r.end_reason, r.answer, r.conversation_id, r.created_at, r.started_at, r.ended_at, r.definition,
 	coalesce((select m.text from messages m where m.run_id = r.id and m.routed_as = 'new_run' order by m.id limit 1), '') as prompt,
-	(select case when m.source = 'web' and m.person_id is distinct from r.person_id then m.person_id end from messages m where m.run_id = r.id and m.routed_as = 'new_run' order by m.id limit 1)::int as requested_by,
-	(select p.name from people p where p.id = (select case when m.source = 'web' and m.person_id is distinct from r.person_id then m.person_id end from messages m where m.run_id = r.id and m.routed_as = 'new_run' order by m.id limit 1)) as requested_by_name
+	(select case when m.source in ('web', 'whatsapp') and m.person_id is distinct from r.person_id then m.person_id end from messages m where m.run_id = r.id and m.routed_as = 'new_run' order by m.id limit 1)::int as requested_by,
+	(select p.name from people p where p.id = (select case when m.source in ('web', 'whatsapp') and m.person_id is distinct from r.person_id then m.person_id end from messages m where m.run_id = r.id and m.routed_as = 'new_run' order by m.id limit 1)) as requested_by_name
 	from runs r`;
 
 /**
@@ -304,7 +304,7 @@ export async function checkRunnable(agent: AgentRef, opts: { initialization?: bo
 /** The agent's live run, if any. */
 export const liveRunOf = (agentId: number) =>
 	row<RunRef & { status: Status; conversation_id: number; kind: Kind; requested_by: number | null }>(
-		`select r.id, r.person_id, r.agent_id, r.status, r.conversation_id, r.kind, (select case when m.source = 'web' and m.person_id is distinct from r.person_id then m.person_id end from messages m where m.run_id = r.id and m.routed_as = 'new_run' order by m.id limit 1)::int as requested_by from runs r where r.agent_id = $1 and r.status in ('queued','starting','running','blocked')`,
+		`select r.id, r.person_id, r.agent_id, r.status, r.conversation_id, r.kind, (select case when m.source in ('web', 'whatsapp') and m.person_id is distinct from r.person_id then m.person_id end from messages m where m.run_id = r.id and m.routed_as = 'new_run' order by m.id limit 1)::int as requested_by from runs r where r.agent_id = $1 and r.status in ('queued','starting','running','blocked')`,
 		[agentId],
 	);
 
@@ -519,6 +519,17 @@ async function startSandbox(runId: number): Promise<{ deadline: number; minutes:
 			t.definition = { ...value, digest: digest(value), harnessDigest: _harnessDigest };
 			await exec('update runs set definition=$2 where id=$1', [runId, JSON.stringify(t.definition)]);
 		}
+		// In dev the sandbox image is rebuilt all the time (`just sandbox build`, or reko-2 lost it): a pinned
+		// image that is gone becomes today's dev image, said in the activity. Any other instance refuses (below).
+		if (INSTANCE === 'dev' && t.definition?.image && !(await imageExists(t.definition.image))) {
+			const { digest: _digest, harnessDigest: _harnessDigest, ...value } = t.definition;
+			value.image = await new DockerSandbox().imageId(s.sandboxImage);
+			t.definition = { ...value, digest: digest(value), harnessDigest: _harnessDigest };
+			await exec('update runs set definition=$2 where id=$1', [runId, JSON.stringify(t.definition)]);
+			await event(t, 'system', {
+				message: `Dev: la imagen con la que se validó este agente ya no existe; uso la imagen actual (${s.sandboxImage}).`,
+			});
+		}
 		const id = await provider.start({
 			name: `agents-${INSTANCE}-run-${runId}`,
 			image: t.definition?.image ?? s.sandboxImage,
@@ -536,6 +547,12 @@ async function startSandbox(runId: number): Promise<{ deadline: number; minutes:
 		await exec('update runs set container_id = $2 where id = $1', [runId, id]);
 	} catch (err) {
 		await event(t, 'error', { message: `No se pudo crear la computadora: ${(err as Error).message}` });
+		// Dev without its own image (reko-2 lost it): the fix is rebuilding it, not revalidating the agent.
+		if (/No such image/i.test((err as Error).message) && INSTANCE === 'dev' && !(await imageExists(s.sandboxImage))) {
+			return {
+				failed: `No se pudo crear la computadora: falta la imagen de dev (${s.sandboxImage}) en el servidor de sandboxes. Corre \`just sandbox build\`.`,
+			};
+		}
 		// The image the agent's harness was validated on was deleted from the host: say what fixes it.
 		if (/No such image/i.test((err as Error).message) && t.definition?.image) {
 			return {
@@ -547,6 +564,49 @@ async function startSandbox(runId: number): Promise<{ deadline: number; minutes:
 	}
 	waitForSupervisor(l, ATTACH_MS, 'La computadora no arrancó.');
 	return { deadline: t.started_at + s.maxMinutes * 60_000, minutes: s.maxMinutes };
+}
+
+/**
+ * Keeps on the sandbox host the image each agent was validated on, and today's: a prune would otherwise
+ * delete them and its agents would refuse to run until revalidated (Radar Dev and the PR reviewer in dev,
+ * 2-nov-2026). Never throws: a missing image is skipped (it is already gone).
+ */
+export async function keepPinnedImages() {
+	const docker = new DockerSandbox();
+	const images = (
+		await rows<{ image: string }>(
+			"select distinct harness_image as image from agents where deleted_at is null and harness_image ~ '^sha256:[a-f0-9]{64}$'",
+		)
+	).map((r) => r.image);
+	try {
+		images.push(await docker.imageId(settings().sandboxImage));
+	} catch {
+		// today's image is missing too: nothing to keep of it
+	}
+	const present: string[] = [];
+	for (const image of new Set(images)) if (await imageExists(image)) present.push(image);
+	try {
+		await docker.keepImages(present, INSTANCE);
+	} catch (err) {
+		console.warn('could not keep the sandbox images:', (err as Error).message);
+	}
+}
+let keeper: ReturnType<typeof setInterval> | null = null;
+/** At start and every hour (also after each approval, from designs.ts). */
+export function startImageKeeper() {
+	void keepPinnedImages();
+	keeper ??= setInterval(() => void keepPinnedImages(), 60 * 60_000);
+	keeper.unref?.();
+}
+
+/** Whether the sandbox host still has this image (by id or name). */
+async function imageExists(image: string) {
+	try {
+		await new DockerSandbox().imageId(image);
+		return true;
+	} catch {
+		return false;
+	}
 }
 
 async function removeContainers(runId: number) {
@@ -877,7 +937,8 @@ function onSupervisor(l: Live, raw: string) {
 				await setStatus(ref.id, 'blocked', 'blocked', ['running']);
 				// The bridge hears it: its next message is the answer (Q23).
 				await notify(ref.id, 'blocked', decodeHelp(msg.reason).reason);
-				void whatsapp.onRun(ref.id, 'blocked', msg.reason);
+				// With what its browser shows: what it needs is often on that page.
+				void whatsapp.onRun(ref.id, 'blocked', msg.reason, l.browserSnapshot ?? null);
 				break;
 			case 'unblocked':
 				await event(ref, 'unblocked', {
@@ -900,6 +961,15 @@ function onSupervisor(l: Live, raw: string) {
 				if (reply.ok) await event(ref, 'credential', { name: msg.name, ok: true });
 				else await event(ref, 'credential', { name: msg.name, ok: false, error: reply.error });
 				l.sup?.send(JSON.stringify({ t: 'cred_res', id: msg.id, ...reply }));
+				break;
+			}
+			case 'notify': {
+				// whatsapp_notify: the agent tells its owner's contacts something, as its contract says.
+				const reply = await whatsapp
+					.notify(ref.id, { to: msg.to, text: msg.text, urgent: msg.urgent, file: msg.file })
+					.catch((err) => ({ ok: false, error: (err as Error).message }));
+				await event(ref, 'system', { message: whatsapp.noticeLine(reply) });
+				l.sup?.send(JSON.stringify({ t: 'notify_res', id: msg.id, ...reply }));
 				break;
 			}
 			case 'note':
@@ -1506,7 +1576,7 @@ export async function closeBrowser(taskId: number) {
 	await signalEnd(taskId, { status: 'done', reason: null });
 }
 
-export async function cancel(taskId: number) {
+export async function cancel(taskId: number, reason = 'Cancelada por un humano.') {
 	const t = await getTask(taskId);
 	if (!t) throw new Error('No existe.');
 	if (t.status === 'queued') {
@@ -1528,7 +1598,54 @@ export async function cancel(taskId: number) {
 		}
 	}
 	if (!LIVE.includes(t.status)) throw new Error('La tarea ya terminó.');
-	await signalEnd(taskId, { status: 'cancelled', reason: 'Cancelada por un humano.' });
+	await signalEnd(taskId, { status: 'cancelled', reason });
+}
+
+/**
+ * /reload in a chat: its work goes on with the agent's current configuration (contract, tools, MCP).
+ * A run is pinned to the definition it started with, so a live one in this chat stops and a new one
+ * starts in the same conversation (same pi session: it keeps the context). The agent is told, in a
+ * message the chat shows, that what is current wins over what it said or did before.
+ */
+export async function reloadConversation(
+	agentId: number,
+	conversationId: number,
+	person: { id: number; name: string },
+	owner: boolean,
+) {
+	const agent = await row<{ config_revision: number }>(
+		'select config_revision from agents where id = $1 and deleted_at is null',
+		[agentId],
+	);
+	if (!agent) throw new Error('El agente ya no existe.');
+	const live = await row<Task>(
+		`select ${RUN_SELECT} where r.agent_id = $1 and r.conversation_id = $2 and r.status = any($3) order by r.id desc limit 1`,
+		[agentId, conversationId, LIVE],
+	);
+	if (live) {
+		if (live.kind === 'browser') throw new Error('Cierra el navegador antes de recargar.');
+		if (!owner && !directs(live, person.id)) throw new Error('Sólo el dueño o quien pidió este trabajo lo detiene.');
+		await cancel(live.id, 'Detenida para recargar la configuración.');
+		for (let i = 0; i < 120 && LIVE.includes((await getTask(live.id))!.status); i++)
+			await new Promise((r) => setTimeout(r, 500));
+		if (LIVE.includes((await getTask(live.id))!.status))
+			throw new Error(`El trabajo #${live.id} sigue deteniéndose; vuelve a escribir /reload en un momento.`);
+	}
+	const text = live
+		? `/reload · Configuración recargada (revisión ${agent.config_revision}). Detuve el trabajo #${live.id} para cargarla: continúa lo que estabas haciendo con el contrato, las herramientas y los MCP vigentes. Lo vigente manda sobre lo que dijiste o hiciste antes en esta conversación.`
+		: `/reload · Configuración recargada (revisión ${agent.config_revision}): el contrato, las herramientas y los MCP vigentes mandan sobre lo que dijiste o hiciste antes en esta conversación. No hagas nada más: confirma en una línea que la cargaste.`;
+	return receive(
+		{
+			agentId,
+			personId: person.id,
+			sender: owner ? null : person.name,
+			source: 'web',
+			conversationId,
+			text,
+			dedupeKey: `reload:${randomUUID()}`,
+		},
+		{ routeNow: false },
+	);
 }
 
 // ---------- boot ----------

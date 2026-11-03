@@ -1,6 +1,6 @@
 import { useId, useMemo, useRef, useState, type ReactNode } from 'react';
 import CodeMirror from '@uiw/react-codemirror';
-import { EditorState, Prec } from '@codemirror/state';
+import { Prec } from '@codemirror/state';
 import { EditorView } from '@codemirror/view';
 import { markdown } from '@codemirror/lang-markdown';
 import { getCM, Vim, vim } from '@replit/codemirror-vim';
@@ -69,7 +69,6 @@ export function RoleEditor({
 				role: 'textbox',
 				'aria-multiline': 'true',
 			}),
-			EditorState.transactionFilter.of((transaction) => (transaction.newDoc.length > 16000 ? [] : transaction)),
 		],
 		[vimEnabled, id, mode, label],
 	);

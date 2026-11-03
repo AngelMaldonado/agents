@@ -129,7 +129,7 @@ export async function create(
 			[
 				personId,
 				name,
-				String(input.role ?? '').slice(0, 16000),
+				String(input.role ?? ''),
 				input.model,
 				randomBytes(6).toString('hex'),
 				JSON.stringify(validateHarness(input.harness ?? defaultHarness())),
@@ -174,7 +174,7 @@ export async function edit(agent: Agent, input: { name?: string; role?: string; 
 		checkModel(model);
 		await exec(
 			'update agents set name=$2, role=$3, model=$4, config_revision=config_revision+1 where id=$1',
-			[agent.id, name, input.role !== undefined ? String(input.role).slice(0, 16000) : current.role, model],
+			[agent.id, name, input.role !== undefined ? String(input.role) : current.role, model],
 			c,
 		);
 		const saved = (await get(agent.id, c))!;

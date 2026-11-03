@@ -37,10 +37,12 @@ import * as channels from './channels';
 import * as inbox from './inbox';
 import * as monitor from './monitor';
 import * as whatsapp from './whatsapp';
+import * as aliases from './aliases';
+import { createHash } from 'node:crypto';
+import * as cuby from './cuby-whatsapp';
 import * as secrets from './secrets';
 import { verify, checkLink } from './sign';
 import { artifactHeaders, readPreview } from './artifact-preview';
-import { FEATURES } from '../../sandbox/features';
 
 checkMasterKey();
 await migrate();
@@ -55,7 +57,11 @@ await agents.loadShares();
 		console.log(`agent secrets -> person keys: ${moved.migrated} migrated, ${moved.conflicts} to resolve`);
 }
 await tasks.recover();
+tasks.startImageKeeper(); // a prune must not delete the images agents were validated on
 await inbox.startRouter();
+whatsapp.startSleeper(); // WhatsApp groups follow lists, shares and agents; «escribiendo…» while one works
+await cuby.load();
+cuby.restart(); // the cuby-whatsapp consumer, when an admin turned it on
 monitor.startMonitor();
 
 // Prometheus scrapes this on its own port, never through Traefik (it names people and agents).
@@ -70,16 +76,6 @@ Bun.serve({
 
 type Env = { Variables: { me: people.Person } };
 const app = new Hono<Env>();
-app.use('*', async (c, next) => {
-	if (
-		!FEATURES.whatsapp &&
-		(c.req.path.startsWith('/api/admin/whatsapp') ||
-			/^\/api\/agents\/[^/]+\/channels\/whatsapp(?:\/|$)/.test(c.req.path) ||
-			c.req.path.startsWith('/internal/whatsapp/'))
-	)
-		return c.json({ error: 'Feature fuera de esta release.' }, 404);
-	await next();
-});
 app.get('/healthz', (c) =>
 	c.json({
 		ready: true,
@@ -176,10 +172,14 @@ app.get('/internal/proxy/rules', async (c) => {
 
 // ---------- the WhatsApp bridge (internal network, shared secret; no login) ----------
 
-app.post('/internal/whatsapp/inbound', async (c) => {
+app.post('/internal/whatsapp/allowed', async (c) => {
+	if (!whatsapp.checkSecret(c.req.header('x-agents-secret'))) return c.json({ error: 'forbidden' }, 403);
+	return c.json(await whatsapp.allowed(await c.req.json()));
+});
+app.post('/internal/whatsapp/event', async (c) => {
 	if (!whatsapp.checkSecret(c.req.header('x-agents-secret'))) return c.json({ error: 'forbidden' }, 403);
 	try {
-		return c.json(await whatsapp.inbound(await c.req.json()));
+		return c.json(await whatsapp.event(await c.req.json()));
 	} catch (err) {
 		return fail(c, err);
 	}
@@ -331,9 +331,27 @@ app.delete('/api/keys/:provider', async (c) => {
 
 // ---------- agents and tasks ----------
 
-app.get('/api/agents', async (c) =>
-	c.json({ agents: (await agents.visible(c.get('me'))).map((a) => agents.forViewer(a, c.get('me'))) }),
-);
+app.get('/api/agents', async (c) => {
+	const me = c.get('me');
+	const mine = await aliases.of(me.id); // each viewer's own aliases, and every agent's handle
+	return c.json({
+		agents: (await agents.visible(me)).map((a) => ({
+			...agents.forViewer(a, me),
+			aliases: mine.get(a.id) ?? [],
+			handle: aliases.handleOf(a.name),
+			usable: a.person_id === me.id || a.shares.includes(me.id), // an admin sees others' agents but cannot use them
+		})),
+	});
+});
+// Your aliases for one agent you use (yours or shared with you): they replace the ones it had.
+app.put('/api/agents/:id/aliases', async (c) => {
+	try {
+		const body = await c.req.json().catch(() => null);
+		return c.json({ aliases: await aliases.set(c.get('me'), Number(c.req.param('id')), body?.aliases) });
+	} catch (err) {
+		return fail(c, err);
+	}
+});
 
 // The sidebar's search over the person's own list: agents' conversations, what was said and answered.
 app.get('/api/search', async (c) => {
@@ -344,6 +362,12 @@ app.get('/api/search', async (c) => {
 // Creation is now an explicit approval of a stored contract, not a form bypass.
 app.post('/api/agents', (c) => c.json({ error: 'Define y aprueba el contrato en Nuevo agente.' }, 409));
 
+// Automejora → Historial: the owner's improvement chats of this agent.
+app.get('/api/agents/:id/designs', async (c) => {
+	const a = await ownAgent(c);
+	if (!a) return c.json({ error: 'Sólo el dueño ve las mejoras de su agente.' }, 403);
+	return c.json({ designs: await designs.history(c.get('me').id, a.id) });
+});
 app.post('/api/designs', async (c) => {
 	try {
 		return c.json({ design: await designs.create(c.get('me').id, await c.req.json()) });
@@ -400,6 +424,8 @@ app.delete('/api/designs/:id', async (c) => {
 	}
 });
 app.post('/api/designs/:id/messages', async (c) => {
+	// The reply can take minutes; Bun's idle timeout (120 s) would drop the request and cancel it.
+	(c.env as { timeout?: (req: Request, seconds: number) => void } | undefined)?.timeout?.(c.req.raw, 0);
 	try {
 		return c.json({
 			design: await designs.message(c.get('me').id, c.req.param('id'), await c.req.json(), c.req.raw.signal),
@@ -489,6 +515,7 @@ app.delete('/api/agents/:id', async (c) => {
 	await agents.retire(a);
 	// Its schedules would keep firing at a retired agent: they go too.
 	for (const s of await channels.schedules(a.id)) await channels.deleteSchedule(a.id, s.name);
+	void whatsapp.syncGroups(); // a group left without agents closes
 	return c.json({ ok: true });
 });
 
@@ -573,7 +600,9 @@ app.put('/api/agents/:id/shares', async (c) => {
 	const a = await ownAgent(c);
 	if (!a) return c.json({ error: 'Sólo el dueño comparte su agente.' }, 403);
 	try {
-		return c.json({ shares: await agents.setShares(a, (await c.req.json()).people) });
+		const shares = await agents.setShares(a, (await c.req.json()).people);
+		void whatsapp.syncGroups(); // whoever it is shared with gets (or loses) their group with its owner
+		return c.json({ shares });
 	} catch (err) {
 		return fail(c, err);
 	}
@@ -672,20 +701,20 @@ app.get('/api/tasks/:id/files/:name', async (c) => {
 
 // ---------- an agent's channels (owner only: they hold its secrets) ----------
 
-async function channelsView(agentId: number) {
+async function channelsView(agentId: number, owner: people.Person) {
 	return {
 		...(await channels.view(agentId)),
 		deliveries: await channels.deliveries(agentId),
 		schedules: await channels.schedules(agentId),
 		timezone: channels.TZ,
-		whatsapp: await whatsapp.agentView(agentId),
+		whatsapp: await whatsapp.agentView(agentId, owner),
 	};
 }
 
 app.get('/api/agents/:id/channels', async (c) => {
 	const a = await ownAgent(c);
 	if (!a) return c.json({ error: 'Sólo el dueño ve los canales de su agente.' }, 403);
-	return c.json(await channelsView(a.id));
+	return c.json(await channelsView(a.id, c.get('me')));
 });
 
 app.post('/api/agents/:id/channels/rotate', async (c) => {
@@ -693,7 +722,7 @@ app.post('/api/agents/:id/channels/rotate', async (c) => {
 	if (!a) return c.json({ error: 'No es tuyo.' }, 403);
 	const { which } = await c.req.json();
 	await channels.rotate(a.id, which === 'out' ? 'out' : 'in');
-	return c.json(await channelsView(a.id));
+	return c.json(await channelsView(a.id, c.get('me')));
 });
 
 // ---------- an agent's credentials and MCP sign-ins (owner only; values are never returned) ----------
@@ -764,12 +793,22 @@ app.post('/api/agents/:id/mcp/:server/login', async (c) => {
 	}
 });
 
+app.put('/api/agents/:id/channels/whatsapp/contacts', async (c) => {
+	const a = await ownAgent(c);
+	if (!a) return c.json({ error: 'Sólo el dueño decide quién le escribe a su agente.' }, 403);
+	try {
+		await whatsapp.setContact(a.id, c.get('me'), await c.req.json());
+		return c.json(await channelsView(a.id, c.get('me')));
+	} catch (err) {
+		return fail(c, err);
+	}
+});
 app.put('/api/agents/:id/channels/whatsapp', async (c) => {
 	const a = await ownAgent(c);
 	if (!a) return c.json({ error: 'Sólo el dueño configura el WhatsApp de su agente.' }, 403);
 	try {
-		await whatsapp.setAgent(a.id, await c.req.json());
-		return c.json(await channelsView(a.id));
+		await whatsapp.setAgent(a.id, c.get('me'), await c.req.json());
+		return c.json(await channelsView(a.id, c.get('me')));
 	} catch (err) {
 		return fail(c, err);
 	}
@@ -781,7 +820,7 @@ app.put('/api/agents/:id/channels/out', async (c) => {
 	try {
 		const { url } = await c.req.json();
 		await channels.setOutUrl(a.id, url ?? null);
-		return c.json(await channelsView(a.id));
+		return c.json(await channelsView(a.id, c.get('me')));
 	} catch (err) {
 		return fail(c, err);
 	}
@@ -792,7 +831,7 @@ app.post('/api/agents/:id/deliveries/:did/resend', async (c) => {
 	if (!a) return c.json({ error: 'No es tuyo.' }, 403);
 	try {
 		await channels.resend(a.id, Number(c.req.param('did')));
-		return c.json(await channelsView(a.id));
+		return c.json(await channelsView(a.id, c.get('me')));
 	} catch (err) {
 		return fail(c, err);
 	}
@@ -804,7 +843,7 @@ app.post('/api/agents/:id/schedules', async (c) => {
 	try {
 		const { cron, message } = await c.req.json();
 		await channels.addSchedule(a.id, cron, message);
-		return c.json(await channelsView(a.id));
+		return c.json(await channelsView(a.id, c.get('me')));
 	} catch (err) {
 		return fail(c, err);
 	}
@@ -815,7 +854,7 @@ app.post('/api/agents/:id/schedules/:name/:action', async (c) => {
 	if (!a) return c.json({ error: 'No es tuyo.' }, 403);
 	try {
 		await channels.pauseSchedule(a.id, c.req.param('name'), c.req.param('action') === 'pause');
-		return c.json(await channelsView(a.id));
+		return c.json(await channelsView(a.id, c.get('me')));
 	} catch (err) {
 		return fail(c, err);
 	}
@@ -826,7 +865,7 @@ app.delete('/api/agents/:id/schedules/:name', async (c) => {
 	if (!a) return c.json({ error: 'No es tuyo.' }, 403);
 	try {
 		await channels.deleteSchedule(a.id, c.req.param('name'));
-		return c.json(await channelsView(a.id));
+		return c.json(await channelsView(a.id, c.get('me')));
 	} catch (err) {
 		return fail(c, err);
 	}
@@ -950,6 +989,35 @@ app.post('/api/agents/:id/conversations/:conversation/messages', async (c) => {
 			if (!tasks.directs(t, c.get('me').id)) throw new Error('Sólo quien pidió esta tarea le responde al agente.');
 			return c.json({ ok: true, ...(await tasks.answerHelpText(runId, round, body.text, key)) });
 		}
+		// «@rd @compras revisa…»: the message goes to those agents, each in a new conversation of its own,
+		// and not to this one (unless it is mentioned too). The chat it was written in stays as it was.
+		const to = await aliases.mentions(c.get('me'), body.text);
+		if (to) {
+			if (!to.text && !attachments.length) throw new Error('Escribe el mensaje después de mencionar al agente.');
+			const forwarded = [];
+			for (const target of to.agents) {
+				// Same request, same conversation: a retry never opens a second one.
+				const h = createHash('sha256').update(`${key}:${target.id}`).digest('hex');
+				const request = `${h.slice(0, 8)}-${h.slice(8, 12)}-${h.slice(12, 16)}-${h.slice(16, 20)}-${h.slice(20, 32)}`;
+				const conversation = target.id === a.id ? id : (await conversations.create(target.id, request)).id;
+				if (target.id !== a.id) await conversations.rename(target.id, conversation, to.text.slice(0, 80) || 'Archivos');
+				await inbox.receive(
+					{
+						agentId: target.id,
+						personId: c.get('me').id,
+						sender: target.person_id === c.get('me').id ? null : c.get('me').name,
+						source: 'web',
+						conversationId: conversation,
+						text: to.text,
+						attachments,
+						dedupeKey: `chat:${key}:${target.id}`,
+					},
+					{ routeNow: false },
+				);
+				forwarded.push({ agentId: target.id, name: target.name, conversationId: conversation });
+			}
+			return c.json({ ok: true, forwarded });
+		}
 		// Someone it is shared with writes under their name, so the agent knows it is not its owner.
 		const routing = await inbox.receive(
 			{
@@ -965,6 +1033,20 @@ app.post('/api/agents/:id/conversations/:conversation/messages', async (c) => {
 			{ routeNow: false },
 		);
 		return c.json({ ok: true, ...routing });
+	} catch (err) {
+		return fail(c, err);
+	}
+});
+
+// /reload: the chat's work goes on with the agent's current configuration (stops a live run first).
+app.post('/api/agents/:id/conversations/:conversation/reload', async (c) => {
+	const a = await usableAgent(c);
+	if (!a) return c.json({ error: 'Sólo su dueño y quienes lo tienen compartido escriben en esta conversación.' }, 403);
+	const id = Number(c.req.param('conversation'));
+	if (!(await conversations.get(a.id, id))) return c.json({ error: 'No existe.' }, 404);
+	try {
+		const me = c.get('me');
+		return c.json({ ok: true, ...(await tasks.reloadConversation(a.id, id, me, a.person_id === me.id)) });
 	} catch (err) {
 		return fail(c, err);
 	}
@@ -1124,36 +1206,84 @@ app.get('/api/monitor', (c) => c.json(monitor.view(c.get('me'))));
 
 app.post('/api/admin/orphans/clean', async (c) => adminOnly(c) ?? c.json({ cleaned: await monitor.cleanOrphans() }));
 
-// ---------- admin (behind the PIN) ----------
+// ---------- WhatsApp numbers (#18): anyone links theirs; an admin also offers public and private ones ----------
 
-// WhatsApp: one number for every agent, linked here by an admin.
-app.get('/api/admin/whatsapp', async (c) => adminOnly(c) ?? c.json(await whatsapp.status()));
-app.post('/api/admin/whatsapp/pair', async (c) => {
-	const denied = adminOnly(c);
-	if (denied) return denied;
+const wa = (fn: (c: Context<Env>) => Promise<unknown>) => async (c: Context<Env>) => {
 	try {
-		await whatsapp.pair();
-		return c.json(await whatsapp.status());
+		return c.json(await fn(c));
 	} catch (err) {
 		return fail(c, err);
 	}
-});
-app.post('/api/admin/whatsapp/logout', async (c) => {
-	const denied = adminOnly(c);
-	if (denied) return denied;
-	try {
-		await whatsapp.logout();
-		return c.json(await whatsapp.status());
-	} catch (err) {
-		return fail(c, err);
-	}
-});
+};
+const numberId = (c: Context<Env>) => Number(c.req.param('id'));
+app.get(
+	'/api/whatsapp/numbers',
+	wa((c) => whatsapp.numbers(c.get('me'))),
+);
+app.post(
+	'/api/whatsapp/numbers',
+	wa(async (c) => whatsapp.add(c.get('me'), await c.req.json())),
+);
+app.get(
+	'/api/whatsapp/numbers/:id/pairing',
+	wa((c) => whatsapp.pairing(c.get('me'), numberId(c))),
+);
+app.patch(
+	'/api/whatsapp/numbers/:id',
+	wa(async (c) => whatsapp.update(c.get('me'), numberId(c), await c.req.json())),
+);
+app.delete(
+	'/api/whatsapp/numbers/:id',
+	wa((c) => whatsapp.remove(c.get('me'), numberId(c))),
+);
+// Who may write to a number: its allow list (attended) and block list (refused).
+app.get(
+	'/api/whatsapp/numbers/:id/lists',
+	wa((c) => whatsapp.lists(c.get('me'), numberId(c))),
+);
+app.put(
+	'/api/whatsapp/numbers/:id/lists',
+	wa(async (c) => whatsapp.setLists(c.get('me'), numberId(c), await c.req.json())),
+);
+
+// ---------- admin (behind the PIN) ----------
 
 app.get(
 	'/api/admin',
 	async (c) =>
 		adminOnly(c) ?? c.json({ settings: settings(), people: await people.everyone(), uses: await vault.uses(0, true) }),
 );
+// cuby-whatsapp (#18): the company number as a channel for everyone's agents; its keys only go in here.
+app.get('/api/admin/cuby-whatsapp', (c) => adminOnly(c) ?? c.json(cuby.adminView()));
+app.put('/api/admin/cuby-whatsapp', async (c) => {
+	const denied = adminOnly(c);
+	if (denied) return denied;
+	try {
+		return c.json(await cuby.configure(c.get('me'), await c.req.json()));
+	} catch (err) {
+		return fail(c, err);
+	}
+});
+// Each person's own phone on the company number, as they write it (no code).
+app.get('/api/whatsapp/cuby/link', async (c) => c.json(await cuby.linkView(c.get('me'))));
+app.post('/api/whatsapp/cuby/link', async (c) => {
+	try {
+		return c.json(await cuby.startLink(c.get('me'), await c.req.json()));
+	} catch (err) {
+		return fail(c, err);
+	}
+});
+app.delete('/api/whatsapp/cuby/link', async (c) => c.json(await cuby.unlink(c.get('me'))));
+// The photo of my groups «Agentes <me>».
+app.get('/api/whatsapp/group-photo', async (c) => c.json(await whatsapp.groupPhotoView(c.get('me'))));
+app.put('/api/whatsapp/group-photo', async (c) => {
+	try {
+		return c.json(await whatsapp.setGroupPhoto(c.get('me'), await c.req.json()));
+	} catch (err) {
+		return fail(c, err);
+	}
+});
+app.delete('/api/whatsapp/group-photo', async (c) => c.json(await whatsapp.setGroupPhoto(c.get('me'), null)));
 app.put('/api/admin/settings', async (c) => {
 	const denied = adminOnly(c);
 	if (denied) return denied;

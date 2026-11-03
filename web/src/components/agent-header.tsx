@@ -56,6 +56,12 @@ export function AgentHeader({
 								{modelLabel(settings, agent.model)}
 								{!mine && ` · de ${agent.owner}`}
 							</span>
+							{/* How you call it: your aliases (personal), or its handle. */}
+							{(agent.aliases?.length || agent.handle) && (
+								<span className="truncate" title="Tus alias (sidebar → … → Alias)">
+									· {(agent.aliases?.length ? agent.aliases : [agent.handle]).map((x) => `@${x}`).join(' ')}
+								</span>
+							)}
 						</span>
 					</div>
 				</div>

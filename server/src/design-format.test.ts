@@ -10,7 +10,9 @@ test('contract validates without silently truncating the prompt', () => {
 		prompt: '# Objetivo\nComparar fuentes.',
 	});
 	expect(() => validateContract({ name: 'x'.repeat(41), prompt: 'a' })).toThrow();
-	expect(() => validateContract({ name: 'a', prompt: 'x'.repeat(16001) })).toThrow();
+	// No length limit: a long contract is kept whole (the panel only warns).
+	expect(validateContract({ name: 'a', prompt: 'x'.repeat(16001) }).prompt).toHaveLength(16001);
+	expect(() => validateContract({ name: 'a', prompt: '  ' })).toThrow('necesita un prompt');
 });
 test('interview can ask questions before there is a contract', () => {
 	expect(parseDesignReply(response({ message: '¿Qué resultado esperas?', contract: null, ready: false })).ready).toBe(
@@ -18,7 +20,14 @@ test('interview can ask questions before there is a contract', () => {
 	);
 });
 test('a ready response must include a non-empty contract', () => {
-	expect(() => parseDesignReply(response({ message: 'Listo', contract: null, ready: true }))).toThrow('vacío');
+	expect(() => parseDesignReply(response({ message: 'Listo', contract: null, ready: true }))).toThrow(
+		'sin enviar el contrato',
+	);
+	// With a contract already in the draft, ready without one keeps it (no corrective turn).
+	expect(parseDesignReply(response({ message: 'Listo', contract: null, ready: true }), true)).toMatchObject({
+		ready: true,
+		contract: null,
+	});
 	expect(() =>
 		parseDesignReply(response({ message: 'Listo', contract: { name: 'A', prompt: '' }, ready: true })),
 	).toThrow();

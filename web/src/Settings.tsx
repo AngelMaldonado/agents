@@ -2,7 +2,7 @@
 import { useEffect, useState } from 'react';
 import { api, ago, type Agent, type Credential } from './api';
 import { Button } from '@/components/ui/button';
-import { DeleteButton, EditButton, FormActions } from '@/components/actions';
+import { DeleteButton, EditButton, FormActions, SaveButton, useSaving } from '@/components/actions';
 import { Input } from '@/components/ui/input';
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
 import { KeysSection, McpSection, useAccess } from './Access';
@@ -49,6 +49,7 @@ function Proxy() {
 	const [check, setCheck] = useState<Check | null>(null);
 	const [error, setError] = useState('');
 	const [busy, setBusy] = useState(false);
+	const saving = useSaving();
 	useEffect(() => {
 		api('/keys').then((r) => {
 			setProxy(r.proxy);
@@ -77,12 +78,14 @@ function Proxy() {
 				className="form"
 				onSubmit={(e) => {
 					e.preventDefault();
-					void run(async () => {
-						const r = await api('/proxy', { method: 'PUT', body: { url, key } });
-						setProxy(r.proxy);
-						setCheck(r.check);
-						setKey('');
-					});
+					void run(() =>
+						saving.run(async () => {
+							const r = await api('/proxy', { method: 'PUT', body: { url, key } });
+							setProxy(r.proxy);
+							setCheck(r.check);
+							setKey('');
+						}),
+					);
 				}}
 			>
 				<div className="field-list">
@@ -101,9 +104,9 @@ function Proxy() {
 						/>
 					</label>
 					<div className="field-actions row wrap">
-						<Button disabled={busy || !url.trim() || !key.trim()}>
-							{busy ? 'Probando…' : proxy ? 'Reemplazar' : 'Guardar'}
-						</Button>
+						<SaveButton state={saving.state} disabled={busy || !url.trim() || !key.trim()}>
+							{proxy ? 'Reemplazar' : 'Guardar'}
+						</SaveButton>
 						{proxy && (
 							<>
 								<Button
@@ -198,6 +201,7 @@ function KeyRowForm({
 	onSaved: (keys: KeyRow[]) => void;
 }) {
 	const [value, setValue] = useState('');
+	const saving = useSaving();
 	const [error, setError] = useState('');
 	return (
 		<form
@@ -206,9 +210,11 @@ function KeyRowForm({
 				e.preventDefault();
 				setError('');
 				try {
-					const r = await api(`/keys/${provider}`, { method: 'PUT', body: { key: value } });
-					setValue('');
-					onSaved(r.keys);
+					await saving.run(async () => {
+						const r = await api(`/keys/${provider}`, { method: 'PUT', body: { key: value } });
+						setValue('');
+						onSaved(r.keys);
+					});
 				} catch (err) {
 					setError((err as Error).message);
 				}
@@ -226,7 +232,9 @@ function KeyRowForm({
 				placeholder={hint}
 				autoComplete="off"
 			/>
-			<Button disabled={!value.trim()}>{row ? 'Reemplazar' : 'Guardar'}</Button>
+			<SaveButton state={saving.state} disabled={!value.trim()}>
+				{row ? 'Reemplazar' : 'Guardar'}
+			</SaveButton>
 			{row && (
 				<DeleteButton
 					label="Quitar"
@@ -251,6 +259,7 @@ export function Vault({ agents, scope }: { agents: Agent[]; scope?: Agent }) {
 	const empty = { name: '', loginUrl: '', username: '', password: '' };
 	const [form, setForm] = useState(empty);
 	const [adding, setAdding] = useState(false);
+	const saving = useSaving();
 	const [error, setError] = useState('');
 	const load = () =>
 		api('/vault').then((r) => {
@@ -372,14 +381,19 @@ export function Vault({ agents, scope }: { agents: Agent[]; scope?: Agent }) {
 						e.preventDefault();
 						setError('');
 						try {
-							let list: Credential[] = (await api('/vault', { body: form })).credentials;
-							// From an agent's settings, a new access is granted to that agent (and only to it).
-							const c = scope && list.find((x) => x.name.toLowerCase() === form.name.trim().toLowerCase());
-							if (c && !c.agents.includes(scope.id))
-								list = (
-									await api(`/vault/${c.id}/grants`, { method: 'PUT', body: { agents: [...c.agents, scope.id] } })
-								).credentials;
-							setCreds(list);
+							await saving.run(
+								async () => {
+									let list: Credential[] = (await api('/vault', { body: form })).credentials;
+									// From an agent's settings, a new access is granted to that agent (and only to it).
+									const c = scope && list.find((x) => x.name.toLowerCase() === form.name.trim().toLowerCase());
+									if (c && !c.agents.includes(scope.id))
+										list = (
+											await api(`/vault/${c.id}/grants`, { method: 'PUT', body: { agents: [...c.agents, scope.id] } })
+										).credentials;
+									setCreds(list);
+								},
+								{ hold: true },
+							);
 							setAdding(false);
 						} catch (err) {
 							setError((err as Error).message);
@@ -426,7 +440,12 @@ export function Vault({ agents, scope }: { agents: Agent[]; scope?: Agent }) {
 							{error}
 						</p>
 					)}
-					<FormActions submitLabel="Guardar acceso" disabled={false} onCancel={() => setAdding(false)} />
+					<FormActions
+						submitLabel="Guardar acceso"
+						disabled={false}
+						state={saving.state}
+						onCancel={() => setAdding(false)}
+					/>
 				</form>
 			</FormDialog>
 			{!scope && (

@@ -17,7 +17,7 @@ dev verb="session" arg="":
     set -euo pipefail
     . scripts/dev/env.sh
     s="{{session}}"
-    wins="tunnel db cliproxy fake proxy server web"
+    wins="tunnel db cliproxy fake proxy server web whatsapp"
     attach() { if [ -t 0 ] && [ -t 1 ] && [ -z "${TMUX:-}" ]; then exec tmux attach -t "$s"; fi; echo "tmux attach -t $s"; }
     case "{{verb}}" in
       init) scripts/dev/init.sh ;;

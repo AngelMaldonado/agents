@@ -40,9 +40,11 @@ type Message = {
 	person_id?: number | null;
 };
 
-/** Whose task a message is: someone the agent is shared with, or null for the owner's lane. */
+/** Whose task a message is: someone the agent is shared with (from the web or WhatsApp), or null for the owner's lane. */
 const requester = (m: Pick<Message, 'source' | 'person_id'>, ownerId: number) =>
-	m.source === 'web' && m.person_id != null && m.person_id !== ownerId ? m.person_id : null;
+	(m.source === 'web' || m.source === 'whatsapp') && m.person_id != null && m.person_id !== ownerId
+		? m.person_id
+		: null;
 
 const MAX_FILES = 10;
 const MAX_FILE_BYTES = 10 * 1024 * 1024;
@@ -99,7 +101,12 @@ export async function receive(
 			m.personId != null &&
 			m.personId !== owner.person_id &&
 			!!(await row('select 1 from agent_shares where agent_id=$1 and person_id=$2', [m.agentId, m.personId], c));
-		if (m.conversationId !== undefined && (m.source !== 'web' || (m.personId !== owner.person_id && !shared)))
+		// WhatsApp brings the conversation of its chat (whatsapp.ts); from the web, who may write in it.
+		if (
+			m.conversationId !== undefined &&
+			m.source !== 'whatsapp' &&
+			(m.source !== 'web' || (m.personId !== owner.person_id && !shared))
+		)
 			throw new Error('Sólo su dueño y quienes lo tienen compartido escriben en esta conversación.');
 		if (m.dedupeKey) {
 			const previous = await row<{ conversation_id: number; text: string }>(
@@ -306,7 +313,7 @@ export function render(
 				: m.source === 'web' && m.sender
 					? `Mensaje de ${m.sender}, con quien tu dueño compartió este agente (no es tu dueño):\n\n`
 					: m.source === 'whatsapp'
-						? `Mensaje recibido por WhatsApp${m.sender ? ` de ${m.sender}` : ''} (tu respuesta final se le envía por WhatsApp):\n\n`
+						? `Mensaje recibido por WhatsApp${m.sender ? ` de ${m.sender}` : ''}. Tu respuesta final y los archivos que dejes en ~/work/out se le envían por WhatsApp (hasta 5, de 10 MB). Deja un solo entregable, el que mejor sirva para leerse en el teléfono, salvo que de verdad hagan falta varios; no dupliques el mismo resultado en otros formatos. El número de la empresa (Cuby WhatsApp) sólo acepta PDF, imágenes PNG o JPG, Word, Excel, PowerPoint, TXT y CSV: ahí prefiere PDF o imagen (un HTML llegaría comprimido en ZIP).\n\n`
 						: '';
 	const files = attachments.length ? `\n\nAdjuntos en ~/work/in/${m.id}/: ${attachments.join(', ')}` : '';
 	return `${head}${m.text}${files}`;
