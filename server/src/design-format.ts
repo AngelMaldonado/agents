@@ -169,8 +169,8 @@ export function validateContract(value: unknown): Contract {
 	const c = value as Contract;
 	if (!c || typeof c.name !== 'string' || !c.name.trim() || c.name.trim().length > 40)
 		throw new Error('El contrato necesita un nombre de hasta 40 caracteres.');
-	if (typeof c.prompt !== 'string' || !c.prompt.trim() || c.prompt.length > 16000)
-		throw new Error('El contrato necesita un prompt de hasta 16000 caracteres.');
+	// No length limit (Angel, 2-nov-2026): past 16 000 characters the panel only warns.
+	if (typeof c.prompt !== 'string' || !c.prompt.trim()) throw new Error('El contrato necesita un prompt.');
 	return { name: c.name.trim(), prompt: c.prompt.trim() };
 }
 /** The reply's text (the JSON the designer wrote). */
@@ -211,7 +211,8 @@ export function repairSkills(harness: any) {
 	});
 	return { ...harness, skills };
 }
-export function parseDesignReply(response: any): DesignReply {
+/** `proposed`: the draft already holds a proposal of its own, so a ready reply without a contract keeps it. */
+export function parseDesignReply(response: any, proposed = false): DesignReply {
 	if (response?.status !== 'completed')
 		throw new Error('La IA no terminó la respuesta. Reintenta o pide un contrato más breve.');
 	const text = replyText(response);
@@ -230,7 +231,8 @@ export function parseDesignReply(response: any): DesignReply {
 	)
 		throw new Error('La respuesta de la IA no tiene el formato esperado.');
 	const contract = r.contract === null ? null : validateContract(r.contract);
-	if (r.ready && !contract) throw new Error('La IA no puede declarar listo un contrato vacío.');
+	if (r.ready && !contract && !proposed)
+		throw new Error('Declaraste listo sin enviar el contrato, y este borrador aún no tiene una propuesta tuya.');
 	return {
 		message: r.message.trim(),
 		contract,

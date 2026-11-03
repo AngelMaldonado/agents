@@ -6,7 +6,7 @@ import { api, ago, type AccessKey, type AccessMcp, type AccessPair, type AccessV
 import { Badge } from '@/components/ui/badge';
 import { AddMenu, AgentPicker, FormDialog, GrantToggle, SectionHead, TestButton } from '@/components/access-ui';
 import { Button } from '@/components/ui/button';
-import { DeleteButton, EditButton, FormActions } from '@/components/actions';
+import { DeleteButton, EditButton, FormActions, useSaving } from '@/components/actions';
 import { Input } from '@/components/ui/input';
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
 
@@ -42,7 +42,21 @@ export function useAccess() {
 			setBusy(false);
 		}
 	};
-	return { view, error, busy, act };
+	// A dialog's save: the same action, with the button's spinner and check (held before it closes).
+	const saving = useSaving();
+	const save = (fn: () => Promise<AccessView>) =>
+		saving
+			.run(
+				async () => {
+					if (!(await act(fn))) throw new Error('not saved');
+				},
+				{ hold: true },
+			)
+			.then(
+				() => true,
+				() => false,
+			);
+	return { view, error, busy, act, save, saveState: saving.state };
 }
 
 const realBadge = (
@@ -135,7 +149,7 @@ export function KeysSection({
 	scope?: Agent;
 	children?: ReactNode;
 }) {
-	const { view, busy, act } = access;
+	const { view, busy, act, save, saveState } = access;
 	const empty = { name: '', value: '', domains: '', exposeReal: false };
 	const [form, setForm] = useState(empty);
 	const [open, setOpen] = useState(false);
@@ -270,7 +284,7 @@ export function KeysSection({
 					className="form"
 					onSubmit={async (e) => {
 						e.preventDefault();
-						const saved = await act(async () => {
+						const saved = await save(async () => {
 							const view = await api<AccessView>('/access/keys', { body: form });
 							// From an agent's settings, a new key is granted to that agent (and only to it).
 							const k = scope && view.keys.find((x) => x.name.toUpperCase() === form.name.trim().toUpperCase());
@@ -347,6 +361,7 @@ export function KeysSection({
 					<FormActions
 						submitLabel={editing ? 'Guardar cambios' : 'Guardar key'}
 						disabled={busy || !form.name.trim()}
+						state={saveState}
 						onCancel={() => setOpen(false)}
 					/>
 				</form>
@@ -369,7 +384,7 @@ export function McpSection({
 	onLogin?: (server: string) => void;
 	children?: ReactNode;
 }) {
-	const { view, busy, act } = access;
+	const { view, busy, act, save, saveState } = access;
 	const empty = {
 		name: '',
 		description: '',
@@ -554,7 +569,7 @@ export function McpSection({
 							oauth: form.oauth,
 							exposeReal: form.exposeReal,
 						};
-						const saved = await act(async () => {
+						const saved = await save(async () => {
 							const view = await api<AccessView>('/access/mcp', { body });
 							// From an agent's settings, a new server is granted to that agent (and only to it).
 							const m = scope && view.mcp.find((x) => x.name.toLowerCase() === body.name.toLowerCase());
@@ -685,6 +700,7 @@ export function McpSection({
 					)}
 					<FormActions
 						submitLabel={editing ? 'Guardar cambios' : 'Guardar servidor'}
+						state={saveState}
 						disabled={busy || !form.name.trim()}
 						onCancel={() => setOpen(false)}
 					/>

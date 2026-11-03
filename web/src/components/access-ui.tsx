@@ -79,11 +79,14 @@ export function AgentPicker({
 export function GrantToggle({
 	on,
 	what,
+	label,
 	disabled,
 	onChange,
 }: {
 	on: boolean;
 	what: string;
+	/** The switch's accessible name; by default «<what> para este agente». */
+	label?: string;
 	disabled?: boolean;
 	onChange: (on: boolean) => void;
 }) {
@@ -92,7 +95,7 @@ export function GrantToggle({
 			type="button"
 			role="switch"
 			aria-checked={on}
-			aria-label={`${what} para este agente`}
+			aria-label={label ?? `${what} para este agente`}
 			disabled={disabled}
 			onClick={() => onChange(!on)}
 			className={cn(

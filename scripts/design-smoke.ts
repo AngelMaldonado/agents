@@ -250,7 +250,7 @@ try {
 				AGENTS_MASTER_KEY: masterKey,
 				AGENTS_PROXY_KEY: 'fixture-internal-key-not-a-secret',
 				AGENTS_WHATSAPP_URL: 'http://127.0.0.1:9',
-				AGENTS_WHATSAPP_SECRET: 'fixture-whatsapp-disabled',
+				AGENTS_WHATSAPP_SECRET: 'fixture-whatsapp-bridge-down',
 				AGENTS_ADMIN_PIN: '1111',
 				AGENTS_COOKIE_SECURE: '0',
 				AGENTS_CLIPROXY_CONFIG: join(dir, 'proxy.yaml'),
@@ -277,23 +277,21 @@ try {
 	);
 	await api('/join', { name: 'Contract smoke fixture' });
 	assert.equal(((await (await fetch(`http://127.0.0.1:${port}/healthz`)).json()) as any).ready, true);
-	for (const [path, method] of [
-		['/api/admin/whatsapp', 'GET'],
-		['/api/agents/999/channels/whatsapp', 'PUT'],
-		['/internal/whatsapp/inbound', 'POST'],
-	]) {
+	// WhatsApp (#18): the bridge is configured but does not answer (port 9). The internal route needs its
+	// secret; the person's numbers answer, with the bridge reported down and nothing linked.
+	for (const secret of [undefined, 'not-the-secret'])
 		assert.equal(
 			(
-				await fetch(`http://127.0.0.1:${port}${path}`, {
-					method,
-					headers: { cookie, 'content-type': 'application/json' },
-					body: method === 'GET' ? undefined : '{}',
+				await fetch(`http://127.0.0.1:${port}/internal/whatsapp/event`, {
+					method: 'POST',
+					headers: { 'content-type': 'application/json', ...(secret ? { 'x-agents-secret': secret } : {}) },
+					body: JSON.stringify({ type: 'message', number: 'x', id: '1', phone: '5215512345678', text: 'Hola' }),
 				})
 			).status,
-			404,
+			403,
 		);
-	}
-	console.log('PASS baseline health and WhatsApp API/internal routes disabled even with bridge credentials');
+	assert.deepEqual(await api('/whatsapp/numbers'), { available: true, bridge: 'down', numbers: [] });
+	console.log('PASS baseline health; WhatsApp internal route needs the bridge secret; numbers report the bridge down');
 	await api('/proxy', { url: fake.url.origin, key: 'fixture-key-not-a-secret' }, 'PUT');
 	let { design } = await api('/designs', { model: 'openai/gpt-6-sol' });
 	({ design } = await api(`/designs/${design.id}/messages`, { text: 'Comparar fuentes.', version: design.version }));
@@ -377,10 +375,11 @@ try {
 	const agentId = approvals[0].design.applied_agent_id;
 	assert.equal(approvals[1].design.applied_agent_id, agentId);
 	assert.equal((await api('/agents')).agents.length, 1);
+	// No number hosts the groups here (no Cuby WhatsApp, none marked): agents no longer pick one.
 	assert.deepEqual((await api(`/agents/${agentId}/channels`)).whatsapp, {
-		available: false,
-		phone: null,
-		enabled: false,
+		available: true,
+		number: null,
+		notify: false,
 		contacts: [],
 	});
 	console.log(

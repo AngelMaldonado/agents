@@ -483,7 +483,7 @@ function ChatRowMenu({
 					disabled={chat.is_default || chat.live}
 					title={
 						chat.is_default
-							? 'Principal no se elimina: ahí llegan los canales y los horarios.'
+							? 'Principal no se elimina: ahí llegan los webhooks y los horarios.'
 							: chat.live
 								? 'Tiene un trabajo en curso.'
 								: undefined

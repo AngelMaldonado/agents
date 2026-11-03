@@ -27,6 +27,7 @@ CLIPROXY_CONFIG="$DEV/cliproxy/config.yaml" # written by the server on start and
 FAKE_LLM_PORT=8318
 
 SERVER_PORT=8787
+WA_PORT=8790 # the WhatsApp bridge
 WEB_URL=http://localhost:5173
 LLM_MODE_FILE="$DEV/llm" # "fake" or "real" (just dev fake on|off)
 
@@ -72,8 +73,8 @@ server_env() {
 	export AGENTS_PROXY_URL="http://$PROXY_NAME:8080"
 	export AGENTS_PROXY_CA_CERT="$(cat "$PROXY_DIR/ca.crt")"
 	export PORT="$SERVER_PORT"
-	# No AGENTS_WHATSAPP_URL: the bridge is off in dev (and FEATURES.whatsapp is false).
-	unset AGENTS_WHATSAPP_URL
+	# The WhatsApp bridge (#18) runs on this Mac too: `whatsapp` window; numbers are linked by QR in the web.
+	export AGENTS_WHATSAPP_URL="http://127.0.0.1:$WA_PORT"
 }
 
 docker_ready() { curl -sf --max-time 3 --unix-socket "$DOCKER_SOCK" http://docker/_ping >/dev/null 2>&1; }

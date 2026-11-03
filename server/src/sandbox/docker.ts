@@ -112,6 +112,36 @@ export class DockerSandbox implements SandboxProvider {
 		return id;
 	}
 
+	/**
+	 * One created, never started container per image to keep: `docker image prune -a` (by hand or Komodo's)
+	 * only removes images no container uses, and an agent's pinned image has no container between its runs.
+	 * Keepers of images no longer listed go. They carry `agents.keep`, not `agents.instance`, so the sweeps of
+	 * old sandboxes leave them alone.
+	 */
+	async keepImages(images: string[], instance: string) {
+		const wanted = new Set(images);
+		const existing = await this.list(`agents.keep=${instance}`);
+		for (const c of existing) if (!wanted.has(c.labels['agents.keep.image'] ?? '')) await this.destroy(c.id);
+		const have = new Set(existing.map((c) => c.labels['agents.keep.image']));
+		for (const image of wanted) {
+			if (have.has(image)) continue;
+			const name = `agents-${instance}-keep-${image.replace(/^sha256:/, '').slice(0, 12)}`;
+			await call(
+				'POST',
+				`/containers/create?name=${encodeURIComponent(name)}`,
+				{
+					Image: image,
+					Entrypoint: ['true'],
+					Labels: { 'agents.keep': instance, 'agents.keep.image': image },
+					User: 'agent',
+					NetworkDisabled: true,
+					HostConfig: { NetworkMode: 'none', AutoRemove: false },
+				},
+				[409],
+			);
+		}
+	}
+
 	async destroy(id: string) {
 		await call('DELETE', `/containers/${id}?force=true&v=true`, undefined, [404, 409]);
 	}

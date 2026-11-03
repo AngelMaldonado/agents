@@ -7,6 +7,5 @@ data
 .codegraph
 sandbox/*
 !sandbox/harness.ts
-!sandbox/features.ts
 .tools
 .release

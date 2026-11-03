@@ -1,10 +1,11 @@
-// An agent's channels, visible only to its owner: WhatsApp (the instance's shared number) and signed
+// An agent's channels, visible only to its owner: WhatsApp (who talks to it in their groups) and signed
 // webhooks. Schedules have their own settings tab.
 import { useEffect, useRef, useState } from 'react';
-import { FEATURES } from '../../sandbox/features';
+import { formatPhone, InfoTip, STATE_LABEL, type WhatsAppNumber } from './WhatsApp';
+import { GrantToggle } from '@/components/access-ui';
+import { SaveButton, useSaving, type SaveState } from '@/components/actions';
 import { api, ago } from './api';
 import { Button } from '@/components/ui/button';
-import { DeleteButton } from '@/components/actions';
 import { Input } from '@/components/ui/input';
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
 
@@ -30,9 +31,17 @@ type View = {
 	deliveries: Delivery[];
 	schedules: Schedule[];
 	timezone: string;
-	whatsapp: { available: boolean; phone: string | null; enabled: boolean; contacts: Contact[] };
+	whatsapp: {
+		available: boolean;
+		number: WhatsAppNumber | null;
+		notify: boolean;
+		contacts: Contact[];
+	};
 };
-type Contact = { phone: string; label: string; notify: boolean };
+
+/** One phone of the number's allow list, as the agent's owner may switch it for this agent. */
+type Contact = { key: string; shown: string; name: string; kind: 'owner' | 'person' | 'guest'; enabled: boolean };
+const KIND: Record<Contact['kind'], string> = { owner: 'Tú', person: 'Compartido', guest: 'Invitado' };
 
 export function useAgentChannels(agentId: number) {
 	const [v, setV] = useState<View | null>(null);
@@ -63,6 +72,20 @@ export function useAgentChannels(agentId: number) {
 
 export function Channels({ agentId }: { agentId: number }) {
 	const { v, error, call } = useAgentChannels(agentId);
+	// Here and not in each section: the WhatsApp section remounts when its data changes, which is
+	// exactly when its check must show.
+	const waSaving = useSaving(),
+		outSaving = useSaving();
+	const saveWith = (saving: ReturnType<typeof useSaving>, path: string, body: unknown) =>
+		saving
+			.run(async () => {
+				const err = await call(path, 'PUT', body);
+				if (err) throw new Error(err);
+			})
+			.then(
+				() => null,
+				(e: Error) => e.message,
+			);
 	if (!v)
 		return (
 			<div className="py-4">
@@ -87,11 +110,16 @@ export function Channels({ agentId }: { agentId: number }) {
 					{error}
 				</p>
 			)}
-			{FEATURES.whatsapp && (
-				<WhatsApp
-					key={JSON.stringify(v.whatsapp)}
-					v={v.whatsapp}
-					save={(enabled, contacts) => call('/channels/whatsapp', 'PUT', { enabled, contacts })}
+			<WhatsApp
+				key={JSON.stringify(v.whatsapp)}
+				v={v.whatsapp}
+				saveState={waSaving.state}
+				save={(notify) => saveWith(waSaving, '/channels/whatsapp', { notify })}
+			/>
+			{v.whatsapp.available && v.whatsapp.number && (
+				<WhatsAppContacts
+					contacts={v.whatsapp.contacts}
+					onToggle={(key, enabled) => call('/channels/whatsapp/contacts', 'PUT', { key, enabled })}
 				/>
 			)}
 			<Inbound
@@ -103,7 +131,8 @@ export function Channels({ agentId }: { agentId: number }) {
 			/>
 			<Outbound
 				v={v}
-				save={(url) => call('/channels/out', 'PUT', { url })}
+				saveState={outSaving.state}
+				save={(url) => void saveWith(outSaving, '/channels/out', { url })}
 				rotate={() =>
 					confirm('¿Rotar el secreto de salida? Tu puente tendrá que usar el nuevo.') &&
 					call('/channels/rotate', 'POST', { which: 'out' })
@@ -114,121 +143,130 @@ export function Channels({ agentId }: { agentId: number }) {
 	);
 }
 
-const phone = (digits: string) => `+${digits}`;
+/** Who of the number's allow list writes to this agent: one switch per phone, saved at once. */
+function WhatsAppContacts({
+	contacts,
+	onToggle,
+}: {
+	contacts: Contact[];
+	onToggle: (key: string, enabled: boolean) => Promise<string | null>;
+}) {
+	const [busy, setBusy] = useState('');
+	return (
+		<section className="panel channel-section min-w-0">
+			<h2 className="inline-flex items-center gap-2">
+				Quién le escribe por WhatsApp
+				<InfoTip label="Quién habla con este agente">
+					Los teléfonos de la lista blanca del número de los grupos. Cada uno encendido tiene este agente en su grupo
+					«Agentes tuyo» y puede recibir sus avisos. Tú y las personas con quienes lo compartiste (si su teléfono está
+					ligado a ellas en la lista) están encendidos por defecto; los invitados, apagados. Agregar o bloquear
+					teléfonos se hace en Configuración → WhatsApp → Editar, por quien administra el número.
+				</InfoTip>
+			</h2>
+			{contacts.length ? (
+				<Table>
+					<TableHeader>
+						<TableRow>
+							<TableHead>Contacto</TableHead>
+							<TableHead>Teléfono</TableHead>
+							<TableHead className="w-24 text-right">Puede escribirle</TableHead>
+						</TableRow>
+					</TableHeader>
+					<TableBody>
+						{contacts.map((c) => (
+							<TableRow key={c.key}>
+								<TableCell>
+									<span className="font-medium">{c.name}</span> <span className="muted small">· {KIND[c.kind]}</span>
+								</TableCell>
+								<TableCell className="mono small">{/^\d+$/.test(c.shown) ? formatPhone(c.shown) : c.shown}</TableCell>
+								<TableCell className="text-right">
+									<GrantToggle
+										on={c.enabled}
+										what={c.name}
+										label={`${c.name} puede escribirle a este agente`}
+										disabled={busy === c.key}
+										onChange={async (on) => {
+											setBusy(c.key);
+											await onToggle(c.key, on);
+											setBusy('');
+										}}
+									/>
+								</TableCell>
+							</TableRow>
+						))}
+					</TableBody>
+				</Table>
+			) : (
+				<p className="muted">
+					Nadie de la lista blanca de este número puede escribirle todavía: agrega teléfonos en Configuración → WhatsApp
+					→ Editar, o compártele el agente a alguien cuyo teléfono ya esté ligado a esa persona.
+				</p>
+			)}
+		</section>
+	);
+}
+
 function WhatsApp({
 	v,
 	save,
+	saveState,
 }: {
 	v: View['whatsapp'];
-	save: (enabled: boolean, contacts: Contact[]) => Promise<string | null>;
+	save: (notify: boolean) => Promise<string | null>;
+	saveState: SaveState;
 }) {
-	const [enabled, setEnabled] = useState(v.enabled);
-	const [contacts, setContacts] = useState<Contact[]>(v.contacts);
-	const [busy, setBusy] = useState(false),
-		[saved, setSaved] = useState(false);
-	const dirty = enabled !== v.enabled || JSON.stringify(contacts) !== JSON.stringify(v.contacts);
-	const edit = (i: number, patch: Partial<Contact>) => {
-		setSaved(false);
-		setContacts((cs) => cs.map((c, j) => (j === i ? { ...c, ...patch } : c)));
-	};
+	const [notify, setNotify] = useState(v.notify);
+	const n = v.number;
 	return (
 		<section className="panel channel-section min-w-0" aria-label="WhatsApp">
-			<h2>WhatsApp</h2>
-			{v.available ? (
+			<h2 className="inline-flex items-center gap-2">
+				WhatsApp
+				{v.available && (
+					<InfoTip label="Cómo habla este agente por WhatsApp">
+						Cada persona habla con tus agentes en su grupo «Agentes tuyo» del número de los grupos (lo elige un admin):
+						ahí ve sólo los que le compartiste o le encendiste abajo. Contesta el agente que habló al último; para otro,
+						empiezan con su nombre («Agente: …») o /agente &lt;nombre&gt;; citar un mensaje sigue esa conversación.
+						/terminar cierra la conversación con el agente actual.
+					</InfoTip>
+				)}
+			</h2>
+			{!v.available ? (
+				<p className="muted">Este servidor no tiene WhatsApp configurado.</p>
+			) : !n ? (
 				<p className="muted">
-					Un número para todos los agentes: <strong>{phone(v.phone ?? '')}</strong>. Sólo pueden escribirle a este
-					agente los números de la lista. Quien habla con varios elige con <code>/agentes</code> y{' '}
-					<code>/agente &lt;nombre&gt;</code>. Recibe la respuesta, los archivos que entregue y, si se atasca, su
-					pregunta.
+					Todavía no hay un número para los grupos: un admin lo elige en Configuración → WhatsApp.
 				</p>
 			) : (
-				<p className="muted">
-					Un administrador todavía no ha vinculado un número de WhatsApp. Puedes dejar lista la configuración; se usa en
-					cuanto haya número.
-				</p>
-			)}
-			<label className="row mb-4 gap-2 text-sm">
-				<input
-					type="checkbox"
-					checked={enabled}
-					onChange={(e) => {
-						setSaved(false);
-						setEnabled(e.target.checked);
-					}}
-				/>{' '}
-				Recibir y responder por WhatsApp
-			</label>
-			<div className="grid gap-2" role="group" aria-label="Números que pueden escribirle">
-				{contacts.map((c, i) => (
-					<div key={i} className="row wrap gap-2">
-						<Input
-							aria-label="Número con lada de país"
-							className="max-w-48"
-							value={c.phone}
-							onChange={(e) => edit(i, { phone: e.target.value })}
-							placeholder="5215512345678"
-							inputMode="tel"
+				<>
+					<p className="text-sm">
+						Número de los grupos: <b className="font-medium">{n.label}</b>
+						{n.phone && n.label !== formatPhone(n.phone) ? ` (${formatPhone(n.phone)})` : ''}
+						{n.state === 'connected' ? '' : ` · ${STATE_LABEL[n.state]}`}
+					</p>
+					<div className="mt-3 flex items-center gap-2 text-sm">
+						<GrantToggle
+							on={notify}
+							what="Avisar horarios y webhooks"
+							label="Avisar horarios y webhooks"
+							onChange={(on) => setNotify(on)}
 						/>
-						<Input
-							aria-label="Nombre"
-							className="max-w-48"
-							value={c.label}
-							onChange={(e) => edit(i, { label: e.target.value })}
-							placeholder="Nombre (opcional)"
-						/>
-						<label
-							className="row gap-2 text-xs"
-							title="También recibe cómo terminó el trabajo programado o por webhook"
-						>
-							<input type="checkbox" checked={c.notify} onChange={(e) => edit(i, { notify: e.target.checked })} />{' '}
-							Avisos
-						</label>
-						<DeleteButton
-							label="Quitar"
-
-							onClick={() => {
-								setSaved(false);
-								setContacts((cs) => cs.filter((_, j) => j !== i));
-							}}
-						/>
+						<span>Avisar horarios y webhooks</span>
+						<InfoTip label="Qué avisa">
+							Te manda a tu grupo «Agentes tuyo» cómo terminó el trabajo de sus horarios y webhooks.
+						</InfoTip>
 					</div>
-				))}
-				{!contacts.length && <p className="muted small">Sin números: nadie puede escribirle por WhatsApp.</p>}
-			</div>
-			<div className="row wrap mt-3 gap-2">
-				<Button
-					variant="outline"
-					size="sm"
-					disabled={contacts.length >= 20}
-					onClick={() => {
-						setSaved(false);
-						setContacts((cs) => [...cs, { phone: '', label: '', notify: false }]);
-					}}
-				>
-					Agregar número
-				</Button>
-				<Button
-					size="sm"
-					disabled={!dirty || busy}
-					onClick={async () => {
-						setBusy(true);
-						const err = await save(enabled, contacts);
-						setBusy(false);
-						setSaved(!err);
-					}}
-				>
-					{busy ? 'Guardando…' : 'Guardar WhatsApp'}
-				</Button>
-				{saved && !dirty && (
-					<span role="status" className="muted small">
-						Guardado.
-					</span>
-				)}
-			</div>
-			<p className="muted small mt-2">
-				Escribe la lada de país y el número, sin espacios (México: 521 + 10 dígitos). «Avisos» recibe cómo terminó el
-				trabajo de horarios y webhooks.
-			</p>
+					<div className="row wrap mt-3 gap-2">
+						<SaveButton
+							size="sm"
+							state={saveState}
+							disabled={notify === v.notify && saveState !== 'saved'}
+							onClick={() => void save(notify)}
+						>
+							Guardar WhatsApp
+						</SaveButton>
+					</div>
+				</>
+			)}
 		</section>
 	);
 }
@@ -285,7 +323,17 @@ curl -s ${v.inUrl} -H 'content-type: application/json' \\
 	);
 }
 
-function Outbound({ v, save, rotate }: { v: View; save: (url: string) => void; rotate: () => void }) {
+function Outbound({
+	v,
+	save,
+	saveState,
+	rotate,
+}: {
+	v: View;
+	save: (url: string) => void;
+	saveState: SaveState;
+	rotate: () => void;
+}) {
 	const [url, setUrl] = useState(v.outUrl ?? '');
 	return (
 		<section className="panel channel-section min-w-0">
@@ -307,7 +355,7 @@ function Outbound({ v, save, rotate }: { v: View; save: (url: string) => void; r
 					onChange={(e) => setUrl(e.target.value)}
 					placeholder="https://mi-puente/agents (vacío = sin webhook)"
 				/>
-				<Button>Guardar</Button>
+				<SaveButton state={saveState} />
 			</form>
 			<div className="kv">
 				<span className="muted">Secreto</span>

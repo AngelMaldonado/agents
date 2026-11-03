@@ -14,7 +14,7 @@ import {
 } from '@/components/ui/dropdown-menu';
 import { Input } from '@/components/ui/input';
 import { FormDialog } from '@/components/access-ui';
-import { FormActions } from '@/components/actions';
+import { FormActions, useSaving } from '@/components/actions';
 
 const RECENT = 8;
 
@@ -40,6 +40,7 @@ export function ConversationMenu({
 	const [title, setTitle] = useState('');
 	const [error, setError] = useState('');
 	const [busy, setBusy] = useState(false);
+	const saving = useSaving();
 	const others = [...conversations]
 		.filter((c) => !c.archived_at || c.id === conversation?.id)
 		.sort((a, b) => (b.last_at ?? b.started_at) - (a.last_at ?? a.started_at))
@@ -107,7 +108,7 @@ export function ConversationMenu({
 						setBusy(true);
 						setError('');
 						try {
-							await onRename(title);
+							await saving.run(() => onRename(title), { hold: true });
 							setRenaming(false);
 						} catch (err) {
 							setError((err as Error).message);
@@ -131,7 +132,7 @@ export function ConversationMenu({
 							{error}
 						</p>
 					)}
-					<FormActions submitLabel="Guardar" onCancel={() => setRenaming(false)} disabled={busy} />
+					<FormActions submitLabel="Guardar" onCancel={() => setRenaming(false)} disabled={busy} state={saving.state} />
 				</form>
 			</FormDialog>
 		</>

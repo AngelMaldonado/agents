@@ -62,6 +62,11 @@ export type Agent = {
 	harness?: Harness;
 	shares?: number[]; // the people it is shared with (they run tasks; configuration is the owner's)
 	managed?: boolean; // made from the admin's catalog (not built yet: always false for now)
+	/** The viewer's own aliases for it (personal), and the handle every agent answers to (@radar-dev). */
+	aliases?: string[];
+	handle?: string;
+	/** Yours or shared with you: you can write to it (an admin sees others' agents without using them). */
+	usable?: boolean;
 };
 /** GET /api/search: a match in what someone said to an agent, or what it answered. */
 export type SearchHit = {

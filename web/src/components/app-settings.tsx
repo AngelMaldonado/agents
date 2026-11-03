@@ -2,20 +2,22 @@
 // Claude.ai's settings: sections on the left, the content on the right. Same primitives and
 // classes as the agent's own modal (AgentSettings.tsx): Radix Dialog + vertical Radix Tabs.
 import { useState, type ReactNode } from 'react';
-import { Activity, KeyRound, LockKeyhole, ShieldCheck } from 'lucide-react';
+import { Activity, KeyRound, LockKeyhole, MessageCircle, ShieldCheck } from 'lucide-react';
 import type { Agent, Person } from '@/api';
 import { Monitor } from '@/Monitor';
 import { Admin } from '@/Admin';
 import { ProviderSettings, Accesses } from '@/Settings';
+import { WhatsAppSettings } from '@/WhatsApp';
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from '@/components/ui/dialog';
 import { ScrollArea } from '@/components/ui/scroll-area';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 
-export type SettingsTab = 'ai' | 'access' | 'monitor' | 'admin';
+export type SettingsTab = 'ai' | 'access' | 'whatsapp' | 'monitor' | 'admin';
 
 const TABS: { value: SettingsTab; label: string; icon: typeof Activity }[] = [
 	{ value: 'ai', label: 'API Key', icon: KeyRound },
 	{ value: 'access', label: 'Accesos', icon: LockKeyhole },
+	{ value: 'whatsapp', label: 'WhatsApp', icon: MessageCircle },
 	{ value: 'monitor', label: 'Monitor', icon: Activity },
 	{ value: 'admin', label: 'Administración', icon: ShieldCheck },
 ];
@@ -85,6 +87,11 @@ export function AppSettings({
 					{visited.has('access') && (
 						<Panel value="access" active={active}>
 							<Accesses agents={agents.filter((a) => a.person_id === me.id)} />
+						</Panel>
+					)}
+					{visited.has('whatsapp') && (
+						<Panel value="whatsapp" active={active}>
+							<WhatsAppSettings me={me} />
 						</Panel>
 					)}
 					{active === 'monitor' && (

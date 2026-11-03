@@ -579,15 +579,24 @@ export function AgentView({
 	// The peek closed with its X stays closed until the work panel opens again (then closing the
 	// panel brings it back), another run starts or another chat opens.
 	const [peekClosed, setPeekClosed] = useState(false);
-	// The peek shows the browser only when the work really uses it (a blank page that was never used
-	// does not count); otherwise its latest activity.
 	const peekEvents = task?.id === taskId ? events : [];
+	const browserStep = (e: TaskEvent) =>
+		e.kind === 'tool' && (e.data.name === 'browser' || /agent-browser/.test(e.data.summary ?? ''));
+	// The work's first panel tab: the browser if it ever used it (a blank page never used does not count).
 	const browserActive =
-		driving ||
-		(!!shot?.data?.url && shot.data.url !== 'about:blank') ||
-		peekEvents.some(
-			(e) => e.kind === 'tool' && (e.data.name === 'browser' || /agent-browser/.test(e.data.summary ?? '')),
-		);
+		driving || (!!shot?.data?.url && shot.data.url !== 'about:blank') || peekEvents.some(browserStep);
+	// The peek follows what the agent does now: the browser while it uses it (its last tool, or a browser
+	// step in the last 30 s so it does not flicker between steps), its activity once it moves on or ends.
+	const [now, setNow] = useState(() => Date.now());
+	useEffect(() => {
+		if (!live) return;
+		const timer = setInterval(() => setNow(Date.now()), 5000);
+		return () => clearInterval(timer);
+	}, [live]);
+	const tools = peekEvents.filter((e) => e.kind === 'tool');
+	const lastTool = tools.reduce<TaskEvent | null>((a, e) => (!a || e.at >= a.at ? e : a), null);
+	const lastBrowser = tools.filter(browserStep).reduce((a, e) => Math.max(a, e.at), 0);
+	const usingBrowser = driving || (live && ((!!lastTool && browserStep(lastTool)) || now - lastBrowser < 30_000));
 	// The work's first view: the browser when it uses it; otherwise its terminal (if it ran commands) or
 	// its activity. Until the owner picks a tab for this work.
 	const ranCommands = peekEvents.some((e) => e.kind === 'tool');
@@ -695,7 +704,7 @@ export function AgentView({
 							// The work panel is hidden: a small live view, top right (or where it was dragged); it opens the
 							// panel. The browser when the work uses it; otherwise its latest activity.
 							<WorkPeek container={chatView} onOpen={() => setPanelOpen(true)} onClose={() => setPeekClosed(true)}>
-								{browserActive ? (
+								{usingBrowser ? (
 									<Browser
 										compact
 										agentId={agent.id}

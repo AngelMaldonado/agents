@@ -21,7 +21,7 @@ import {
 	MessageNotSentError,
 	type ExternalThreadQueueAdapter,
 } from '@assistant-ui/react';
-import { ArrowUp, Globe, MessageSquare, Pencil, Terminal, X } from 'lucide-react';
+import { ArrowUp, Globe, LoaderCircle, MessageSquare, Pencil, Square, Terminal, X } from 'lucide-react';
 import {
 	api,
 	isLive,
@@ -43,6 +43,9 @@ import { ConversationTabs } from './conversation-tabs';
 import { Button } from './ui/button';
 import { AttachButton, AttachmentChips, SentAttachments, useAttachments } from './attachments';
 import { CopyMessage } from './message-actions';
+import { SlashPopover, useWorkCommands } from './slash-commands';
+import { ReferencePopover, useAgentMentions } from './references';
+import { sidebarChanged } from '@/lib/sidebar-events';
 import { ScrollArea } from './ui/scroll-area';
 type Props = {
 	agent: Agent & { mine: boolean };
@@ -250,7 +253,9 @@ export function WorkChat(props: Props) {
 		setFollowEnabled(true);
 	}, [active]);
 	const [busy, setBusy] = useState(false),
-		[error, setError] = useState('');
+		[error, setError] = useState(''),
+		// «@rd …» went to other agents: where, to open it.
+		[forwarded, setForwarded] = useState<{ agentId: number; name: string; conversationId: number }[]>([]);
 	const sending = useRef(false);
 	const [drafts, setDrafts] = useState<Record<string, QuestionDraft>>({});
 	const draftRef = useRef(drafts);
@@ -273,63 +278,97 @@ export function WorkChat(props: Props) {
 		const p = current.current;
 		return helpReplyTarget(p.task, p.events, !!p.task && (!p.directs || p.directs(p.task)));
 	};
-	const newMessage = useCallback(async (message: { content: readonly { type: string; text?: string }[] }) => {
-		const p = current.current,
-			text = message.content
-				.filter((c) => c.type === 'text')
-				.map((c) => c.text ?? '')
-				.join('\n')
-				.trim(),
-			files = attachRef.current.current.current;
-		if (
-			(!text && !files.length) ||
-			!p.agent.mine ||
-			p.historical ||
-			!p.active ||
-			!p.conversation ||
-			p.conversation.archived_at ||
-			p.loading
-		)
-			throw new MessageNotSentError('No puedes enviar en esta vista.');
-		if (sending.current) throw new MessageNotSentError('Espera a que termine la petición actual.');
-		if (text.length > 4000) throw new MessageNotSentError('El mensaje es demasiado largo. Máximo 4000 caracteres.');
+	// /reload: the chat's work goes on with the agent's current configuration (a live run here restarts).
+	const reload = useCallback(async () => {
+		const p = current.current;
+		if (!p.conversation || sending.current) return false;
 		sending.current = true;
 		setBusy(true);
 		setError('');
-		const sig = `${text}\n${files.map((f) => f.id).join(',')}`;
-		if (!request.current || request.current.sig !== sig) {
-			// Files never answer a help question: they go as their own message to the conversation.
-			const replyTo = files.length
-				? null
-				: composingIntent.current === undefined
-					? replyTarget()
-					: composingIntent.current;
-			request.current = { key: crypto.randomUUID(), sig, ...(replyTo ? { replyTo } : {}) };
-		}
 		try {
-			const r = request.current;
-			await api(`/agents/${p.agent.id}/conversations/${p.conversation.id}/messages`, {
-				method: 'POST',
-				body: {
-					text,
-					requestId: r.key,
-					...(r.replyTo ? { replyTo: r.replyTo } : {}),
-					...(files.length ? { attachments: files.map(({ name, mime, data }) => ({ name, mime, data })) } : {}),
-				},
-			});
-			request.current = null;
-			composingIntent.current = undefined;
-			attachRef.current.clear();
-			// A durable acknowledgement wins even if refreshing the transcript fails; never resend an accepted message.
+			await api(`/agents/${p.agent.id}/conversations/${p.conversation.id}/reload`, { method: 'POST' });
 			await p.onRefresh().catch(() => {});
+			return true;
 		} catch (e) {
 			setError((e as Error).message);
-			throw new MessageNotSentError((e as Error).message);
+			return false;
 		} finally {
 			sending.current = false;
 			setBusy(false);
 		}
 	}, []);
+	const newMessage = useCallback(
+		async (message: { content: readonly { type: string; text?: string }[] }) => {
+			const p = current.current,
+				text = message.content
+					.filter((c) => c.type === 'text')
+					.map((c) => c.text ?? '')
+					.join('\n')
+					.trim(),
+				files = attachRef.current.current.current;
+			if (
+				(!text && !files.length) ||
+				!p.agent.mine ||
+				p.historical ||
+				!p.active ||
+				!p.conversation ||
+				p.conversation.archived_at ||
+				p.loading
+			)
+				throw new MessageNotSentError('No puedes enviar en esta vista.');
+			if (sending.current) throw new MessageNotSentError('Espera a que termine la petición actual.');
+			if (text.length > 4000) throw new MessageNotSentError('El mensaje es demasiado largo. Máximo 4000 caracteres.');
+			sending.current = true;
+			setBusy(true);
+			setError('');
+			// /reload typed and sent (the / menu runs it directly): the work goes on with the current configuration.
+			if (text.trim() === '/reload' && !files.length) {
+				sending.current = false;
+				setBusy(false);
+				if (!(await reload())) throw new MessageNotSentError('No se pudo recargar.');
+				return;
+			}
+			const sig = `${text}\n${files.map((f) => f.id).join(',')}`;
+			if (!request.current || request.current.sig !== sig) {
+				// Files never answer a help question: they go as their own message to the conversation.
+				const replyTo = files.length
+					? null
+					: composingIntent.current === undefined
+						? replyTarget()
+						: composingIntent.current;
+				request.current = { key: crypto.randomUUID(), sig, ...(replyTo ? { replyTo } : {}) };
+			}
+			try {
+				const r = request.current;
+				const sent = await api<{ forwarded?: { agentId: number; name: string; conversationId: number }[] }>(
+					`/agents/${p.agent.id}/conversations/${p.conversation.id}/messages`,
+					{
+						method: 'POST',
+						body: {
+							text,
+							requestId: r.key,
+							...(r.replyTo ? { replyTo: r.replyTo } : {}),
+							...(files.length ? { attachments: files.map(({ name, mime, data }) => ({ name, mime, data })) } : {}),
+						},
+					},
+				);
+				setForwarded(sent.forwarded ?? []);
+				if (sent.forwarded?.length) sidebarChanged(); // its new conversations show in the sidebar
+				request.current = null;
+				composingIntent.current = undefined;
+				attachRef.current.clear();
+				// A durable acknowledgement wins even if refreshing the transcript fails; never resend an accepted message.
+				await p.onRefresh().catch(() => {});
+			} catch (e) {
+				setError((e as Error).message);
+				throw new MessageNotSentError((e as Error).message);
+			} finally {
+				sending.current = false;
+				setBusy(false);
+			}
+		},
+		[reload],
+	);
 	const list = useMemo(
 		() =>
 			props.conversations?.map((c) => ({
@@ -348,6 +387,25 @@ export function WorkChat(props: Props) {
 		agent.mine &&
 		!historical &&
 		!props.busyWith;
+	// Between your message and the agent's first step (or its first words): what it is doing meanwhile.
+	const lastRole = transcript.messages.at(-1)?.role;
+	const waitingLabel =
+		busy && !task
+			? 'Enviando'
+			: lastRole === 'user' &&
+				  task &&
+				  isLive(task) &&
+				  task.kind !== 'browser' &&
+				  !historical &&
+				  !props.busyWith &&
+				  !props.waitingForComputer
+				? (
+						{ queued: 'En cola', starting: 'Preparando la computadora', running: 'Pensando', blocked: '' } as Record<
+							string,
+							string
+						>
+					)[task.status] || ''
+				: '';
 	const queued = useMemo(
 		() => (props.inputs ?? []).filter((m) => m.routed_as === 'queued' && m.run_id === task?.id),
 		[props.inputs, task?.id],
@@ -384,6 +442,22 @@ export function WorkChat(props: Props) {
 				: undefined,
 		[working, queued, newMessage],
 	);
+	const skills = agent.harness?.skills;
+	const agentMentions = useAgentMentions(agent.id);
+	const slash = useWorkCommands({
+		skills: useMemo(() => skills ?? [], [skills]),
+		onReload: useCallback(() => void reload(), [reload]),
+		// After the menu removed what was typed after /: the skill goes first, the rest of the text after it.
+		onSkill: useCallback((name: string) => {
+			setTimeout(() => {
+				const composer = runtimeRef.current?.thread.composer;
+				if (!composer) return;
+				const rest = composer.getState().text.trim();
+				composer.setText(`/skill:${name} ${rest ? `${rest} ` : ''}`);
+			}, 0);
+		}, []),
+	});
+	const runtimeRef = useRef<ReturnType<typeof useExternalStoreRuntime> | null>(null);
 	const runtime = useExternalStoreRuntime({
 		messages: transcript.messages,
 		convertMessage: (m) => m,
@@ -397,6 +471,18 @@ export function WorkChat(props: Props) {
 			!!props.loadError ||
 			!!conversation?.archived_at,
 		onNew: newMessage,
+		// Stop: ends the live work of this chat (the server checks who may).
+		onCancel: async () => {
+			const t = current.current.task;
+			if (!t || !isLive(t)) return;
+			setError('');
+			try {
+				await api(`/tasks/${t.id}/cancel`, { method: 'POST' });
+				await current.current.onRefresh().catch(() => {});
+			} catch (e) {
+				setError((e as Error).message);
+			}
+		},
 		adapters: {
 			...(queue ? { queue } : {}),
 			...(list
@@ -451,6 +537,7 @@ export function WorkChat(props: Props) {
 				: {}),
 		},
 	});
+	runtimeRef.current = runtime;
 	const hasText = useRef(false),
 		[unsent, setUnsent] = useState(false);
 	useEffect(() => {
@@ -582,12 +669,19 @@ export function WorkChat(props: Props) {
 										{conversation && !conversation.is_default && (
 											<p>
 												Este chat tiene su propio contexto. Comparte archivos y navegador con las demás conversaciones;
-												el agente trabaja en una a la vez. Los canales y horarios continúan en Principal.
+												el agente trabaja en una a la vez. Los webhooks y horarios continúan en Principal; cada chat de
+												WhatsApp tiene la suya.
 											</p>
 										)}
 									</div>
 								)}
 								<ThreadPrimitive.Messages components={{ UserMessage: WorkMessage, AssistantMessage: WorkMessage }} />
+								{waitingLabel && (
+									<div className="work-loading" role="status">
+										<LoaderCircle className="size-3.5 animate-spin" aria-hidden="true" />
+										<span className="shimmer">{waitingLabel}…</span>
+									</div>
+								)}
 							</div>
 						</ThreadPrimitive.Viewport>
 					</ScrollArea>
@@ -595,6 +689,20 @@ export function WorkChat(props: Props) {
 						{error && (
 							<p role="alert" className="error mb-2">
 								{error}
+							</p>
+						)}
+						{forwarded.length > 0 && (
+							<p role="status" className="muted small mb-2">
+								Enviado a{' '}
+								{forwarded.map((f, i) => (
+									<span key={f.agentId}>
+										{i > 0 && ', '}
+										<a className="underline" href={`#/agent/${f.agentId}/chat/${f.conversationId}`}>
+											{f.name}
+										</a>
+									</span>
+								))}
+								, en una conversación nueva.
 							</p>
 						)}
 						{historical ? (
@@ -616,99 +724,119 @@ export function WorkChat(props: Props) {
 										{attach.error}
 									</p>
 								)}
-								<ComposerPrimitive.Root
-									className="designer-composer"
-									onSubmitCapture={(e) => {
-										if (busy) {
-											e.preventDefault();
-											e.stopPropagation();
-										}
-									}}
-									onDrop={attach.onDrop}
-									onDragOver={attach.onDragOver}
-								>
-									<ComposerPrimitive.Queue>
-										{() => (
-											<div className="queue-item">
-												<span className="queue-tag">En cola</span>
-												<QueueItemPrimitive.Text className="queue-text" />
-												<QueueItemPrimitive.Steer asChild>
-													<Button
-														type="button"
-														size="sm"
-														variant="ghost"
-														title="Entregarlo ya, a mitad de su paso actual"
-													>
-														Enviar ahora
-													</Button>
-												</QueueItemPrimitive.Steer>
-												<QueueItemPrimitive.Remove asChild>
-													<Button
-														type="button"
-														size="icon"
-														variant="ghost"
-														className="size-7"
-														aria-label="Quitar de la cola"
-													>
-														<X aria-hidden="true" />
-													</Button>
-												</QueueItemPrimitive.Remove>
-											</div>
-										)}
-									</ComposerPrimitive.Queue>
-									<AttachmentChips files={attach.files} onRemove={attach.remove} />
-									<ComposerPrimitive.Input
-										onPaste={attach.onPaste}
-										aria-label="Mensaje al agente"
-										placeholder={
-											props.busyWith
-												? 'Escribe; tu mensaje esperará a que termine…'
-												: task?.status === 'blocked' && (!props.directs || props.directs(task))
-													? 'Responde al agente…'
-													: props.waitingForComputer
-														? 'Escribe; tu mensaje esperará su turno…'
-														: task && isLive(task)
-															? 'Escribe; el mensaje quedará pendiente…'
-															: 'Escribe al agente…'
-										}
-										className="designer-composer-input"
-										minRows={2}
-										maxRows={6}
-										maxLength={4000}
-										submitMode="enter"
-										autoFocus={false}
-										addAttachmentOnPaste={false}
-										onChange={(e) => {
-											if (!e.target.value.trim()) {
-												composingIntent.current = undefined;
-												request.current = null;
-											} else if (composingIntent.current === undefined) composingIntent.current = replyTarget();
+								<ComposerPrimitive.TriggerPopoverRoot>
+									<ComposerPrimitive.Root
+										className="designer-composer"
+										onSubmitCapture={(e) => {
+											if (busy) {
+												e.preventDefault();
+												e.stopPropagation();
+											}
 										}}
-									/>
-									<div className="designer-composer-actions">
-										<div className="mr-auto flex items-center gap-1">
-											<AttachButton onFiles={(f) => void attach.add(f)} disabled={busy || !!props.loading} />
-											{props.composerActions}
-										</div>
-										{attach.files.length && !unsent ? (
-											<Button
-												type="button"
-												size="icon"
-												aria-label="Enviar adjuntos"
-												disabled={busy || !!props.loading}
-												onClick={() => void newMessage({ content: [] }).catch(() => {})}
-											>
-												<ArrowUp aria-hidden="true" />
-											</Button>
-										) : (
-											<ComposerPrimitive.Send asChild>
-												<Button size="icon" aria-label="Enviar mensaje" disabled={busy || !!props.loading}>
+										onDrop={attach.onDrop}
+										onDragOver={attach.onDragOver}
+									>
+										<SlashPopover slash={slash} />
+										<ReferencePopover mention={agentMentions} label="Mandar a otro agente" />
+										<ComposerPrimitive.Queue>
+											{() => (
+												<div className="queue-item">
+													<span className="queue-tag">En cola</span>
+													<QueueItemPrimitive.Text className="queue-text" />
+													<QueueItemPrimitive.Steer asChild>
+														<Button
+															type="button"
+															size="sm"
+															variant="ghost"
+															title="Entregarlo ya, a mitad de su paso actual"
+														>
+															Enviar ahora
+														</Button>
+													</QueueItemPrimitive.Steer>
+													<QueueItemPrimitive.Remove asChild>
+														<Button
+															type="button"
+															size="icon"
+															variant="ghost"
+															className="size-7"
+															aria-label="Quitar de la cola"
+														>
+															<X aria-hidden="true" />
+														</Button>
+													</QueueItemPrimitive.Remove>
+												</div>
+											)}
+										</ComposerPrimitive.Queue>
+										<AttachmentChips files={attach.files} onRemove={attach.remove} />
+										<ComposerPrimitive.Input
+											onPaste={attach.onPaste}
+											aria-label="Mensaje al agente"
+											placeholder={
+												props.busyWith
+													? 'Escribe; tu mensaje esperará a que termine…'
+													: task?.status === 'blocked' && (!props.directs || props.directs(task))
+														? 'Responde al agente…'
+														: props.waitingForComputer
+															? 'Escribe; tu mensaje esperará su turno…'
+															: task && isLive(task)
+																? 'Escribe; el mensaje quedará pendiente…'
+																: 'Escribe al agente…'
+											}
+											className="designer-composer-input"
+											minRows={2}
+											maxRows={6}
+											maxLength={4000}
+											submitMode="enter"
+											autoFocus={false}
+											addAttachmentOnPaste={false}
+											onChange={(e) => {
+												if (!e.target.value.trim()) {
+													composingIntent.current = undefined;
+													request.current = null;
+												} else if (composingIntent.current === undefined) composingIntent.current = replyTarget();
+											}}
+										/>
+										<div className="designer-composer-actions">
+											<div className="mr-auto flex items-center gap-1">
+												<AttachButton onFiles={(f) => void attach.add(f)} disabled={busy || !!props.loading} />
+												{props.composerActions}
+											</div>
+											{attach.files.length && !unsent ? (
+												<Button
+													type="button"
+													size="icon"
+													aria-label="Enviar adjuntos"
+													disabled={busy || !!props.loading}
+													onClick={() => void newMessage({ content: [] }).catch(() => {})}
+												>
 													<ArrowUp aria-hidden="true" />
 												</Button>
-											</ComposerPrimitive.Send>
-										)}
-									</div>
-								</ComposerPrimitive.Root>
+											) : (
+												<>
+													{working && (
+														// The queue keeps Send during work: Stop goes beside it, not in its place.
+														<ComposerPrimitive.Cancel asChild>
+															<Button
+																type="button"
+																size="icon"
+																variant="outline"
+																aria-label="Detener el trabajo"
+																title="Detener el trabajo"
+															>
+																<Square className="size-3 fill-current" aria-hidden="true" />
+															</Button>
+														</ComposerPrimitive.Cancel>
+													)}
+													<ComposerPrimitive.Send asChild>
+														<Button size="icon" aria-label="Enviar mensaje" disabled={busy || !!props.loading}>
+															<ArrowUp aria-hidden="true" />
+														</Button>
+													</ComposerPrimitive.Send>
+												</>
+											)}
+										</div>
+									</ComposerPrimitive.Root>
+								</ComposerPrimitive.TriggerPopoverRoot>
 								{(props.busyWith || props.waitingForComputer || (task && isLive(task)) || !props.footer) && (
 									<p className="text-xs text-muted-foreground" role={props.busyWith ? 'status' : undefined}>
 										{props.busyWith ? (

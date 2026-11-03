@@ -1,0 +1,5 @@
+#!/bin/sh
+# Send a WhatsApp notice to contacts the owner enabled for this agent (whatsapp_notify).
+# Usage: agents-notify '<json: {"para":["Nombre"],"texto":"…","archivo":"out/x.pdf","urgente":false}>'
+if [ -z "$1" ]; then echo 'Uso: agents-notify <json>' >&2; exit 2; fi
+exec curl -sS --max-time 90 -X POST -H 'content-type: application/json' --data-binary "$1" http://127.0.0.1:7777/notify

@@ -4,9 +4,12 @@ import {
 	ComposerPrimitive,
 	MessageNotSentError,
 	MessagePrimitive,
+	ThreadListItemPrimitive,
+	ThreadListPrimitive,
 	ThreadPrimitive,
 	useAuiState,
 	useExternalStoreRuntime,
+	type ExternalStoreThreadListAdapter,
 	type ThreadMessageLike,
 	type TextMessagePartProps,
 } from '@assistant-ui/react';
@@ -25,13 +28,21 @@ import {
 	Blocks,
 	CalendarClock,
 	History,
+	MessagesSquare,
+	Plus,
 	RotateCcw,
 	BrainCircuit,
 	MessageSquare,
+	TriangleAlert,
 } from 'lucide-react';
-import type { Agent, Design, PublicSettings, InterviewAnswers } from '@/api';
+import { api, type Agent, type Design, type PublicSettings, type InterviewAnswers } from '@/api';
+import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover';
 import { Button } from '@/components/ui/button';
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip';
+import { Badge } from '@/components/ui/badge';
+
+/** A contract longer than this still works; the panel only warns (every job carries all of it). */
+const CONTRACT_RECOMMENDED = 16000;
 import { useSlidePanel } from '@/lib/use-slide-panel';
 import { IconButton } from '@/components/actions';
 import { Character } from '@/Character';
@@ -81,6 +92,76 @@ type Props = {
 	validating?: boolean;
 };
 const convertMessage = (message: ThreadMessageLike) => message;
+/** One improvement chat of the agent, as the server lists it. */
+type ImprovementChat = { id: string; status: 'draft' | 'approved'; title: string; messages: number; updatedAt: number };
+
+/** Automejora → Historial: the agent's improvement chats (assistant-ui's thread list) and a new one. */
+function ImprovementHistory({ disabled }: { disabled: boolean }) {
+	const [open, setOpen] = useState(false);
+	const count = useAuiState((s) => s.threads.threadIds.length);
+	return (
+		<Popover open={open} onOpenChange={setOpen}>
+			<PopoverTrigger asChild>
+				<Button type="button" variant="outline" size="sm" disabled={disabled} title="Mejoras anteriores">
+					<MessagesSquare aria-hidden="true" />
+					Historial
+				</Button>
+			</PopoverTrigger>
+			<PopoverContent align="end" className="w-80 p-1">
+				<ThreadListPrimitive.Root className="grid gap-0.5" aria-label="Mejoras de este agente">
+					<ThreadListPrimitive.New asChild>
+						<Button type="button" variant="ghost" size="sm" className="justify-start" onClick={() => setOpen(false)}>
+							<Plus aria-hidden="true" />
+							Nueva mejora
+						</Button>
+					</ThreadListPrimitive.New>
+					{count === 0 && <p className="muted small px-2 py-1.5">Todavía no hay mejoras anteriores.</p>}
+					<div className="max-h-80 overflow-y-auto">
+						<ThreadListPrimitive.Items>
+							{({ threadListItem }) => <ImprovementItem item={threadListItem} onPick={() => setOpen(false)} />}
+						</ThreadListPrimitive.Items>
+					</div>
+				</ThreadListPrimitive.Root>
+			</PopoverContent>
+		</Popover>
+	);
+}
+
+function ImprovementItem({
+	item,
+	onPick,
+}: {
+	item: { title?: string; custom?: Record<string, unknown> };
+	onPick: () => void;
+}) {
+	const c = (item.custom ?? {}) as { status?: string; updatedAt?: number; current?: boolean };
+	const when = c.updatedAt
+		? new Date(c.updatedAt).toLocaleString('es-MX', {
+				day: 'numeric',
+				month: 'short',
+				hour: '2-digit',
+				minute: '2-digit',
+			})
+		: '';
+	return (
+		<ThreadListItemPrimitive.Root className="rounded-md data-[current=true]:bg-muted" data-current={c.current}>
+			<ThreadListItemPrimitive.Trigger
+				className="grid w-full gap-0.5 rounded-md px-2 py-1.5 text-left hover:bg-muted"
+				onClick={onPick}
+				aria-current={c.current ? 'page' : undefined}
+			>
+				<span className="truncate text-sm">
+					<ThreadListItemPrimitive.Title fallback="Mejora sin texto" />
+				</span>
+				<span className="muted small">
+					{c.status === 'approved' ? 'Aplicada' : 'Borrador'}
+					{when ? ` · ${when}` : ''}
+					{c.current ? ' · abierta' : ''}
+				</span>
+			</ThreadListItemPrimitive.Trigger>
+		</ThreadListItemPrimitive.Root>
+	);
+}
 type Artifact = { name: string; prompt: string };
 type ArtifactLink = {
 	artifact: Artifact | null;
@@ -294,6 +375,39 @@ export function DesignChat(props: Props) {
 		return saved;
 	}, [design?.id, design?.messages, design?.version, pending]);
 	const waiting = !!design?.busy_until && design.busy_until > Date.now();
+	// Automejora → Historial: this agent's earlier improvement chats, as assistant-ui's thread list. The
+	// current one is marked, not switched to in the runtime: opening another goes through its URL, which
+	// loads it as any draft (switching the runtime's thread mid-send would drop the message on its way).
+	const agentForHistory = props.agent?.id;
+	const [history, setHistory] = useState<ImprovementChat[]>([]);
+	useEffect(() => {
+		if (agentForHistory === undefined) return;
+		let alive = true;
+		api<{ designs: ImprovementChat[] }>(`/agents/${agentForHistory}/designs`)
+			.then((r) => alive && setHistory(r.designs))
+			.catch(() => {});
+		return () => {
+			alive = false;
+		};
+	}, [agentForHistory, design?.id, design?.status, design?.messages.length]);
+	const threadList = useMemo<ExternalStoreThreadListAdapter | undefined>(
+		() =>
+			agentForHistory === undefined
+				? undefined
+				: {
+						threads: history.map((h) => ({
+							status: 'regular' as const,
+							id: h.id,
+							title: h.title,
+							custom: { status: h.status, updatedAt: h.updatedAt, current: h.id === design?.id },
+						})),
+						onSwitchToThread: (id) => {
+							if (id !== design?.id) location.hash = `/agent/${agentForHistory}/improve/${id}`;
+						},
+						onSwitchToNewThread: () => props.onReset(),
+					},
+		[agentForHistory, history, design?.id, props.onReset],
+	);
 	const runtime = useExternalStoreRuntime({
 		messages,
 		convertMessage,
@@ -301,6 +415,7 @@ export function DesignChat(props: Props) {
 		isLoading: props.loading,
 		isDisabled: props.loading || design?.status === 'approved' || (props.working && !pending && !waiting),
 		isSendDisabled: props.working || !props.model,
+		adapters: threadList ? { threadList } : undefined,
 		onNew: async (message) => {
 			if (sending.current) throw new MessageNotSentError();
 			const text = message.content
@@ -487,6 +602,7 @@ function DesignWorkspace(
 					<RotateCcw aria-hidden="true" />
 				</Button>
 			)}
+			{props.agent && <ImprovementHistory disabled={working || loading} />}
 		</>
 	);
 	// Both libraries must observe the same scroll element: no nested native viewport.
@@ -647,6 +763,23 @@ function DesignWorkspace(
 					editable={!!design?.contract && design.status === 'draft' && !working && !loading}
 					onRename={props.onRename}
 				/>
+				{(design?.contract?.prompt.length ?? 0) > CONTRACT_RECOMMENDED && (
+					// Not a limit: a long contract works, but every job carries all of it.
+					<Tooltip>
+						<TooltipTrigger asChild>
+							<Badge variant="warning" className="shrink-0 tabular-nums">
+								<TriangleAlert aria-hidden="true" />
+								{design!.contract!.prompt.length.toLocaleString('es-MX')} /{' '}
+								{CONTRACT_RECOMMENDED.toLocaleString('es-MX')}
+							</Badge>
+						</TooltipTrigger>
+						<TooltipContent className="max-w-72">
+							Contrato largo: pasa de los {CONTRACT_RECOMMENDED.toLocaleString('es-MX')} caracteres recomendados.
+							Funciona igual, pero cada trabajo lo carga completo (más tokens y costo). Para acortarlo, pídele en el
+							chat que lo condense o que pase procedimientos largos a una skill.
+						</TooltipContent>
+					</Tooltip>
+				)}
 				<Button
 					ref={closeButton}
 					variant="ghost"
@@ -779,7 +912,7 @@ function DesignWorkspace(
 						<span className="min-w-0 flex-1" tabIndex={blocked ? 0 : undefined}>
 							<Button className="w-full" onClick={props.onApprove} disabled={blocked}>
 								<Check className="size-4" aria-hidden="true" />
-								{agent ? 'Aprobar y aplicar' : 'Aprobar e inicializar'}
+								{agent && approved ? 'Ya aplicada' : agent ? 'Aprobar y aplicar' : 'Aprobar e inicializar'}
 							</Button>
 						</span>
 					</TooltipTrigger>

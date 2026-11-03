@@ -13,6 +13,10 @@ if [ ! -f "$ENV_FILE" ]; then
 fi
 chmod 600 "$ENV_FILE"
 # The egress proxy's shared secret with the backend (#24).
+grep -q '^AGENTS_WHATSAPP_SECRET=' "$ENV_FILE" || {
+	printf 'AGENTS_WHATSAPP_SECRET=%s\n' "$(openssl rand -hex 24)" >> "$ENV_FILE"
+	echo "added AGENTS_WHATSAPP_SECRET"
+}
 grep -q '^AGENTS_PROXY_SECRET=' "$ENV_FILE" || {
 	printf 'AGENTS_PROXY_SECRET=%s\n' "$(openssl rand -hex 24)" >> "$ENV_FILE"
 	echo "added AGENTS_PROXY_SECRET"

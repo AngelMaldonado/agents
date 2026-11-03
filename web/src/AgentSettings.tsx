@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState, type ReactNode } from 'react';
-import { CalendarDays, Globe, KeyRound, Save, Settings2, SlidersHorizontal, Trash2 } from 'lucide-react';
+import { CalendarDays, Globe, KeyRound, Settings2, SlidersHorizontal, Trash2 } from 'lucide-react';
+import { SaveButton, useSaving } from '@/components/actions';
 import { api, isLive, type Agent, type PublicSettings } from './api';
 import { AgentConfiguration } from './AgentConfiguration';
 import { Channels } from './Channels';
@@ -234,6 +235,7 @@ function EditAgent({ agent, settings, onSaved }: { agent: Agent; settings: Publi
 	const [model, setModel] = useState(agent.model);
 	const [error, setError] = useState('');
 	const [busy, setBusy] = useState(false);
+	const saving = useSaving();
 	const live = isLive(agent.task);
 	const perform = async (operation: () => Promise<void>) => {
 		if (busy || live) return;
@@ -252,13 +254,15 @@ function EditAgent({ agent, settings, onSaved }: { agent: Agent; settings: Publi
 			className="form"
 			onSubmit={(e) => {
 				e.preventDefault();
-				void perform(async () => {
-					await api(`/agents/${agent.id}`, {
-						method: 'PATCH',
-						body: { name, role: agent.role, model, revision: agent.config_revision },
-					});
-					onSaved();
-				});
+				void perform(() =>
+					saving.run(async () => {
+						await api(`/agents/${agent.id}`, {
+							method: 'PATCH',
+							body: { name, role: agent.role, model, revision: agent.config_revision },
+						});
+						onSaved();
+					}),
+				);
 			}}
 		>
 			{live && (
@@ -282,10 +286,7 @@ function EditAgent({ agent, settings, onSaved }: { agent: Agent; settings: Publi
 					/>
 				</label>
 				<div className="field-actions row wrap">
-					<Button disabled={busy || live || (name === agent.name && model === agent.model)}>
-						<Save aria-hidden="true" />
-						Guardar
-					</Button>
+					<SaveButton state={saving.state} disabled={busy || live || (name === agent.name && model === agent.model)} />
 				</div>
 			</fieldset>
 			{error && (

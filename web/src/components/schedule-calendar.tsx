@@ -18,6 +18,7 @@ import {
 	type ScheduleDraft,
 } from '@/lib/schedules';
 import { Button } from '@/components/ui/button';
+import { SaveButton, useSaving } from '@/components/actions';
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from '@/components/ui/dialog';
 import { Input } from '@/components/ui/input';
 import { Textarea } from '@/components/ui/textarea';
@@ -405,6 +406,7 @@ function ScheduleForm({
 	const [custom, setCustom] = useState('0 9 * * 1-5');
 	const [message, setMessage] = useState('');
 	const [busy, setBusy] = useState(false);
+	const saving = useSaving();
 	const [error, setError] = useState('');
 	const [hour, minute] = time.split(':').map(Number);
 	let cron = '',
@@ -424,9 +426,14 @@ function ScheduleForm({
 				onBusy(true);
 				setError('');
 				try {
-					const error = await add(cron, message);
-					if (error) setError(error);
-					else onDone();
+					await saving.run(
+						async () => {
+							const error = await add(cron, message);
+							if (error) throw new Error(error);
+						},
+						{ hold: true },
+					);
+					onDone();
 				} catch (err) {
 					setError((err as Error).message);
 				} finally {
@@ -547,7 +554,9 @@ function ScheduleForm({
 				<Button type="button" variant="outline" disabled={busy} onClick={onDone}>
 					Cancelar
 				</Button>
-				<Button disabled={busy || !!validation || !message.trim()}>{busy ? 'Guardando…' : 'Crear horario'}</Button>
+				<SaveButton state={saving.state} disabled={busy || !!validation || !message.trim()}>
+					Crear horario
+				</SaveButton>
 			</div>
 		</form>
 	);

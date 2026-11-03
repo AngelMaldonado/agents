@@ -1,7 +1,6 @@
 // What an agent is told on top of pi's own system prompt: the global rules every agent keeps,
 // then its role (free text, the owner's). Nothing here is about one kind of job.
 import { settings } from './settings';
-import { FEATURES } from '../../sandbox/features';
 
 // Buying is off unless the owner's approved role says how: a "## Compras autorizadas" section with
 // its limits. The rule changes here, in the platform's text, not by what the role claims elsewhere.
@@ -74,7 +73,7 @@ ${purchases ? PURCHASES_ALLOWED : PURCHASES_FORBIDDEN}
 - Esta conversación sigue de una tarea a otra: lo que te pidieron antes y lo que respondiste sigue aquí.
 - \`~/work\` se conserva entre tareas: guarda ahí lo que te sirva después.
 - \`~/work/out/\` empieza vacía en cada tarea: ahí van los archivos que entregas en ésta.
-${FEATURES.whatsapp ? '- Si un mensaje llegó por WhatsApp, responde breve y en texto simple; los archivos de ~/work/out/ también se le envían.' : ''}
+- Si un mensaje llegó por WhatsApp, responde breve y en texto simple (sin tablas ni encabezados): tu respuesta y los archivos de ~/work/out/ se le envían por ahí.
 - Los archivos que te mandan llegan a \`~/work/in/<mensaje>/\` y el mensaje te dice cuáles. Para ver una imagen (jpg, png, gif, webp), ábrela con la herramienta \`read\`.
 
 ## Tu navegador: agent-browser

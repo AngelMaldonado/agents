@@ -7,6 +7,7 @@
 #   proxy    the egress proxy of API keys (#24), a container on reko-2's sandbox network
 #   server   the backend, bun --watch
 #   web      Vite with local HMR, proxying /api, /hooks and /ws to the backend
+#   whatsapp the WhatsApp bridge (../whatsapp, whatsmeow): the numbers linked by QR, sessions in schema whatsmeow
 set -euo pipefail
 . "$(dirname "$0")/env.sh"
 cd "$ROOT"
@@ -55,6 +56,16 @@ case "${1:-}" in
 		docker --context "$SBX_CTX" rm -f "$PROXY_NAME" >/dev/null 2>&1 || true
 		exec docker --context "$SBX_CTX" run --rm --name "$PROXY_NAME" --network "$SBX_NETWORK" \
 			-e AGENTS_PROXY_CA_PEM -e AGENTS_BACKEND_URL -e AGENTS_PROXY_SECRET "$PROXY_IMAGE"
+		;;
+	whatsapp)
+		set -a
+		. "$ENV_FILE"
+		set +a
+		mkdir -p "$DEV/bin"
+		(cd whatsapp && go build -o "$DEV/bin/agents-whatsapp" .)
+		wait_for "Postgres" pg_ready
+		AGENTS_URL="http://127.0.0.1:$SERVER_PORT" PORT="$WA_PORT" \
+			WHATSAPP_DATABASE_URL="$DB_URL?sslmode=disable&search_path=whatsmeow" exec "$DEV/bin/agents-whatsapp"
 		;;
 	server)
 		server_env

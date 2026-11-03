@@ -1,6 +1,6 @@
 // The designer streams its replies (#26) so the page can show what it is doing while it answers.
 /** Reads a Responses API reply: server-sent events as they come (reasoning, calls, text), or plain JSON. */
-export async function readResponse(response: Response, onEvent: (e: any) => void) {
+export async function readResponse(response: Response, onEvent: (e: any) => void, onData?: () => void) {
 	if (!(response.headers.get('content-type') ?? '').includes('text/event-stream'))
 		return (await response.json()) as any;
 	const reader = response.body!.pipeThrough(new TextDecoderStream()).getReader();
@@ -10,6 +10,7 @@ export async function readResponse(response: Response, onEvent: (e: any) => void
 	for (;;) {
 		const { value, done } = await reader.read();
 		if (done) break;
+		onData?.();
 		buffer += value;
 		for (let i = buffer.indexOf('\n\n'); i >= 0; i = buffer.indexOf('\n\n')) {
 			const data = buffer
