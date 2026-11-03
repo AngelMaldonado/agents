@@ -30,24 +30,34 @@ export function settings(): Settings {
 	return cached;
 }
 
+/** What an admin changed, as stored: the rest follows the defaults (the sandbox image, the release's). */
+let stored: Partial<Settings> = {};
 export async function loadSettings() {
 	const r = await row<{ value: Partial<Settings> }>("select value from settings where key = 'settings'");
-	cached = { ...DEFAULTS, ...(r?.value ?? {}) };
+	stored = r?.value ?? {};
+	cached = { ...DEFAULTS, ...stored };
 	// A catalog saved before GPT-only keeps only its GPT models (the defaults if none is left).
 	const gpt = cached.models.filter((m) => m.id.startsWith('openai/'));
 	cached.models = gpt.length ? gpt : DEFAULTS.models;
 	return cached;
 }
 
+/**
+ * Saves only what differs from the defaults. The sandbox image in particular: the admin form always sends
+ * it, and storing it pinned whatever image ran that day, so a new release's sandbox (AGENTS_SANDBOX_IMAGE)
+ * was never used again. Empty or the release's own goes back to following the release.
+ */
 export async function saveSettings(patch: Partial<Settings>) {
-	const next = { ...settings(), ...clean(patch) };
+	const next: Partial<Settings> = { ...stored, ...clean(patch) };
+	if (!next.sandboxImage || next.sandboxImage === DEFAULTS.sandboxImage) delete next.sandboxImage;
 	await exec(
 		`insert into settings (key, value) values ('settings', $1)
 		 on conflict (key) do update set value = excluded.value, updated_at = now()`,
 		[JSON.stringify(next)],
 	);
-	cached = next;
-	return next;
+	stored = next;
+	cached = { ...DEFAULTS, ...next };
+	return cached;
 }
 
 function clean(p: Partial<Settings>): Partial<Settings> {
@@ -58,7 +68,8 @@ function clean(p: Partial<Settings>): Partial<Settings> {
 	if (p.maxMinutes !== undefined) out.maxMinutes = int(p.maxMinutes, 1, 120);
 	if (p.blockedWaitMinutes !== undefined) out.blockedWaitMinutes = int(p.blockedWaitMinutes, 1, 60);
 	if (typeof p.maxCostUsd === 'number' && p.maxCostUsd > 0) out.maxCostUsd = Math.min(50, p.maxCostUsd);
-	if (typeof p.sandboxImage === 'string' && /^[\w./:@-]+$/.test(p.sandboxImage)) out.sandboxImage = p.sandboxImage;
+	if (typeof p.sandboxImage === 'string' && (p.sandboxImage === '' || /^[\w./:@-]+$/.test(p.sandboxImage)))
+		out.sandboxImage = p.sandboxImage.trim();
 	if (Array.isArray(p.models)) {
 		out.models = p.models
 			.filter((m) => m && /^openai\/[\w.-]+$/.test(m.id))

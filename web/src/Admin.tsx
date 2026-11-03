@@ -154,7 +154,10 @@ function Panel({ onChanged }: { onChanged: () => void }) {
 						{num('blockedWaitMinutes')}
 					</label>
 					<label className="field">
-						<span>Imagen del sandbox</span>
+						<span>
+							Imagen del sandbox{' '}
+							<span className="muted small block font-normal">vacía o la de la release: sigue a cada release</span>
+						</span>
 						<Input value={draft.sandboxImage} onChange={(e) => setDraft({ ...draft, sandboxImage: e.target.value })} />
 					</label>
 				</div>
