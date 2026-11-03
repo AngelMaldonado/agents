@@ -35,3 +35,24 @@ const RELEASING = /^(?:feat|fix|perf|build|ci|refactor)(?:\([^)]*\))?!?:|^chore\
 export function releasable(messages) {
 	return messages.some((m) => RELEASING.test(m.trimStart()) || /^BREAKING[ -]CHANGE:/m.test(m));
 }
+
+const GROUPS = [
+	['Nuevo', /^feat(?:\([^)]*\))?!?:\s*/],
+	['Arreglos', /^fix(?:\([^)]*\))?!?:\s*/],
+	['Otros cambios', /^(?:perf|refactor|build|ci)(?:\([^)]*\))?!?:\s*/],
+];
+/**
+ * What a release brings, from its commit subjects (Conventional Commits): one Markdown list per kind, in
+ * the order they were made. docs, test, style, chores and merges stay out. The PR body and the GitHub
+ * release notes use it, so both say what really goes in (not the oldest commit's title).
+ */
+export function changelog(subjects) {
+	return GROUPS.map(([title, re]) => {
+		const items = subjects
+			.filter((s) => re.test(s))
+			.map((s) => `- ${s.replace(re, '').trim()} (\`${s.match(/^\w+(?:\([^)]*\))?/)[0]}\`)`);
+		return items.length ? `### ${title}\n\n${items.join('\n')}` : '';
+	})
+		.filter(Boolean)
+		.join('\n\n');
+}

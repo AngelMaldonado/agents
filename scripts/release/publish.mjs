@@ -2,9 +2,9 @@
 import { execFileSync } from 'node:child_process';
 import { writeFileSync, mkdirSync } from 'node:fs';
 import { config, assertPublicationAllowed } from './config.mjs';
-import { assertSha, assertVersion, nextBeta, releasable } from './version.mjs';
+import { assertSha, assertVersion, changelog, nextBeta, releasable } from './version.mjs';
 import { Komodo } from './komodo.mjs';
-import { prepareArtifacts } from './artifacts.mjs';
+import { prepareArtifacts, promoteArtifacts } from './artifacts.mjs';
 const git = (...args) => execFileSync('git', args, { encoding: 'utf8' }).trim();
 assertPublicationAllowed();
 if (git('branch', '--show-current') !== config.releaseBranch)
@@ -19,7 +19,7 @@ if (status) throw new Error(`Checkout sucio: no se publica.\n${status}`);
 if (!process.env.GITHUB_TOKEN) throw new Error('Falta GITHUB_TOKEN del workflow.');
 // One way to publish, for the baseline and every beta after it: build, sign and verify in Komodo first,
 // then the annotated tag, its channel note and the GitHub prerelease with the manifest.
-async function publish(version) {
+async function publish(version, notes = '') {
 	const tag = `v${assertVersion(version)}`;
 	const client = new Komodo({
 		url: config.komodo.url,
@@ -65,7 +65,8 @@ async function publish(version) {
 		target_commitish: sha,
 		name: tag,
 		prerelease: true,
-		generate_release_notes: true,
+		// What it brings, from its commits: GitHub's own notes list only PR titles (one PR per release here).
+		...(notes ? { body: notes } : { generate_release_notes: true }),
 	});
 	const upload = await fetch(`${release.upload_url.split('{')[0]}?name=release-manifest.json`, {
 		method: 'POST',
@@ -75,6 +76,19 @@ async function publish(version) {
 	});
 	if (!upload.ok)
 		throw new Error(`${tag} publicado pero manifiesto no adjuntado: HTTP ${upload.status}. No repitas sin revisar.`);
+	// Last: `:beta` follows the release only once it exists, so Komodo never offers an unpublished image.
+	try {
+		const promoted = await promoteArtifacts(client, manifest, sha);
+		console.log(
+			`:beta → ${tag}: ${Object.values(promoted)
+				.map((p) => `${p.tag}@${p.digest.slice(7, 19)}`)
+				.join(', ')}`,
+		);
+	} catch (err) {
+		throw new Error(
+			`${tag} publicado, pero :beta no se movió (${err.message}). Corre \`just release promote ${version}\` cuando lo revises.`,
+		);
+	}
 	return version;
 }
 
@@ -100,7 +114,9 @@ if (tags.length === 0) {
 	else if (tags.includes(`v${beta.next}`)) throw new Error(`v${beta.next} ya existe; requiere conciliación manual.`);
 	else {
 		console.log(`Siguiente beta: v${beta.next} (después de ${beta.latest}, ${messages.length} commits).`);
-		publishedVersion = await publish(beta.next);
+		const subjects = messages.map((m) => m.split('\n')[0]);
+		const notes = `${changelog(subjects) || 'Sin cambios destacados.'}\n\n**Cambios completos**: https://github.com/${config.repository}/compare/${beta.latest}...v${beta.next}`;
+		publishedVersion = await publish(beta.next, notes);
 	}
 }
 mkdirSync('.release', { recursive: true });
@@ -110,4 +126,8 @@ writeFileSync(
 		'\n',
 );
 console.log(publishedVersion ? `Publicado v${publishedVersion} (${sha}).` : `Sin cambios publicables (${sha}).`);
-console.log('Publicación finalizada. Despliegue NO ejecutado: el corte queda para una autorización posterior.');
+console.log(
+	publishedVersion
+		? 'Publicación finalizada. Despliegue NO ejecutado: en Komodo, stack agents → Pull y Deploy cuando quieras.'
+		: 'Publicación finalizada. Despliegue NO ejecutado.',
+);

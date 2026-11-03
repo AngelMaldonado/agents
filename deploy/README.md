@@ -1,3 +1,11 @@
+# Desplegar una beta (desde v0.0.5-beta)
+
+1. `just release` (desde `wip`): pruebas locales con base y los dos E2E, PR `chore(release): vX` con lo que entra, CI, merge, build/firma/verificación en Komodo, tag y release. Al final mueve `registry.cubytest.space/cuby/agents-app:beta` y `agents-sandbox:beta` a los digests verificados de esa release.
+2. Komodo → stack `agents` → **Pull** y luego **Deploy** (con `poll_for_updates`, Komodo avisa cuando `:beta` cambió). Las migraciones corren al arrancar.
+3. Verificar `https://agents.cubytest.space/healthz`: versión y SHA vienen dentro de la imagen.
+
+Rollback: `just release promote <versión>` vuelve a apuntar `:beta` a esa release (verifica las firmas otra vez) y luego Pull + Deploy. El compose del stack es [`agents.compose.yaml`](agents.compose.yaml) y no cambia entre releases. Los agentes siguen en la imagen exacta con la que se validaron; la imagen del sandbox de Administración sólo se guarda si un admin pone otra distinta.
+
 # Preparación del traslado a v0.0.1-beta
 
 **La preparación histórica se describe abajo.** Angel retomó el traslado y autorizó copia local previa: [ejecutor puntual, guardas y límites de respaldo](transfer.md), `just transfer audit|apply|recover`. S3/automatización siguen pendientes; no se modifica el backup diario existente. El corte no se considera ejecutado hasta tener su recibo real.

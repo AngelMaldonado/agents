@@ -31,5 +31,9 @@ COPY --from=build /app/web/dist web/dist
 COPY --from=whatsapp /agents-whatsapp /usr/local/bin/agents-whatsapp
 # production: Bun serves plain errors, not its development pages with stack traces.
 ENV NODE_ENV=production AGENTS_WEB_DIST=/app/web/dist AGENTS_DATA=/data PORT=8787
+# What /healthz reports, baked in by the release build: the compose no longer carries it (it points at :beta).
+ARG AGENTS_RELEASE_VERSION=""
+ARG AGENTS_RELEASE_SHA=""
+ENV AGENTS_RELEASE_VERSION=${AGENTS_RELEASE_VERSION} AGENTS_RELEASE_SHA=${AGENTS_RELEASE_SHA}
 WORKDIR /app/server
 CMD ["bun", "src/index.ts"]

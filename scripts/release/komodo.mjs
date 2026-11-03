@@ -29,7 +29,13 @@ export class Komodo {
 			headers: { 'Content-Type': 'application/json', 'X-Api-Key': this.key, 'X-Api-Secret': this.secret },
 			body: JSON.stringify({ type, params }),
 		});
-		if (!res.ok) throw new Error(`Komodo ${type}: HTTP ${res.status}. Verifica conectividad y permisos del recurso.`);
+		if (!res.ok) {
+			// Komodo says why in its body (permission, a missing resource): its first line, without our key.
+			const why = this.redact((await res.text().catch(() => '')).split('\n')[0].slice(0, 200));
+			throw new Error(
+				`Komodo ${type}: HTTP ${res.status}${why ? ` (${why})` : ''}. Verifica conectividad y permisos del recurso.`,
+			);
+		}
 		const data = await res.json();
 		if (data?.error) throw new Error(this.redact(`Komodo ${type}: ${data.error}`));
 		return data;

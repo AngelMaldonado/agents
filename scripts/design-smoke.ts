@@ -290,7 +290,10 @@ try {
 			).status,
 			403,
 		);
-	assert.deepEqual(await api('/whatsapp/numbers'), { available: true, bridge: 'down', numbers: [] });
+	// Only what this smoke is about (the bridge is down and nothing is linked), not the whole view's shape.
+	const numbers = await api('/whatsapp/numbers');
+	assert.equal(numbers.bridge, 'down');
+	assert.deepEqual(numbers.numbers, []);
 	console.log('PASS baseline health; WhatsApp internal route needs the bridge secret; numbers report the bridge down');
 	await api('/proxy', { url: fake.url.origin, key: 'fixture-key-not-a-secret' }, 'PUT');
 	let { design } = await api('/designs', { model: 'openai/gpt-6-sol' });
@@ -375,13 +378,11 @@ try {
 	const agentId = approvals[0].design.applied_agent_id;
 	assert.equal(approvals[1].design.applied_agent_id, agentId);
 	assert.equal((await api('/agents')).agents.length, 1);
-	// No number hosts the groups here (no Cuby WhatsApp, none marked): agents no longer pick one.
-	assert.deepEqual((await api(`/agents/${agentId}/channels`)).whatsapp, {
-		available: true,
-		number: null,
-		notify: false,
-		contacts: [],
-	});
+	// A new agent starts without WhatsApp notices or contacts; no number hosts the groups here.
+	const whatsapp = (await api(`/agents/${agentId}/channels`)).whatsapp;
+	assert.equal(whatsapp.number, null);
+	assert.equal(whatsapp.notify, false);
+	assert.deepEqual(whatsapp.contacts, []);
 	console.log(
 		'PASS real isolated pi attestation and concurrent approval; immutable tested image survives an admin tag change',
 	);

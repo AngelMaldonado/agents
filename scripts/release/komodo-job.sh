@@ -27,8 +27,14 @@ printf '%s' "${REGISTRY_PASSWORD:?}" | docker --config "$docker_config" --contex
 docker --config "$docker_config" --context default pull --platform linux/amd64 "$AGENTS_RELEASE_TOOLS_IMAGE"
 rm -rf -- "$docker_config"
 docker_config=''
-# One Repo job, three fresh containers. Private signing values enter ONLY the sign container.
-for mode in build sign verify; do
+# One Repo job: build, sign and verify in three fresh containers; or, later, only promote (move :beta to
+# the verified digest). Private signing values enter ONLY the sign container.
+case "${AGENTS_RELEASE_PHASES:-build sign verify}" in
+  'build sign verify') phases=(build sign verify) ;;
+  promote) phases=(promote) ;;
+  *) echo 'Fases inválidas.' >&2; exit 2 ;;
+esac
+for mode in "${phases[@]}"; do
   # Keep the array nonempty: Bash 3 + nounset mishandles an empty array expansion.
   phase_env=(-e DOCKER_CONTEXT=default)
   if [[ "$mode" == sign ]]; then phase_env+=(-e COSIGN_PRIVATE_KEY_B64 -e COSIGN_PASSWORD); fi
@@ -39,5 +45,6 @@ for mode in build sign verify; do
     --mount type=bind,source=/var/run/docker.sock,target=/var/run/docker.sock \
     -e REGISTRY_USERNAME -e REGISTRY_PASSWORD "${phase_env[@]}" \
     -e AGENTS_RELEASE_SHA -e AGENTS_RELEASE_VERSION -e AGENTS_RELEASE_COMPONENT -e AGENTS_RELEASE_REHEARSAL \
+    -e AGENTS_RELEASE_DIGEST \
     "$AGENTS_RELEASE_TOOLS_IMAGE" "$mode"
 done

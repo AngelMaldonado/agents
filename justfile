@@ -149,8 +149,16 @@ ci:
     just check
     cd web && bun run build
 
-release mode="run":
-    bun scripts/release/main.mjs {{mode}}
+# `just release` publishes the next beta and points the `:beta` tags at it (after signing and verifying);
+# production then only needs Pull + Deploy in Komodo. `just release promote <version>` points `:beta` at a
+# published version again (a rollback). Neither deploys.
+release mode="run" arg="":
+    #!/usr/bin/env bash
+    set -euo pipefail
+    case "{{mode}}" in
+      promote) bun scripts/release/promote.mjs {{arg}} ;;
+      *) bun scripts/release/main.mjs {{mode}} ;;
+    esac
 
 # ---- production (Komodo stack `agents` on reko-3) ----
 

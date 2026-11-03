@@ -79,8 +79,9 @@ const app = new Hono<Env>();
 app.get('/healthz', (c) =>
 	c.json({
 		ready: true,
-		version: process.env.AGENTS_RELEASE_VERSION ?? 'development',
-		sha: process.env.AGENTS_RELEASE_SHA ?? null,
+		// Empty in an image not built by a release (the Dockerfile's defaults).
+		version: process.env.AGENTS_RELEASE_VERSION || 'development',
+		sha: process.env.AGENTS_RELEASE_SHA || null,
 	}),
 );
 const PORT = Number(process.env.PORT ?? 8787);

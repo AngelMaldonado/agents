@@ -22,3 +22,20 @@ test('only releasing commit types publish', () => {
 	expect(releasable(['chore: drop old flag\n\nBREAKING CHANGE: the flag is gone'])).toBe(true);
 	expect(releasable(['docs: mention fix: in prose'])).toBe(false);
 });
+
+test('changelog groups what a release brings by kind, without tests, docs or chores', async () => {
+	const { changelog } = await import('./version.mjs');
+	expect(
+		changelog([
+			'feat: WhatsApp groups per person',
+			'test(e2e): an agent view no longer lists numbers',
+			'fix(release): wait for checks',
+			'feat(web): aliases',
+			'docs: readme',
+			'build: pin bun',
+		]),
+	).toBe(
+		'### Nuevo\n\n- WhatsApp groups per person (`feat`)\n- aliases (`feat(web)`)\n\n### Arreglos\n\n- wait for checks (`fix(release)`)\n\n### Otros cambios\n\n- pin bun (`build`)',
+	);
+	expect(changelog(['docs: only docs'])).toBe('');
+});

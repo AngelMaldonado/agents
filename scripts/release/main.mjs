@@ -13,6 +13,7 @@ import {
 import { resolve } from 'node:path';
 import { tmpdir } from 'node:os';
 import { config, assertPublicationAllowed } from './config.mjs';
+import { changelog, nextBeta, releasable } from './version.mjs';
 const mode = process.argv[2] ?? 'run';
 if (!['run', 'plan'].includes(mode)) throw new Error('Uso: just release [plan]');
 const root = process.cwd();
@@ -66,13 +67,32 @@ async function command(bin, args, capture = false, options = {}) {
 		});
 	});
 }
+/**
+ * The PR's title and body: the next beta and what goes in since the last one, from the commits (the
+ * tags are fetched first; with `--fill-first` the PR, its merge and the release took the oldest title).
+ */
+async function describe() {
+	await command('git', ['fetch', '--quiet', '--tags', 'origin']);
+	const beta = nextBeta((await command('git', ['tag', '--list', 'v*'], true)).split('\n').filter(Boolean));
+	const subjects = beta
+		? (await command('git', ['log', '--no-merges', '--format=%s', `${beta.latest}..HEAD`], true))
+				.split('\n')
+				.filter(Boolean)
+		: [];
+	const title = beta && releasable(subjects) ? `chore(release): v${beta.next}` : 'chore: integrar wip sin publicar';
+	const body = `${changelog(subjects) || 'Sin cambios publicables.'}\n\nCreada por \`just release\`.`;
+	return { title, body };
+}
+
 let fd, lock, work;
 try {
 	emit(`Agents release · ${config.platform} · logs ${logfile}\n`);
 	if (mode === 'plan') {
 		emit(
-			`[PLAN] publicationEnabled=${config.publicationEnabled}; deploymentEnabled=${config.deploymentEnabled}\nCalidad → PR/checks → merge sin prompt → CI main → dos Repos Komodo (build/sign/verify) → GitHub prerelease.\nNo se ejecutan operaciones remotas. No hay runner ni servidor Git temporal.\n`,
+			`[PLAN] publicationEnabled=${config.publicationEnabled}; deploymentEnabled=${config.deploymentEnabled}\nCalidad → PR/checks → merge sin prompt → CI main → dos Repos Komodo (build/sign/verify) → GitHub prerelease.\nSólo lee los tags remotos (git fetch); no escribe nada remoto. No hay runner ni servidor Git temporal.\n`,
 		);
+		const { title, body } = await describe();
+		emit(`[PLAN] PR: ${title}\n${body}\n`);
 	} else {
 		assertPublicationAllowed();
 		if (process.env.GIT_DIR || process.env.GIT_WORK_TREE || process.env.GIT_INDEX_FILE)
@@ -102,6 +122,16 @@ try {
 		const env = { ...process.env, AGENTS_RELEASE_KOMODO_KEY: fields.key, AGENTS_RELEASE_KOMODO_SECRET: fields.secret };
 		// No sandbox image builds, signing keys, SSH sessions or custom runners on this Mac.
 		for (const args of [['sanitize', 'history'], ['format', 'check'], ['lint'], ['check']]) await command('just', args);
+		// What the PR's CI would run, here first, so the PR does not fail on what we could see now: the tests
+		// against a database and both E2E smokes (real sandboxes on reko-2, fake GPT). Needs `just dev` up.
+		emit('Pruebas con base y E2E locales (just dev test / design / sharing) antes de abrir la PR…\n');
+		for (const args of [
+			['dev', 'test'],
+			['dev', 'design'],
+			['dev', 'sharing'],
+		])
+			await command('just', args);
+		const { title, body } = await describe();
 		await command('git', ['push', '-u', 'origin', config.workBranch]);
 		const list = () =>
 			command(
@@ -133,12 +163,27 @@ try {
 				config.workBranch,
 				'--base',
 				config.releaseBranch,
-				'--fill-first',
+				'--title',
+				title,
+				'--body',
+				body,
 			]);
 			prs = await list();
 		}
 		if (prs.length !== 1) throw new Error('No hay una PR inequívoca.');
 		const pr = prs[0];
+		// A PR left from an earlier attempt gets today's title and list.
+		await command('gh', [
+			'pr',
+			'edit',
+			String(pr.number),
+			'--repo',
+			config.repository,
+			'--title',
+			title,
+			'--body',
+			body,
+		]);
 		emit(`PR ${pr.url}\n`);
 		// Wait for the checks main requires, ourselves: `gh pr checks --watch --required` exits with «no
 		// required checks reported» while a required job does not exist yet (Required checks has
