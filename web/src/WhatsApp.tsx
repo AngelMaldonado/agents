@@ -38,7 +38,14 @@ export type WhatsAppNumber = {
 };
 type Numbers = { available: boolean; bridge: 'off' | 'up' | 'down'; numbers: WhatsAppNumber[] };
 type Pairing = { state: 'pairing' | 'linked' | 'failed' | 'unlinked'; qr?: string | null; error?: string };
-type Entry = { phone: string; label: string; personId: number | null; personName?: string | null };
+type Entry = {
+	phone: string;
+	label: string;
+	personId: number | null;
+	personName?: string | null;
+	/** A guest the agents write to one to one (a supplier), never in a group. */
+	supplier?: boolean;
+};
 type Lists = { allow: Entry[]; block: Entry[]; people: { id: number; name: string }[] };
 
 export const SCOPE_LABEL: Record<Scope, string> = { personal: 'Personal', public: 'Público', private: 'Privado' };
@@ -426,7 +433,7 @@ function EditNumber({
 				{list === 'allow' ? 'Lista blanca' : 'Lista negra'}
 				<InfoTip label={list === 'allow' ? 'Qué es la lista blanca' : 'Qué es la lista negra'}>
 					{list === 'allow'
-						? 'Sus mensajes se atienden. Si el número es de una persona de Agents, habla con sus agentes y con los que le comparten en este número, y la tarea queda a su nombre; si no, es tu invitado y habla con tus agentes de este número.'
+						? 'Sus mensajes se atienden. Si el número es de una persona de Agents, habla con sus agentes y con los que le comparten en este número, y la tarea queda a su nombre; si no, es un invitado: tiene su grupo con los agentes que su dueño le encienda. Un proveedor nunca tiene grupo: los agentes que lo tengan encendido le escriben uno a uno (por ejemplo, para cotizar) y su respuesta vuelve al agente que le preguntó.'
 						: 'Sus mensajes se rechazan sin respuesta. Útil para bloquear a alguien sin perder quién era.'}
 				</InfoTip>
 			</legend>
@@ -442,11 +449,20 @@ function EditNumber({
 					{list === 'allow' && (
 						<OptionSelect
 							className="w-32 shrink-0"
-							label="Persona de Agents"
-							value={e.personId ? String(e.personId) : 'guest'}
-							onValueChange={(v) => edit(list, i, { personId: v === 'guest' ? null : Number(v) })}
+							label="Quién es"
+							value={e.personId ? String(e.personId) : e.supplier ? 'supplier' : 'guest'}
+							onValueChange={(v) =>
+								edit(
+									list,
+									i,
+									v === 'guest' || v === 'supplier'
+										? { personId: null, supplier: v === 'supplier' }
+										: { personId: Number(v), supplier: false },
+								)
+							}
 							options={[
 								{ id: 'guest', label: 'Invitado' },
+								{ id: 'supplier', label: 'Proveedor' },
 								...l.people.map((p) => ({ id: String(p.id), label: p.name })),
 							]}
 						/>
@@ -490,7 +506,12 @@ function EditNumber({
 					setBusy(true);
 					setError('');
 					try {
-						const keep = (e: Entry) => ({ phone: e.phone, label: e.label, personId: e.personId });
+						const keep = (e: Entry) => ({
+							phone: e.phone,
+							label: e.label,
+							personId: e.personId,
+							supplier: !!e.supplier,
+						});
 						const saved = await saving.run(
 							async () => {
 								await api(`/whatsapp/numbers/${number.id}/lists`, {

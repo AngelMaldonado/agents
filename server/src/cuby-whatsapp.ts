@@ -342,6 +342,8 @@ export async function handle(e: CubyEvent) {
 		quoted: d.inReplyTo ?? '',
 		// A group Agents created (one person's group with someone's agents): its thread is its address.
 		...(d.group ? { group: d.threadId } : {}),
+		// One to one, the thread it came in (a supplier answering the agent that wrote to them).
+		...(!d.group && d.threadId ? { thread: d.threadId } : {}),
 	});
 	console.log(`cuby-whatsapp ← ${d.kind} ${who}: ${JSON.stringify(result).slice(0, 160)}`);
 }
@@ -357,7 +359,7 @@ export async function send(
 	phone: string,
 	text: string,
 	files: { name: string; mime: string; data: string }[] = [],
-	opts: { personId?: number; thread?: string; threadId?: string | null } = {},
+	opts: { personId?: number; thread?: string; threadId?: string | null; hours?: number } = {},
 ) {
 	if (!active()) throw new Error('Cuby WhatsApp está apagado.');
 	// What the service refuses (an HTML report) goes zipped only when it is the one deliverable: next to a
@@ -390,7 +392,13 @@ export async function send(
 		threadId
 			? { threadId }
 			: opts.thread
-				? { to, thread: { title: opts.thread.slice(0, 80), expectsReplyHours: 24 } }
+				? {
+						to,
+						thread: {
+							title: opts.thread.slice(0, 80),
+							expectsReplyHours: Math.min(168, Math.max(1, opts.hours ?? 24)),
+						},
+					}
 				: { to };
 	const post = async (body: Record<string, unknown>) => {
 		const r = await api<{ threadId: string | null }>('POST', '/v1/messages', { ...target(), ...body });

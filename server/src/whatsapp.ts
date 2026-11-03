@@ -9,7 +9,10 @@ import { createHash, timingSafeEqual } from 'node:crypto';
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { row, rows, exec, tx, DATA_DIR } from './db';
-import { receive } from './inbox';
+import { receive, SUPPLIER_ROLE } from './inbox';
+
+/** How long a supplier's chat with an agent stays open for their answers (Cuby's longest thread: 7 days). */
+const SUPPLIER_HOURS = 168;
 import { whatsappConversation } from './conversations';
 import { decodeHelp } from './help';
 import * as cuby from './cuby-whatsapp';
@@ -298,19 +301,21 @@ export async function loggedOut(e: { number?: unknown }) {
 
 // ---------- who may write: the allow and block lists ----------
 
-type Phone = { phone: string; label: string; personId: number | null; personName: string | null };
+type Phone = { phone: string; label: string; personId: number | null; personName: string | null; supplier: boolean };
 
 /** A number's lists, and the people an allow entry may be (who writes from that phone). */
 export async function lists(me: Person, id: number) {
 	await own(me, id);
 	const phones = await rows<Phone & { list: 'allow' | 'block' }>(
-		`select w.phone, w.list, w.label, w.person_id as "personId", p.name as "personName"
+		`select w.phone, w.list, w.label, w.person_id as "personId", p.name as "personName", w.supplier
 		 from whatsapp_phones w left join people p on p.id = w.person_id where w.number_id = $1 order by w.created_at, w.phone`,
 		[id],
 	);
 	return {
 		allow: phones.filter((p) => p.list === 'allow').map(({ list: _, ...p }) => p),
-		block: phones.filter((p) => p.list === 'block').map(({ list: _, personId: __, personName: ___, ...p }) => p),
+		block: phones
+			.filter((p) => p.list === 'block')
+			.map(({ list: _, personId: __, personName: ___, supplier: ____, ...p }) => p),
 		people: await rows<{ id: number; name: string }>('select id, name from people order by name, id'),
 	};
 }
@@ -328,6 +333,8 @@ export async function setLists(me: Person, id: number, input: { allow?: unknown;
 				phone,
 				kind,
 				personId,
+				// A supplier is a guest (no person) the agents write to one to one, never in a group.
+				supplier: kind === 'allow' && !personId && !!e?.supplier,
 				label: String(e?.label ?? '')
 					.trim()
 					.slice(0, 60),
@@ -359,8 +366,8 @@ export async function setLists(me: Person, id: number, input: { allow?: unknown;
 		await exec('delete from whatsapp_phones where number_id = $1', [id], c);
 		for (const e of all)
 			await exec(
-				'insert into whatsapp_phones (number_id, phone, list, person_id, label) values ($1, $2, $3, $4, $5)',
-				[id, e.phone, e.kind, e.personId, e.label],
+				'insert into whatsapp_phones (number_id, phone, list, person_id, label, supplier) values ($1, $2, $3, $4, $5, $6)',
+				[id, e.phone, e.kind, e.personId, e.label, e.supplier],
 				c,
 			);
 		// A phone that may no longer write stops talking to its agent.
@@ -414,8 +421,9 @@ async function contacts(agentId: number, owner: Person, n: NumberRow) {
 		person_name: string | null;
 		reach: boolean;
 		choice: boolean | null;
+		supplier: boolean;
 	}>(
-		`select w.phone, w.label, w.person_id, p.name as person_name, x.enabled as choice,
+		`select w.phone, w.label, w.person_id, p.name as person_name, x.enabled as choice, w.supplier,
 		   coalesce(w.person_id = a.person_id or exists (select 1 from agent_shares s where s.agent_id = a.id and s.person_id = w.person_id), false) as reach
 		 from whatsapp_phones w join agents a on a.id = $1
 		 left join people p on p.id = w.person_id
@@ -431,7 +439,8 @@ async function contacts(agentId: number, owner: Person, n: NumberRow) {
 			phone: c.phone,
 			shown: sees || c.person_id === owner.id ? c.phone : `••••${c.phone.slice(-4)}`,
 			name: c.person_name ?? (c.label || 'Invitado'),
-			kind: (c.person_id === owner.id ? 'owner' : c.person_id ? 'person' : 'guest') as 'owner' | 'person' | 'guest',
+			kind: (c.person_id === owner.id ? 'owner' : c.person_id ? 'person' : c.supplier ? 'supplier' : 'guest') as
+				'owner' | 'person' | 'guest' | 'supplier',
 			enabled: c.choice ?? !!c.person_id,
 		}));
 }
@@ -496,7 +505,7 @@ const groupAgents = (g: Pick<GroupRow, 'number_id' | 'owner_id' | 'phone' | 'per
 /** The 1:1 send (a phone) or into a group (a group's address): the ids of what went out. */
 async function deliver(
 	n: Pick<NumberRow, 'jid' | 'provider'>,
-	to: { phone?: string; group?: string },
+	to: { phone?: string; group?: string; resolve?: boolean },
 	text: string,
 	files: InboundFile[] = [],
 	personId?: number,
@@ -508,7 +517,7 @@ async function deliver(
 	const r = await bridge<{ ids?: string[] }>(
 		'POST',
 		`/numbers/${encodeURIComponent(n.jid!)}/send`,
-		to.group ? { group: to.group, text, files } : { phone: to.phone, text, files },
+		to.group ? { group: to.group, text, files } : { phone: to.phone, text, files, resolve: !!to.resolve },
 		180_000,
 	);
 	return r.ids ?? [];
@@ -574,7 +583,7 @@ async function syncOnce() {
 	const want = await rows<{ owner_id: number; owner_name: string; phone: string; person_id: number | null }>(
 		`select distinct a.person_id as owner_id, o.name as owner_name, w.phone, w.person_id
 		 from whatsapp_phones w join agents a on a.deleted_at is null join people o on o.id = a.person_id
-		 where w.number_id = $1 and w.list = 'allow'
+		 where w.number_id = $1 and w.list = 'allow' and not w.supplier
 		   and (w.person_id is null or w.person_id = a.person_id
 		        or exists (select 1 from agent_shares s where s.agent_id = a.id and s.person_id = w.person_id))
 		   and coalesce((select x.enabled from whatsapp_agent_phones x where x.agent_id = a.id and x.number_id = $1 and x.phone = w.phone),
@@ -807,11 +816,15 @@ export async function allowed(e: { number?: unknown; phone?: unknown; text?: unk
 		);
 		return { allowed: !!g };
 	}
-	const hit = await row(
-		`select 1 from whatsapp_phones w join whatsapp_numbers n on n.id = w.number_id
+	const hit = await row<{ supplier: boolean; asked: boolean }>(
+		`select w.supplier, exists (select 1 from whatsapp_supplier_threads t where t.number_id = n.id and t.phone = w.phone
+		   and t.last_at > now() - make_interval(hours => $3)) as asked
+		 from whatsapp_phones w join whatsapp_numbers n on n.id = w.number_id
 		 where n.jid = $1 and n.deleted_at is null and n.status = 'linked' and w.phone = $2 and w.list = 'allow'`,
-		[String(e.number ?? ''), phone],
+		[String(e.number ?? ''), phone, SUPPLIER_HOURS],
 	);
+	// A supplier an agent wrote to lately: anything they answer is for that agent.
+	if (hit?.supplier && hit.asked) return { allowed: true };
 	return { allowed: !!hit && /^\/(agentes|agente|ayuda)\b/i.test(String(e.text ?? '').trim()) };
 }
 
@@ -862,10 +875,11 @@ export async function inbound(m: Record<string, unknown>): Promise<Record<string
 
 	// One to one: only to say where the agents are.
 	const reply = (t: string) => deliver(n, { phone: from }, t);
-	const entry = await row("select 1 from whatsapp_phones where number_id = $1 and phone = $2 and list = 'allow'", [
-		n.id,
-		phone,
-	]);
+	const entry = await row<{ supplier: boolean; label: string }>(
+		"select supplier, label from whatsapp_phones where number_id = $1 and phone = $2 and list = 'allow'",
+		[n.id, phone],
+	);
+	if (entry?.supplier) return supplierInbound(n, phone, from, id, text, m, entry.label);
 	if (entry && /^\/(agentes|agente|ayuda)\b/i.test(text)) {
 		await reply(
 			'Los agentes están en tus grupos «Agentes …» de este número: escríbeles ahí. Dentro, /ayuda muestra los comandos.',
@@ -873,6 +887,126 @@ export async function inbound(m: Record<string, unknown>): Promise<Record<string
 		return { command: true };
 	}
 	return { ignored: true };
+}
+
+/**
+ * A supplier's answer, one to one: to the agent that wrote to them (by Cuby's thread, else their latest chat
+ * of the last days), in the conversation that asked. Nobody asked them, or the owner switched them off for
+ * that agent: ignored. They never authorize anything (their messages are signed as a supplier's).
+ */
+async function supplierInbound(
+	n: NumberRow,
+	phone: string,
+	from: string,
+	id: string,
+	text: string,
+	m: Record<string, unknown>,
+	label: string,
+) {
+	const thread = typeof m.thread === 'string' && m.thread ? m.thread : null;
+	type Chat = { id: number; agent_id: number; conversation_id: number | null };
+	const t =
+		(thread
+			? await row<Chat>(
+					'select id, agent_id, conversation_id from whatsapp_supplier_threads where number_id = $1 and thread_id = $2 and phone = $3',
+					[n.id, thread, phone],
+				)
+			: null) ??
+		(await row<Chat>(
+			`select id, agent_id, conversation_id from whatsapp_supplier_threads
+			 where number_id = $1 and phone = $2 and last_at > now() - make_interval(hours => $3) order by last_at desc limit 1`,
+			[n.id, phone, SUPPLIER_HOURS],
+		));
+	if (!t) return { ignored: true, reason: 'nadie le escribió' };
+	const on = await row(
+		`select 1 from agents a join whatsapp_agent_phones x on x.agent_id = a.id
+		 where a.id = $1 and a.deleted_at is null and x.number_id = $2 and x.phone = $3 and x.enabled`,
+		[t.agent_id, n.id, phone],
+	);
+	if (!on) return { ignored: true, reason: 'apagado para ese agente' };
+	const files = (Array.isArray(m.files) ? m.files : []).slice(0, 10).map((f: any) => ({
+		name: String(f?.name ?? 'archivo'),
+		mime: String(f?.mime ?? 'application/octet-stream'),
+		data: String(f?.data ?? ''),
+	}));
+	if (!text && !files.length) return { ignored: true };
+	const who = label || String(m.name ?? '').slice(0, 80) || 'Proveedor';
+	const kept = t.conversation_id
+		? await row<{ id: number }>(
+				'select id from conversations where id = $1 and agent_id = $2 and archived_at is null and deleted_at is null',
+				[t.conversation_id, t.agent_id],
+			)
+		: null;
+	const conversationId =
+		kept?.id ?? (await whatsappConversation(t.agent_id, `s:${n.id}:${phone}`, `WhatsApp · ${who}`));
+	await exec('update whatsapp_supplier_threads set last_at = now(), conversation_id = $2 where id = $1', [
+		t.id,
+		conversationId,
+	]);
+	return receive(
+		{
+			agentId: t.agent_id,
+			conversationId,
+			source: 'whatsapp',
+			personId: null,
+			sender: `${who} (+${phone}), ${SUPPLIER_ROLE}`,
+			text,
+			attachments: files,
+			context: { whatsapp: { number: n.id, phone: from, supplier: t.id } },
+			dedupeKey: `wa:${n.id}:${id}`,
+		},
+		{ routeNow: false },
+	);
+}
+
+/**
+ * whatsapp_notify to a supplier: one to one, in this agent's chat with them (Cuby: its thread, open up to
+ * 7 days and renewed by each message; a new chat introduces the agent as an AI assistant). Their answer
+ * goes back to `conversationId`.
+ */
+async function toSupplier(
+	n: NumberRow,
+	agent: { id: number; name: string; person_id: number },
+	phone: string,
+	text: string,
+	files: InboundFile[],
+	conversationId: number,
+) {
+	const open = await row<{ id: number; thread_id: string | null }>(
+		`select id, thread_id from whatsapp_supplier_threads
+		 where number_id = $1 and phone = $2 and agent_id = $3 and last_at > now() - make_interval(hours => $4)
+		 order by last_at desc limit 1`,
+		[n.id, phone, agent.id, SUPPLIER_HOURS],
+	);
+	const owner = (await row<{ name: string }>('select name from people where id = $1', [agent.person_id]))?.name ?? '';
+	const hello = `Hola, soy ${agent.name}, asistente de IA${owner ? ` de ${owner}` : ''}.\n\n`;
+	let threadId: string | null = open?.thread_id ?? null;
+	let fresh = !open;
+	if (n.provider === 'cuby') {
+		const opening = () =>
+			cuby.send(phone, `${hello}${text}`, files, {
+				personId: agent.person_id,
+				thread: agent.name,
+				hours: SUPPLIER_HOURS,
+			});
+		if (threadId)
+			threadId = await cuby.send(phone, text, files, { personId: agent.person_id, threadId }).catch(() => {
+				fresh = true; // the thread closed after all: a new one, introduced again
+				return opening();
+			});
+		else threadId = await opening();
+	} else await deliver(n, { phone, resolve: true }, `${fresh ? hello : ''}${text}`, files, agent.person_id);
+	if (open && !fresh)
+		await exec('update whatsapp_supplier_threads set last_at = now(), conversation_id = $2 where id = $1', [
+			open.id,
+			conversationId,
+		]);
+	else
+		await exec(
+			`insert into whatsapp_supplier_threads (number_id, phone, agent_id, conversation_id, thread_id)
+			 values ($1, $2, $3, $4, $5)`,
+			[n.id, phone, agent.id, conversationId, threadId],
+		);
 }
 
 async function groupInbound(
@@ -1305,6 +1439,29 @@ export async function notify(
 				para: name,
 				motivo: 'no es un contacto habilitado para este agente (Canales → Quién le escribe por WhatsApp)',
 			});
+			continue;
+		}
+		if (c.kind === 'supplier') {
+			const sentToday = (await row<{ n: number }>(
+				"select count(*)::int as n from whatsapp_notices where number_id = $1 and phone = $2 and at > now() - interval '1 day'",
+				[n.id, c.phone],
+			))!.n;
+			if (sentToday >= NOTICES_PER_DAY) {
+				failed.push({ para: c.name, motivo: `ya recibió ${NOTICES_PER_DAY} avisos en las últimas 24 h` });
+				continue;
+			}
+			try {
+				await toSupplier(n, a, c.phone, text, file, a.conversation_id);
+				await exec('insert into whatsapp_notices (agent_id, run_id, number_id, phone) values ($1, $2, $3, $4)', [
+					a.id,
+					runId,
+					n.id,
+					c.phone,
+				]);
+				delivered.push(c.name);
+			} catch (err) {
+				failed.push({ para: c.name, motivo: (err as Error).message.slice(0, 200) });
+			}
 			continue;
 		}
 		const find = () =>
