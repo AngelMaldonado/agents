@@ -178,7 +178,8 @@ cutover action="plan":
 backup action="plan" target="":
     python3 scripts/backup/s3.py {{quote(action)}} {{quote(target)}}
 
-# prod: psql | tunnel | stop — the production database, in tmux `cuby-agents-prod` (read-only by default)
+# prod: psql | tunnel | stop — the production database, in tmux `cuby-agents-prod` (read-only by default);
+# proxyca — the egress proxy's CA and secret for the stack's Environment (in .env.production, never printed)
 prod action:
     #!/usr/bin/env bash
     set -euo pipefail
@@ -208,6 +209,7 @@ prod action:
         echo "Attach with: tmux attach -t $session"
         ;;
       tunnel) exec "{{prod_dir}}/tunnel.sh" ;;
+      proxyca) exec "{{prod_dir}}/proxy-ca.sh" ;;
       stop) tmux kill-session -t "$session" 2>/dev/null && echo "Closed '$session'." || echo "'$session' was not running." ;;
-      *) echo "unknown: just prod {{action}} (psql | tunnel | stop)"; exit 2 ;;
+      *) echo "unknown: just prod {{action}} (psql | tunnel | stop | proxyca)"; exit 2 ;;
     esac
