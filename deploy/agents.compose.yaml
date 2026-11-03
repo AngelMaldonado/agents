@@ -1,0 +1,121 @@
+# The production stack `agents` in Komodo (reko-3), as it runs since v0.0.5-beta: it follows the `:beta`
+# tags, which `just release` moves only after both images are built, signed with Cosign and verified.
+# Deploying a beta is: Komodo → stack agents → Pull, then Deploy (poll_for_updates shows when :beta moved).
+# Rollback: `just release promote <version>`, then Pull + Deploy. The version and SHA are inside the app
+# image (/healthz). Agents keep running on the exact sandbox image they were validated on.
+# The stack's Environment keeps AGENTS_ADMIN_PIN, AGENTS_MASTER_KEY, AGENTS_PROXY_KEY and AGENTS_DB_PASSWORD.
+name: agents
+services:
+  server:
+    image: registry.cubytest.space/cuby/agents-app:beta
+    restart: unless-stopped
+    environment:
+      AGENTS_INSTANCE: prod
+      AGENTS_ADMIN_PIN: ${AGENTS_ADMIN_PIN:?conservar PIN de producción}
+      AGENTS_MASTER_KEY: ${AGENTS_MASTER_KEY:?conservar llave de producción}
+      AGENTS_PROXY_KEY: ${AGENTS_PROXY_KEY:?conservar proxy key de producción}
+      AGENTS_DATABASE_URL: postgres://agents:${AGENTS_DB_PASSWORD:?conservar contraseña de producción}@postgres:5432/agents_beta1
+      AGENTS_CLIPROXY_CONFIG: /cliproxy/config.yaml
+      AGENTS_CLIPROXY_URL: http://cliproxy:8317
+      AGENTS_SANDBOX_NETWORK: agents-prod-sandbox
+      AGENTS_SANDBOX_SERVER_URL: http://agents-prod-server:8787
+      # The sandbox of the same release: pulled by the `sandbox` service below.
+      AGENTS_SANDBOX_IMAGE: registry.cubytest.space/cuby/agents-sandbox:beta
+      AGENTS_PUBLIC_URL: https://agents.cubytest.space
+      AGENTS_COOKIE_SECURE: '1'
+      # Durable identity, not the release: do not change.
+      AGENTS_APP_VERSION: v2
+    depends_on:
+      postgres:
+        condition: service_healthy
+        required: true
+    volumes:
+      - /srv/agents/releases/beta1/data:/data
+      - /srv/agents/cliproxy:/cliproxy
+      - /var/run/docker.sock:/var/run/docker.sock
+    networks:
+      internal: {}
+      sandbox:
+        aliases: [agents-prod-server]
+      proxy: {}
+    labels:
+      - traefik.enable=true
+      - traefik.docker.network=proxy
+      - traefik.http.routers.agents.rule=Host(`agents.cubytest.space`)
+      - traefik.http.routers.agents.entrypoints=websecure
+      - traefik.http.routers.agents.service=agents
+      - traefik.http.services.agents.loadbalancer.server.port=8787
+
+  # Never runs: it is here so that Pull downloads the sandbox image of the release (the server starts the
+  # agents' computers from it), and its stopped container keeps that image from a prune.
+  sandbox:
+    image: registry.cubytest.space/cuby/agents-sandbox:beta
+    entrypoint: ['true']
+    restart: 'no'
+    network_mode: none
+
+  postgres:
+    image: postgres:18.6-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: agents
+      POSTGRES_USER: agents
+      POSTGRES_PASSWORD: ${AGENTS_DB_PASSWORD:?conservar contraseña de producción}
+    healthcheck:
+      test: ['CMD', 'pg_isready', '-U', 'agents', '-d', 'agents']
+      interval: 5s
+      timeout: 3s
+      retries: 30
+    volumes:
+      - /srv/agents/postgres:/var/lib/postgresql
+    networks: [internal]
+
+  # Daily dump of the old database (agents); the beta1 database backup is still pending (deferred).
+  backup:
+    image: postgres:18.6-alpine
+    restart: unless-stopped
+    environment:
+      PGHOST: postgres
+      PGUSER: agents
+      PGDATABASE: agents
+      PGPASSWORD: ${AGENTS_DB_PASSWORD:?set AGENTS_DB_PASSWORD in the stack's Environment}
+    entrypoint:
+      - sh
+      - -c
+      - |
+        until pg_isready -q; do sleep 5; done
+        # The first dump must include app and DBOS migrations, not an empty new database.
+        until psql -Atqc "SELECT to_regclass('public.runs') IS NOT NULL AND to_regclass('dbos.workflow_status') IS NOT NULL" | grep -qx t; do sleep 5; done
+        while true; do
+          f=/backups/agents-$$(date +%F).dump
+          if pg_dump -Fc -f "$$f.tmp"; then mv "$$f.tmp" "$$f"; echo "backup $$f"; else rm -f "$$f.tmp"; echo "backup FAILED"; fi
+          find /backups -name 'agents-*.dump' -mtime +13 -delete
+          sleep 86400
+        done
+    volumes:
+      - /srv/agents/backups:/backups
+    depends_on:
+      postgres:
+        condition: service_healthy
+        required: true
+    networks: [internal]
+
+  cliproxy:
+    image: eceasy/cli-proxy-api:v8.0.40
+    restart: unless-stopped
+    entrypoint:
+      ['sh', '-c', 'until [ -f /cfg/config.yaml ]; do sleep 1; done; exec ./CLIProxyAPI -config /cfg/config.yaml']
+    volumes:
+      - /srv/agents/cliproxy:/cfg
+    networks: [internal]
+
+networks:
+  internal:
+    name: agents-prod-internal
+  sandbox:
+    name: agents-prod-sandbox
+    driver_opts:
+      com.docker.network.bridge.name: agents-prd-sbx
+  proxy:
+    name: proxy
+    external: true

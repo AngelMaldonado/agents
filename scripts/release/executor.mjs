@@ -9,7 +9,10 @@ import { schemaInfo } from './schema.mjs';
 import { signingFlags, verificationFlags } from './cosign.mjs';
 const mode = process.argv[2],
 	component = process.env.AGENTS_RELEASE_COMPONENT;
-if (!['build', 'sign', 'verify'].includes(mode)) throw new Error('Modo inválido.');
+// promote: points `<repository>:beta` at an image already built, signed and verified for this SHA (its
+// digest given), after verifying it again. It runs with the current main code, also for an older version
+// (a rollback), so it does not check that the checkout is that SHA.
+if (!['build', 'sign', 'verify', 'promote'].includes(mode)) throw new Error('Modo inválido.');
 const rehearsal = process.env.AGENTS_RELEASE_REHEARSAL === 'true';
 if (!rehearsal) assertPublicationAllowed();
 const sha = assertSha(process.env.AGENTS_RELEASE_SHA),
@@ -32,7 +35,11 @@ const run = (bin, args) => {
 		throw new Error(clean(`${bin} falló (${error.status}): ${error.stdout ?? ''}${error.stderr ?? ''}`));
 	}
 };
-if (run('git', ['rev-parse', 'HEAD']) !== sha || run('git', ['status', '--porcelain']))
+if (
+	mode === 'promote'
+		? run('git', ['status', '--porcelain'])
+		: run('git', ['rev-parse', 'HEAD']) !== sha || run('git', ['status', '--porcelain'])
+)
 	throw new Error('Fuente sucia o SHA incorrecto.');
 const ctx = process.env.DOCKER_CONTEXT;
 if (!ctx) throw new Error('DOCKER_CONTEXT explícito obligatorio.');
@@ -65,6 +72,10 @@ if (mode === 'build') {
 			`org.opencontainers.image.revision=${sha}`,
 			'--label',
 			`org.opencontainers.image.version=${version}`,
+			// The app reports them in /healthz; the compose no longer sets them (it follows :beta).
+			...(component === 'agents-app'
+				? ['--build-arg', `AGENTS_RELEASE_VERSION=${version}`, '--build-arg', `AGENTS_RELEASE_SHA=${sha}`]
+				: []),
 			'--tag',
 			tag,
 			'--file',
@@ -80,6 +91,8 @@ if (mode === 'build') {
 	const descriptor = JSON.parse(docker('buildx', 'imagetools', 'inspect', tag, '--format', '{{json .Manifest}}'));
 	const digest = requireDigest(descriptor.digest),
 		ref = `${repository}@${digest}`;
+	if (mode === 'promote' && digest !== requireDigest(process.env.AGENTS_RELEASE_DIGEST))
+		throw new Error('El digest del SHA no es el publicado en la release.');
 	const raw = JSON.parse(docker('buildx', 'imagetools', 'inspect', ref, '--raw'));
 	if (raw.manifests) {
 		const runtime = raw.manifests.filter(
@@ -120,8 +133,18 @@ if (mode === 'build') {
 		);
 		if (!claims.some((claim) => claim.critical?.image?.['docker-manifest-digest'] === digest))
 			throw new Error('Firma no corresponde al digest.');
-		console.log(
-			`AGENTS_RELEASE_IMAGE ${JSON.stringify({ component, sha, version, platform: config.platform, schema: schemaInfo(), digest, ref, verified: true, rehearsal })}`,
-		);
+		if (mode === 'promote') {
+			// The same manifest under the moving tag (no rebuild): its signature stays valid by digest.
+			const beta = `${repository}:beta`;
+			docker('buildx', 'imagetools', 'create', '--tag', beta, ref);
+			const moved = JSON.parse(docker('buildx', 'imagetools', 'inspect', beta, '--format', '{{json .Manifest}}'));
+			if (moved.digest !== digest) throw new Error(`${beta} no quedó en ${digest}.`);
+			console.log(
+				`AGENTS_RELEASE_PROMOTED ${JSON.stringify({ component, sha, version, digest, tag: beta, rehearsal })}`,
+			);
+		} else
+			console.log(
+				`AGENTS_RELEASE_IMAGE ${JSON.stringify({ component, sha, version, platform: config.platform, schema: schemaInfo(), digest, ref, verified: true, rehearsal })}`,
+			);
 	}
 }

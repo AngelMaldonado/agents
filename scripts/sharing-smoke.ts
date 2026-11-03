@@ -121,6 +121,8 @@ const launch = () => {
 			AGENTS_DATABASE_URL: url.href,
 			AGENTS_DATA: dir,
 			AGENTS_INSTANCE: instance,
+			// No image keepers for a throwaway instance (they would stay on the host after the run).
+			AGENTS_KEEP_IMAGES: '0',
 			AGENTS_MASTER_KEY: masterKey,
 			AGENTS_PROXY_KEY: 'fixture-internal-key',
 			AGENTS_ADMIN_PIN: '1111',
@@ -319,6 +321,9 @@ try {
 	await db.end().catch(() => {});
 	const filters = encodeURIComponent(JSON.stringify({ label: [`agents.instance=${instance}`] }));
 	for (const c of (await docker(`/containers/json?all=1&filters=${filters}`)) ?? [])
+		await docker(`/containers/${c.Id}?force=1`, 'DELETE');
+	const keepers = encodeURIComponent(JSON.stringify({ label: [`agents.keep=${instance}`] }));
+	for (const c of (await docker(`/containers/json?all=1&filters=${keepers}`)) ?? [])
 		await docker(`/containers/${c.Id}?force=1`, 'DELETE');
 	const volumes = await docker(`/volumes?filters=${filters}`);
 	for (const v of volumes?.Volumes ?? []) await docker(`/volumes/${encodeURIComponent(v.Name)}?force=1`, 'DELETE');

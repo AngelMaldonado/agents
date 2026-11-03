@@ -5,7 +5,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { config, assertPublicationAllowed, assertDeploymentAllowed, assertToolsImage } from './config.mjs';
 import { sourceConfig, executorEnvironment, imageRepository } from './inputs.mjs';
-import { prepareArtifacts, imageFrom } from './artifacts.mjs';
+import { prepareArtifacts, imageFrom, promotedFrom } from './artifacts.mjs';
 import { schemaInfo } from './schema.mjs';
 import { Komodo } from './komodo.mjs';
 import { signingFlags, verificationFlags } from './cosign.mjs';
@@ -150,7 +150,8 @@ test('rehearsal cannot pass as product artifact', () => {
 });
 test('private values are forwarded only to the signing container; one job has three phases', () => {
 	const shell = readFileSync(new URL('./komodo-job.sh', import.meta.url), 'utf8');
-	expect(shell).toContain('for mode in build sign verify');
+	expect(shell).toContain("'build sign verify') phases=(build sign verify)");
+	expect(shell).toContain('promote) phases=(promote)');
 	expect(shell).toContain('if [[ "$mode" == sign ]]');
 	expect(shell).toContain('phase_env+=(-e COSIGN_PRIVATE_KEY_B64 -e COSIGN_PASSWORD)');
 	expect(shell).toContain('trap cleanup EXIT');
@@ -221,6 +222,71 @@ if(action===${JSON.stringify(fail)})process.exit(1);
 		}
 	}
 }, 15000);
+test('a promote job runs only promote, never sees signing material, and must report :beta on the digest', () => {
+	const digest = `sha256:${'d'.repeat(64)}`;
+	const env = executorEnvironment(version, sha, 'agents-app', config, false, { promote: { digest } });
+	expect(env).toContain('AGENTS_RELEASE_PHASES=promote');
+	expect(env).toContain(`AGENTS_RELEASE_DIGEST=${digest}`);
+	expect(env).not.toContain('COSIGN');
+	expect(executorEnvironment(version, sha, 'agents-app')).toContain(
+		'COSIGN_PRIVATE_KEY_B64=[[COSIGN_PRIVATE_KEY_B64]]',
+	);
+	expect(() =>
+		executorEnvironment(version, sha, 'agents-app', config, false, { promote: { digest: 'latest' } }),
+	).toThrow();
+	const marker = (over = {}) => ({
+		logs: [
+			{
+				stdout: `AGENTS_RELEASE_PROMOTED ${JSON.stringify({ component: 'agents-app', sha, version, digest, tag: `${imageRepository('agents-app')}:beta`, rehearsal: false, ...over })}`,
+			},
+		],
+	});
+	expect(promotedFrom(marker(), 'agents-app', sha, digest)).toEqual({
+		tag: `${imageRepository('agents-app')}:beta`,
+		digest,
+	});
+	for (const bad of [
+		{ digest: `sha256:${'e'.repeat(64)}` },
+		{ component: 'agents-sandbox' },
+		{ tag: 'x:latest' },
+		{ rehearsal: true },
+	])
+		expect(() => promotedFrom(marker(bad), 'agents-app', sha, digest)).toThrow();
+	expect(() => promotedFrom({ logs: [] }, 'agents-app', sha, digest)).toThrow('no confirmó');
+	// The real shell: login, pull of the tools image, then only the promote container, without the signing key.
+	const directory = mkdtempSync(join(tmpdir(), 'agents-promote-'));
+	try {
+		mkdirSync(join(directory, '.git'));
+		writeFileSync(
+			join(directory, '.git/agents-release.env'),
+			`AGENTS_RELEASE_COMPONENT=agents-app\nAGENTS_RELEASE_TOOLS_IMAGE=${config.toolsImage}\nREGISTRY_USERNAME=synthetic-user\nREGISTRY_PASSWORD=synthetic-password\nAGENTS_RELEASE_PHASES=promote\nAGENTS_RELEASE_DIGEST=${digest}\n`,
+		);
+		writeFileSync(
+			join(directory, 'docker'),
+			`#!/usr/bin/env node
+const fs=require('node:fs');
+const args=process.argv.slice(2), action=args.includes('login')?'login':args.includes('pull')?'pull':args.at(-1);
+if(action==='login')fs.readFileSync(0,'utf8');
+fs.appendFileSync(${JSON.stringify(join(directory, 'calls'))},JSON.stringify({action,args})+'\\n');
+`,
+			{ mode: 0o755 },
+		);
+		execFileSync('bash', [new URL('./komodo-job.sh', import.meta.url).pathname], {
+			cwd: directory,
+			env: { PATH: `${directory}:${process.env.PATH}`, HOME: directory },
+			stdio: 'pipe',
+		});
+		const calls = readFileSync(join(directory, 'calls'), 'utf8')
+			.trim()
+			.split('\n')
+			.map((line) => JSON.parse(line));
+		expect(calls.map((c) => c.action)).toEqual(['login', 'pull', 'promote']);
+		expect(calls[2].args).toContain('AGENTS_RELEASE_DIGEST');
+		expect(calls[2].args.includes('COSIGN_PRIVATE_KEY_B64')).toBe(false);
+	} finally {
+		rmSync(directory, { recursive: true, force: true });
+	}
+});
 test('failed input loading cannot leave a signing envfile behind', () => {
 	const directory = mkdtempSync(join(tmpdir(), 'agents-invalid-env-'));
 	try {

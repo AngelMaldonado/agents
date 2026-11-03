@@ -572,6 +572,7 @@ async function startSandbox(runId: number): Promise<{ deadline: number; minutes:
  * 2-nov-2026). Never throws: a missing image is skipped (it is already gone).
  */
 export async function keepPinnedImages() {
+	if (process.env.AGENTS_KEEP_IMAGES === '0') return;
 	const docker = new DockerSandbox();
 	const images = (
 		await rows<{ image: string }>(
@@ -592,9 +593,15 @@ export async function keepPinnedImages() {
 	}
 }
 let keeper: ReturnType<typeof setInterval> | null = null;
-/** At start and every hour (also after each approval, from designs.ts). */
+/**
+ * A minute after start (not while the server recovers its work and the first harness tests use Docker)
+ * and every hour; also after each approval (designs.ts). AGENTS_KEEP_IMAGES=0 turns it off: the E2E
+ * servers, whose throwaway instances would leave a keeper behind on the host each run.
+ */
 export function startImageKeeper() {
-	void keepPinnedImages();
+	if (process.env.AGENTS_KEEP_IMAGES === '0') return;
+	const first = setTimeout(() => void keepPinnedImages(), 60_000);
+	first.unref?.();
 	keeper ??= setInterval(() => void keepPinnedImages(), 60 * 60_000);
 	keeper.unref?.();
 }

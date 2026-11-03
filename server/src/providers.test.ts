@@ -8,7 +8,7 @@ if (!url) console.warn('AGENTS_TEST_DATABASE_URL is not set: skipping (run `just
 // The runner must set AGENTS_DATABASE_URL BEFORE Bun loads ANY test module.
 process.env.AGENTS_DATA = '/tmp';
 // A fake WhatsApp bridge (the API of ../../whatsapp), set before any module reads its address.
-const waSent: { jid: string; phone?: string; group?: string; text: string; files: unknown[] }[] = [];
+const waSent: { jid: string; phone?: string; group?: string; text: string; files: unknown[]; resolve?: boolean }[] = [];
 const waGroups: { jid: string; group: string; name: string; phones: string[] }[] = [];
 const waLocks: { group: string; locked: boolean }[] = [];
 const waPhotos: { group: string; photo: string }[] = [];
@@ -721,6 +721,90 @@ run('WhatsApp: numbers, lists, and one group per (owner of agents, person) where
 	// /actual: who answers now, and whether its conversation here is open.
 	expect(await inAna('/actual')).toEqual({ command: true });
 	expect(waSent.at(-1)?.text).toMatch(/^Hablas con Radar, en una conversación abierta\. También le dices @radar\.$/);
+
+	// A supplier (a guest marked as such): never a group; Radar writes to them one to one once Ana switches
+	// them on, and their answer goes back to the conversation that asked, signed as a supplier's.
+	await whatsapp.setLists(admin, pub.id, {
+		allow: [
+			{ phone: '+52 444 111 2222', personId: ana.id },
+			{ phone: '+52 444 555 6666', personId: beto.id },
+			{ phone: '+52 444 777 8888', label: 'Invitada' },
+			{ phone: '+52 444 666 7777', label: 'Ferretería', supplier: true },
+		],
+		block: [{ phone: '+52 444 999 0000', label: 'Spam' }],
+	});
+	await whatsapp.syncGroups();
+	expect(waGroups.some((g) => g.phones.includes('524446667777'))).toBe(false);
+	const supplier = (await whatsapp.agentView(radar.id, ana)).contacts.find((c) => c.name === 'Ferretería')!;
+	expect(supplier).toMatchObject({ kind: 'supplier', enabled: false });
+	expect(
+		(await whatsapp.notify(radarRun.id, { to: ['Ferretería'], text: '¿Precio del cemento?' }, noon)).no_enviado,
+	).toEqual([{ para: 'Ferretería', motivo: expect.stringContaining('no es un contacto habilitado') }]);
+	// Nobody asked them yet: the bridge does not even take their messages.
+	expect(await whatsapp.allowed({ number: pubJid, phone: '5214446667777', text: 'Hola' })).toEqual({ allowed: false });
+	await whatsapp.setContact(radar.id, ana, { key: supplier.key, enabled: true });
+	waSent.length = 0;
+	expect(
+		(await whatsapp.notify(radarRun.id, { to: ['Ferretería'], text: '¿Precio del cemento?' }, noon)).enviado_a,
+	).toEqual(['Ferretería']);
+	expect(waSent).toEqual([
+		{
+			jid: pubJid,
+			phone: '524446667777',
+			resolve: true,
+			text: 'Hola, soy Radar, asistente de IA de Ana.\n\n¿Precio del cemento?',
+			files: [],
+		},
+	]);
+	expect(await whatsapp.allowed({ number: pubJid, phone: '5214446667777', text: 'Cuesta 200' })).toEqual({
+		allowed: true,
+	});
+	const quote = (await whatsapp.event({
+		type: 'message',
+		number: pubJid,
+		id: 'm-supplier-1',
+		phone: '5214446667777',
+		name: 'Ferre',
+		text: 'El cemento cuesta 200 el bulto',
+	})) as { message_id: number };
+	expect(
+		await row('select agent_id, conversation_id, person_id, sender from messages where id = $1', [quote.message_id]),
+	).toEqual({
+		agent_id: radar.id,
+		conversation_id: radarRun.conversation_id,
+		person_id: null,
+		sender: 'Ferretería (+524446667777), proveedor de tu dueño (no es tu dueño)',
+	});
+	// The agent reads it as a supplier's: its answer is not sent to them, and it is data, not orders.
+	const { render } = await import('./inbox');
+	expect(
+		render({
+			id: 1,
+			source: 'whatsapp',
+			sender: 'Ferretería (+524446667777), proveedor de tu dueño (no es tu dueño)',
+			schedule_name: null,
+			text: 'x',
+		}),
+	).toContain('NO se le envía');
+	// The next message of the same chat does not introduce the agent again.
+	waSent.length = 0;
+	await whatsapp.notify(radarRun.id, { to: ['Ferretería'], text: '¿Y con entrega mañana?' }, noon);
+	expect(waSent[0].text).toBe('¿Y con entrega mañana?');
+	// Switched off for Radar, their messages are ignored.
+	await whatsapp.setContact(radar.id, ana, { key: supplier.key, enabled: false });
+	expect(
+		await whatsapp.event({
+			type: 'message',
+			number: pubJid,
+			id: 'm-supplier-2',
+			phone: '5214446667777',
+			name: 'Ferre',
+			text: 'Hola',
+		}),
+	).toEqual({
+		ignored: true,
+		reason: 'apagado para ese agente',
+	});
 
 	// Ana switches the guest on for Compras: her group with Ana's agents appears; switched off, it closes.
 	const guestKey = contacts.find((c) => c.kind === 'guest')!.key;
