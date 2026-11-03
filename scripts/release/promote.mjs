@@ -31,8 +31,11 @@ try {
 		]),
 	);
 	if (manifest.version !== version) throw new Error(`El manifiesto de ${tag} no es de esa versión.`);
+	for (const c of ['agents-app', 'agents-sandbox', 'agents-proxy'])
+		if (manifest.images?.[c] && manifest.images[c].verified !== true)
+			throw new Error(`${tag}: ${c} no está verificado en su manifiesto.`);
 	for (const c of ['agents-app', 'agents-sandbox'])
-		if (manifest.images?.[c]?.verified !== true) throw new Error(`${tag}: ${c} no está verificado en su manifiesto.`);
+		if (!manifest.images?.[c]) throw new Error(`${tag}: su manifiesto no trae ${c}.`);
 	const codeSha = run('git', ['ls-remote', 'origin', `refs/heads/${config.releaseBranch}`]).split(/\s/)[0];
 	console.log(
 		`:beta → ${tag} (${manifest.sha.slice(0, 7)}), con el código de ${config.releaseBranch} ${codeSha.slice(0, 7)}…`,

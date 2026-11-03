@@ -5,7 +5,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { config, assertPublicationAllowed, assertDeploymentAllowed, assertToolsImage } from './config.mjs';
 import { sourceConfig, executorEnvironment, imageRepository } from './inputs.mjs';
-import { prepareArtifacts, imageFrom, promotedFrom } from './artifacts.mjs';
+import { prepareArtifacts, imageFrom, promotedFrom, promoteArtifacts } from './artifacts.mjs';
 import { schemaInfo } from './schema.mjs';
 import { Komodo } from './komodo.mjs';
 import { signingFlags, verificationFlags } from './cosign.mjs';
@@ -74,7 +74,7 @@ test('direct GitHub clone selects only approved existing account', () => {
 	expect(env).toContain('AGENTS_RELEASE_REHEARSAL=false');
 	expect(() => executorEnvironment(version, sha, 'other')).toThrow();
 });
-test('only two Repo executions, one hook each, no builds/stacks/procedures/runners', async () => {
+test('one Repo execution per image (app, sandbox, proxy), one hook each, no builds/stacks/procedures/runners', async () => {
 	const calls: any[] = [];
 	const client = {
 		request: async (category: string, type: string, params: any) => {
@@ -86,14 +86,54 @@ test('only two Repo executions, one hook each, no builds/stacks/procedures/runne
 		},
 	};
 	const manifest = await prepareArtifacts(client, version, sha, enabled);
-	expect(Object.keys(manifest.images)).toEqual(['agents-app', 'agents-sandbox']);
-	expect(calls.map((c) => c.type)).toEqual(['UpdateRepo', 'CloneRepo', 'UpdateRepo', 'CloneRepo']);
+	expect(Object.keys(manifest.images)).toEqual(['agents-app', 'agents-sandbox', 'agents-proxy']);
+	expect(calls.map((c) => c.type)).toEqual([
+		'UpdateRepo',
+		'CloneRepo',
+		'UpdateRepo',
+		'CloneRepo',
+		'UpdateRepo',
+		'CloneRepo',
+	]);
+	expect(calls.filter((c) => c.type === 'CloneRepo').map((c) => c.params.repo)).toEqual([
+		'agents-app',
+		'agents-sandbox',
+		'agents-proxy',
+	]);
 	for (const operation of calls.filter((c) => c.type === 'UpdateRepo')) {
 		expect(operation.params.config.commit).toBe(sha);
 		expect(operation.params.config.git_account).toBe('AngelMaldonado');
 		expect(operation.params.config.on_clone.command).toBe('');
 		expect(operation.params.config.on_pull.command).toBe('bash scripts/release/komodo-job.sh');
 	}
+});
+test('promoting a release from before the proxy image moves only app and sandbox', async () => {
+	const digest = (c: string) => `sha256:${c.repeat(64)}`;
+	const release = {
+		version,
+		sha,
+		images: { 'agents-app': { digest: digest('a') }, 'agents-sandbox': { digest: digest('b') } },
+	};
+	const cloned: string[] = [];
+	const client = {
+		request: async () => {},
+		execute: async (_type: string, params: any) => {
+			cloned.push(params.repo);
+			const d = params.repo === 'agents-app' ? digest('a') : digest('b');
+			return {
+				logs: [
+					{
+						stdout: `AGENTS_RELEASE_PROMOTED ${JSON.stringify({ component: params.repo, sha, version, digest: d, tag: `${imageRepository(params.repo)}:beta`, rehearsal: false })}`,
+					},
+				],
+			};
+		},
+	};
+	const promoted = await promoteArtifacts(client, release, sha, enabled);
+	expect(cloned).toEqual(['agents-app', 'agents-sandbox']);
+	expect(Object.keys(promoted)).toEqual(['agents-app', 'agents-sandbox']);
+	expect(imageRepository('agents-proxy', true)).toEndWith('/agents-release-probe-proxy');
+	expect(imageRepository('agents-proxy')).toEndWith('/agents-proxy');
 });
 test('first failed executor prevents the second and publication', async () => {
 	let executions = 0;

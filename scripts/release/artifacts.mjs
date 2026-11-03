@@ -1,7 +1,7 @@
 import { config, assertPublicationAllowed } from './config.mjs';
 import { assertSha, assertVersion, requireDigest } from './version.mjs';
 import { schemaInfo } from './schema.mjs';
-import { components, sourceConfig, executorEnvironment, imageRepository } from './inputs.mjs';
+import { components, repoOf, sourceConfig, executorEnvironment, imageRepository } from './inputs.mjs';
 export function imageFrom(update, component, version, sha, value = config, rehearsal = false) {
 	const markers = (update.logs ?? [])
 		.flatMap((log) => (log.stdout ?? '').split(/\r?\n/))
@@ -29,8 +29,8 @@ export async function prepareArtifacts(client, version, sha, value = config, { r
 	const source = sourceConfig(value),
 		images = {};
 	for (const component of components) {
-		const name = component === 'agents-app' ? value.komodo.appRepo : value.komodo.sandboxRepo;
-		if (name !== component) throw new Error('Sólo se permiten los dos recursos aprobados.');
+		const name = repoOf(component, value);
+		if (name !== component) throw new Error('Sólo se permiten los recursos aprobados (uno por imagen).');
 		await client.request('write', 'UpdateRepo', {
 			id: name,
 			config: {
@@ -81,9 +81,11 @@ export async function promoteArtifacts(client, release, codeSha, value = config,
 	const source = sourceConfig(value),
 		promoted = {};
 	for (const component of components) {
+		// A release from before the proxy image (v0.0.5 and older) has none: its :beta stays as it is.
+		if (component === 'agents-proxy' && !release.images?.[component]) continue;
 		const digest = requireDigest(release.images?.[component]?.digest);
-		const name = component === 'agents-app' ? value.komodo.appRepo : value.komodo.sandboxRepo;
-		if (name !== component) throw new Error('Sólo se permiten los dos recursos aprobados.');
+		const name = repoOf(component, value);
+		if (name !== component) throw new Error('Sólo se permiten los recursos aprobados (uno por imagen).');
 		await client.request('write', 'UpdateRepo', {
 			id: name,
 			config: {

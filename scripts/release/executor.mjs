@@ -60,7 +60,7 @@ writeFileSync(
 if (mode === 'build') {
 	if (process.env.COSIGN_PRIVATE_KEY_B64 || process.env.COSIGN_PASSWORD)
 		throw new Error('El build no debe recibir material de firma.');
-	const context = component === 'agents-app' ? '.' : 'sandbox';
+	const context = { 'agents-app': '.', 'agents-sandbox': 'sandbox', 'agents-proxy': 'proxy' }[component];
 	console.log(`Build ${component}: ${sha} (${config.platform}); namespace ${repository}`);
 	console.log(
 		docker(
