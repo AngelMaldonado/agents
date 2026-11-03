@@ -375,10 +375,10 @@ try {
 	const agentId = approvals[0].design.applied_agent_id;
 	assert.equal(approvals[1].design.applied_agent_id, agentId);
 	assert.equal((await api('/agents')).agents.length, 1);
+	// No number hosts the groups here (no Cuby WhatsApp, none marked): agents no longer pick one.
 	assert.deepEqual((await api(`/agents/${agentId}/channels`)).whatsapp, {
 		available: true,
 		number: null,
-		options: [],
 		notify: false,
 		contacts: [],
 	});
