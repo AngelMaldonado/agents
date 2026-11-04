@@ -66,7 +66,8 @@ services:
         aliases: [agents-prod-proxy]
 
   # Never runs: it is here so that Pull downloads the sandbox image of the release (the server starts the
-  # agents' computers from it), and its stopped container keeps that image from a prune.
+  # agents' computers from it), and its stopped container keeps that image from a prune. In Komodo it goes
+  # in the stack's «Ignore Services», or the stack reads as unhealthy (an exited service).
   sandbox:
     image: registry.cubytest.space/cuby/agents-sandbox:beta
     entrypoint: ['true']

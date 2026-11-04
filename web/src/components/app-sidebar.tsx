@@ -2,6 +2,7 @@
 // list of the person's agents, and everything else under the person's tile. Built on shadcn's
 // Sidebar (the same base assistant-ui's thread list uses); assistant-ui's ThreadList primitives list
 // one chat runtime's threads, not agents, so they stay in the agent view's conversation tabs.
+import { ComputerBusy, humanDriving } from '@/components/computer-busy';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
 	AtSign,
@@ -133,12 +134,21 @@ function AgentMarks({ agent, me }: { agent: Agent; me: Person }) {
 	if (!marks.length && !live) return null;
 	return (
 		<span className="ml-auto flex shrink-0 items-center gap-1 text-muted-foreground">
-			{live && (
-				<Working
-					queued={agent.task!.status === 'queued'}
-					label={agent.task!.status === 'queued' ? 'Trabajo en cola' : 'Trabajando'}
-				/>
-			)}
+			{live &&
+				(humanDriving(agent.task) ? (
+					<ComputerBusy
+						label={
+							agent.task!.kind === 'browser'
+								? 'Su computadora está abierta para su dueño'
+								: 'Una persona tomó el control de su computadora'
+						}
+					/>
+				) : (
+					<Working
+						queued={agent.task!.status === 'queued'}
+						label={agent.task!.status === 'queued' ? 'Trabajo en cola' : 'Trabajando'}
+					/>
+				))}
 			{marks.map(({ icon: Icon, label }) => (
 				<Tooltip key={label}>
 					<TooltipTrigger asChild>

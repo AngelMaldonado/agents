@@ -14,6 +14,7 @@ import { mkdirSync, writeFileSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { row, rows, exec, tx, DATA_DIR } from './db';
 import { defaultConversation } from './conversations';
+import { maintenancePending, ComputerUpdating } from './computer-maintenance';
 import {
 	checkRunnable,
 	startRun,
@@ -212,7 +213,8 @@ export async function startRouter() {
 const pending = (agentId: number) =>
 	rows<Message>(
 		`select id, agent_id, source, sender, schedule_name, text, run_id, routed_as, conversation_id, person_id::int
-		 from messages where agent_id = $1 and routed_at is null order by id`,
+		 from messages m where agent_id = $1 and routed_at is null
+		 order by exists(select 1 from agent_repairs r where r.continuation_id=m.id) desc, id`,
 		[agentId],
 	);
 
@@ -226,6 +228,7 @@ async function routeOnce(agentId: number) {
 		}
 		const live = await liveRunOf(agentId);
 		if (!live) {
+			if (await maintenancePending(agentId)) return; // The job will wake the inbox when it releases this computer.
 			const agent = await row<{ id: number; person_id: number; model: string }>(
 				'select id, person_id, model from agents where id = $1 and deleted_at is null',
 				[agentId],
@@ -238,6 +241,7 @@ async function routeOnce(agentId: number) {
 				await checkRunnable(agent);
 				await startRun(agent, m.id, 10);
 			} catch (err) {
+				if (err instanceof ComputerUpdating) return; // Reserved after the precheck: keep the original message pending.
 				await failRun(agent, m.id, (err as Error).message);
 			}
 			continue;

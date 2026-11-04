@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState, type ReactNode } from 'react';
+import { AgentHandover } from '@/components/agent-handover';
 import { CalendarDays, Globe, KeyRound, Settings2, SlidersHorizontal, Trash2 } from 'lucide-react';
 import { SaveButton, useSaving } from '@/components/actions';
 import { api, isLive, type Agent, type PublicSettings } from './api';
@@ -211,6 +212,7 @@ export function AgentSettings({
 							{mine && !editingDoc && (
 								<BrowserProfile agent={agent} pending={profileReset} onPending={onProfileReset} />
 							)}
+							{mine && !editingDoc && <AgentHandover agent={agent} onTransferred={onDeleted} />}
 							{mine && !editingDoc && <RetireAgent agent={agent} onDeleted={onDeleted} />}
 						</SettingsPanel>
 					)}

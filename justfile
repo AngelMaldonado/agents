@@ -11,7 +11,7 @@ default:
 # ---- dev environment: backend + web on this Mac, sandboxes on reko-2 ----
 
 # dev defaults to session: everything in tmux `cuby-agents`, one window per process (scripts/dev/run.sh).
-# dev: init | session | up | stop | down | restart [win] | logs [win] | ps | open | fake on|off | test | design | sharing | psql
+# dev: init | session | up | stop | down | restart [win] | logs [win] | ps | open | fake on|off | test | design | sharing | repair seed|status | psql
 dev verb="session" arg="":
     #!/usr/bin/env bash
     set -euo pipefail
@@ -70,6 +70,11 @@ dev verb="session" arg="":
         server_env
         bun run scripts/design-smoke.ts
         ;;
+      repair)
+        # Real-model, labelled fault-injection agents in local dev only; no automatic owner approvals.
+        server_env
+        bun run scripts/self-repair-lab.ts "{{arg}}"
+        ;;
       sharing)
         # Isolated DB/API, fake GPT and real sandboxes on reko-2: shared users wait for one another.
         server_env
@@ -84,13 +89,28 @@ dev verb="session" arg="":
 
 # ---- the sandbox image (dev: arm64 on reko-2) ----
 
-# sandbox: build | shell
+# sandbox: build | lab (dev overlay, not a release) | shell | test (local regressions; no Docker)
 sandbox verb="build":
     #!/usr/bin/env bash
     set -euo pipefail
+    if [ "{{verb}}" = test ]; then
+      python3 -B sandbox/agents_pi_test.py
+      exec bun test sandbox/self-maintenance.test.ts
+    fi
     . scripts/dev/env.sh
     case "{{verb}}" in
-      build) docker --context "$SBX_CTX" build -t "$SBX_IMAGE" sandbox/ ;;
+      build)
+        dirty=false
+        if [ -n "$(git status --porcelain)" ]; then dirty=true; fi
+        docker --context "$SBX_CTX" build -t "$SBX_IMAGE" \
+          --label org.opencontainers.image.version=dev \
+          --label "org.opencontainers.image.revision=$(git rev-parse HEAD)" \
+          --label "io.cuby.agents.dirty=$dirty" sandbox/
+        ;;
+      lab)
+        docker --context "$SBX_CTX" build --build-arg "BASE_IMAGE=$SBX_IMAGE" \
+          -f sandbox/Dockerfile.lab -t agents-sandbox:repair-lab sandbox/
+        ;;
       shell) docker --context "$SBX_CTX" run --rm -it --cap-drop ALL --security-opt no-new-privileges --shm-size 512m --entrypoint bash "$SBX_IMAGE" ;;
       *) echo "unknown: just sandbox {{verb}}"; exit 1 ;;
     esac
@@ -122,6 +142,7 @@ check:
     python3 -B proxy/swap_test.py
     python3 -B scripts/deploy/cutover_test.py
     python3 -B scripts/deploy/transfer_test.py
+    just sandbox test
 
 # ---- quality and release (never sync the checkout serving users) ----
 

@@ -2,4 +2,9 @@
 # Tell the human you are stuck and wait for an answer (steer) or the timeout.
 # Usage: agents-blocked "qué pasó y qué necesitas"
 if [ -z "$*" ]; then echo 'Uso: agents-blocked "qué pasó y qué necesitas"' >&2; exit 2; fi
+# In the owner's own terminal (agents-pi, #27) the human is right there: ask in the answer instead.
+if [ "${AGENTS_INTERACTIVE:-}" = 1 ]; then
+	echo 'Estás en la terminal de tu dueño: hazle esta pregunta directamente en tu respuesta y espera lo que te escriba.'
+	exit 0
+fi
 exec curl -sS --max-time 3700 -X POST --data-binary "$*" http://127.0.0.1:7777/blocked

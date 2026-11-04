@@ -17,6 +17,8 @@ const buttonVariants = cva(
 					'border-destructive/30 text-danger-on-soft hover:border-destructive/50 hover:bg-danger-soft hover:text-danger-on-soft focus-visible:bg-danger-soft focus-visible:ring-destructive/30',
 				outline: 'border-border hover:bg-input/50 hover:text-foreground dark:bg-input/30 aria-expanded:bg-muted',
 				secondary: 'bg-secondary text-secondary-foreground hover:bg-secondary/80',
+				// Something to update: the amber of «Actualización disponible».
+				warning: 'bg-warning text-neutral-950 hover:bg-warning/85',
 				ghost: 'hover:bg-muted hover:text-foreground dark:hover:bg-muted/50 aria-expanded:bg-muted',
 				link: 'text-primary underline-offset-4 hover:underline',
 			},

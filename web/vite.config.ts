@@ -12,7 +12,7 @@ export default defineConfig({
 	server: {
 		allowedHosts: ['localhost'],
 		proxy: {
-			'/api': { target: api, changeOrigin: false },
+			'/api': { target: api, changeOrigin: false, ws: true }, // ws: the owner's terminal and desktop (#27)
 			'/hooks': { target: api, changeOrigin: false },
 			'/healthz': { target: api, changeOrigin: false },
 			'/ws': { target: api.replace(/^http/, 'ws'), ws: true },

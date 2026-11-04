@@ -8,3 +8,4 @@ data/
 *.log
 .tools/
 .release/
+__pycache__/

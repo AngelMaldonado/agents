@@ -1,0 +1,10 @@
+# Local fault-injection lab only. This is NOT a release or a replacement for a full image build.
+# Reuses the existing dev runtime when upstream registries are unavailable; adds current source.
+ARG BASE_IMAGE=agents-sandbox:dev
+FROM ${BASE_IMAGE}
+LABEL org.opencontainers.image.version="self-repair-lab-overlay" io.cuby.agents.lab="true"
+USER root
+COPY bin/ /usr/local/bin/
+COPY desktop/ /opt/agents/desktop/
+COPY supervisor.mjs self-maintenance.mjs harness*.mjs harness*.ts /opt/agents/
+USER agent

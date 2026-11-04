@@ -133,3 +133,20 @@ test('what the agent does between its messages shows as one block of steps; queu
 	]);
 	expect(result.messages.map(text)).not.toContain('Y revisa precios');
 });
+test('repair events become one assistant-ui tool card per proposal, not raw configuration text', () => {
+	const record: WorkRecord = {
+		task: task(1),
+		artifacts: [],
+		events: [
+			{ id: 1, at: 1100, kind: 'self_diagnosis', data: {} },
+			{ id: 2, at: 1200, kind: 'self_repair', data: { id: 'proposal-id', status: 'pending' } },
+			{ id: 3, at: 1300, kind: 'self_repair', data: { id: 'proposal-id', status: 'approved' } },
+		],
+	};
+	const cards = workTranscript([record], [])
+		.messages.flatMap((m) => m.content)
+		.filter((p) => p.type === 'tool-call');
+	expect(cards).toHaveLength(2);
+	expect(cards.map((p) => p.toolName)).toEqual(['self_diagnosis', 'self_repair']);
+	expect(cards[1].args).toEqual({ id: 'proposal-id', status: 'pending' });
+});

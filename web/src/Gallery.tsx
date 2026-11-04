@@ -1,4 +1,5 @@
-import { ArrowUpRight, Bot, Plus } from 'lucide-react';
+import { ArrowUpRight, Bot, CircleArrowUp, LoaderCircle, Plus } from 'lucide-react';
+import { imageVersion } from '@/lib/image-version';
 import { isLive, ago, type Agent, type Person, type PublicSettings } from './api';
 import { Character, STATE_LABEL, type CharState } from './Character';
 import { Browser } from './Browser';
@@ -10,6 +11,9 @@ import { crewOf, usePeople, type Someone } from '@/lib/use-people';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { Card } from '@/components/ui/card';
+import { ComputerUpdatesButton } from '@/components/computer-update-jobs';
+import { useComputerUpdates } from '@/lib/computer-updates';
+import { updatePending, UPDATE_LABEL } from '../../shared/computer-updates';
 
 /** When it last worked: now (it is working), its last work's end, start or creation; or when it was made. */
 const lastActivity = (a: Agent) =>
@@ -60,12 +64,15 @@ export function Gallery({
 						{running} trabajando ahora · hasta {settings.maxConcurrent} a la vez
 					</p>
 				</div>
-				<Button asChild>
-					<a href="#/new">
-						<Plus aria-hidden="true" />
-						Nuevo agente
-					</a>
-				</Button>
+				<div className="flex flex-wrap items-center gap-2">
+					<ComputerUpdatesButton />
+					<Button asChild>
+						<a href="#/new">
+							<Plus aria-hidden="true" />
+							Nuevo agente
+						</a>
+					</Button>
+				</div>
 			</div>
 			{!mine.length && (
 				<div className="empty">
@@ -134,6 +141,13 @@ function AgentCard({
 	showOwner?: boolean;
 }) {
 	const state = stateOf(agent);
+	const { data: updates } = useComputerUpdates();
+	const maintenance = !showOwner
+		? updates.jobs.flatMap((j) => j.items).find((i) => i.agent_id === agent.id && updatePending(i.status))
+		: null;
+	const update = !showOwner
+		? updates.agents.find((a) => a.id === agent.id && a.updateAvailable && !a.activeJobId)
+		: null;
 	const t = agent.task;
 	const live = isLive(t) && t!.status !== 'queued';
 	const setup = !!(!showOwner && agent.setup_design_id && (!t || (t.kind === 'initialize' && t.status !== 'done')));
@@ -165,6 +179,25 @@ function AgentCard({
 						</span>
 					</p>
 				</div>
+				{maintenance ? (
+					<span
+						role="img"
+						aria-label={`Actualizando: ${UPDATE_LABEL[maintenance.status]}`}
+						title={UPDATE_LABEL[maintenance.status]}
+						className="shrink-0"
+					>
+						<LoaderCircle className="size-4 animate-spin text-warning" aria-hidden="true" />
+					</span>
+				) : update && updates.target ? (
+					<span
+						role="img"
+						aria-label="Actualización disponible"
+						title={`Actualización disponible: ${imageVersion(update.current)} → ${imageVersion(updates.target)}`}
+						className="shrink-0"
+					>
+						<CircleArrowUp className="size-4 text-warning" aria-hidden="true" />
+					</span>
+				) : null}
 				<ArrowUpRight className="size-4 shrink-0 text-muted-foreground" aria-hidden="true" />
 			</div>
 			<Browser agentId={agent.id} live={live} compact />

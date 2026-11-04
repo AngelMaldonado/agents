@@ -344,8 +344,8 @@ type Rule = { domains: string[]; placeholder: string; value: string };
  * own secret (agent_secrets) with the same name wins (Q11/Q18).
  */
 export async function forRun(agentId: number, proxyToken: string | null, own: Record<string, string>) {
-	const { env, servers } = await resolve(agentId, proxyToken);
-	return { env: { ...env, ...own }, grantedMcp: servers };
+	const { env, servers, undelivered } = await resolve(agentId, proxyToken);
+	return { env: { ...env, ...own }, grantedMcp: servers, undelivered: [...new Set(undelivered)] };
 }
 
 async function resolve(agentId: number, proxyToken: string | null) {
@@ -375,6 +375,8 @@ async function resolve(agentId: number, proxyToken: string | null) {
 	);
 	const env: Record<string, string> = {};
 	const rules: Rule[] = [];
+	// Granted but not handed over (no proxy for a key bound to domains): the prompt must not promise it.
+	const undelivered: string[] = [];
 	// Without a proxy a placeholder would reach nobody: such a key is simply not delivered.
 	const secretOf = (field: string, valueEnc: string, domains: string[], exposeReal: boolean) => {
 		const value = open(valueEnc);
@@ -387,6 +389,7 @@ async function resolve(agentId: number, proxyToken: string | null) {
 	for (const k of keys) {
 		const v = secretOf(`key:${k.id}`, k.value_enc, k.domains, k.expose_real);
 		if (v !== null) env[k.name] = v;
+		else undelivered.push(k.name);
 	}
 	const servers: McpServer[] = [];
 	for (const m of mcps) {
@@ -394,6 +397,7 @@ async function resolve(agentId: number, proxyToken: string | null) {
 			list.flatMap((p) => {
 				if (!p.secret) return [{ name: p.name, value: p.value ?? '' }];
 				const v = secretOf(`mcp:${m.id}:${kind}:${p.name}`, p.value_enc!, m.domains, m.expose_real);
+				if (v === null) undelivered.push(m.name);
 				return v === null ? [] : [{ name: p.name, value: v }];
 			});
 		servers.push({
@@ -408,7 +412,7 @@ async function resolve(agentId: number, proxyToken: string | null) {
 			oauth: m.oauth,
 		});
 	}
-	return { env, servers, rules };
+	return { env, servers, rules, undelivered };
 }
 
 // ---------- the egress proxy's side ----------

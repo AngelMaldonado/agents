@@ -1,6 +1,7 @@
 // The agent's hub (Bubble agents #25), below its current work: a composer that starts a new chat,
 // its chats like Claude's «Recientes», and the files its runs produced. Plus the current work's
 // footer: who ran it and for how long.
+import { ComputerBusy, humanDriving } from '@/components/computer-busy';
 import { useEffect, useRef, useState, type FormEvent, type KeyboardEvent } from 'react';
 import {
 	BrainCircuit,
@@ -9,6 +10,7 @@ import {
 	Trash2,
 	ArrowLeft,
 	ArrowUp,
+	ArrowUpRight,
 	Check,
 	ChevronLeft,
 	ChevronRight,
@@ -63,6 +65,10 @@ export function WorkFooter({ task, agent, chatHref }: { task: Task | null; agent
 				{/* Working: a spinner; finished: a check (a queue waits with a clock). */}
 				{task.status === 'queued' ? (
 					<Clock className="size-3.5 shrink-0 text-muted-foreground" aria-hidden="true" />
+				) : live && humanDriving(task) ? (
+					<ComputerBusy
+						label={task.kind === 'browser' ? 'Computadora abierta para su dueño' : 'Una persona tiene el control'}
+					/>
 				) : live ? (
 					<LoaderCircle className="size-3.5 shrink-0 animate-spin text-primary" aria-hidden="true" />
 				) : task.status === 'done' ? (
@@ -74,8 +80,13 @@ export function WorkFooter({ task, agent, chatHref }: { task: Task | null; agent
 					<span className="text-muted-foreground">
 						{' · '}
 						{chatHref ? (
-							<a href={chatHref} className="underline-offset-4 hover:underline">
+							<a
+								href={chatHref}
+								className="inline-flex items-center gap-0.5 text-foreground underline decoration-muted-foreground/60 underline-offset-4 hover:decoration-foreground"
+								title="Abrir su chat"
+							>
 								Trabajo #{task.id}
+								<ArrowUpRight className="size-3.5" aria-hidden="true" />
 							</a>
 						) : (
 							`Trabajo #${task.id}`
@@ -159,7 +170,10 @@ export function HubComposer({
 		}
 	};
 	return (
-		<section className="hub-composer" aria-label="Nuevo trabajo">
+		<section className="hub-composer" aria-labelledby="hub-composer-title">
+			<h2 id="hub-composer-title" className="hub-composer-title">
+				Nuevo trabajo
+			</h2>
 			{error && (
 				<p role="alert" className="error mb-2">
 					{error}

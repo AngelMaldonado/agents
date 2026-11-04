@@ -640,16 +640,18 @@
 		@apply flex max-w-full flex-wrap items-center justify-end gap-2;
 	}
 	.agent-browser {
-		@apply flex h-full min-h-0 min-w-0 w-full items-start justify-center rounded-card outline-none focus-visible:ring-2 focus-visible:ring-ring;
+		@apply flex h-full min-h-0 min-w-0 w-full rounded-card outline-none focus-visible:ring-2 focus-visible:ring-ring;
 	}
+	/* The panel keeps one size whatever the page's shape: the screen is centered in it, with black bars
+	   around (object-contain; takeover clicks already account for them). */
 	.agent-browser > .browser.fitted {
-		@apply min-h-0 max-w-full shrink-0;
+		@apply size-full min-h-0;
 	}
 	.agent-browser .browser-bar {
 		@apply shrink-0;
 	}
 	.agent-browser .browser-view {
-		@apply min-h-0 shrink-0 overflow-hidden;
+		@apply aspect-auto min-h-0 flex-1 overflow-hidden;
 	}
 	.agent-browser .browser-view img {
 		@apply absolute inset-0;
@@ -660,11 +662,72 @@
 	.work-toolbar {
 		@apply flex w-full min-w-0 shrink-0 flex-wrap items-center gap-2 pb-3;
 	}
+	/* One column per tab (4, or 5 with Escritorio), never wrapped: labels hide in narrow panels instead. */
 	.work-toolbar [data-slot='tabs-list'] {
-		@apply grid! h-auto! max-w-full grid-cols-4;
+		@apply grid! h-auto! max-w-full auto-cols-fr grid-flow-col;
 	}
 	.work-toolbar [data-slot='tabs-trigger'] {
-		@apply h-auto! min-h-control-lg min-w-0;
+		@apply h-auto! min-h-control-lg min-w-0 whitespace-nowrap;
+	}
+	/* The hub's input starts another job: a centered title with rules, apart from the current work above. */
+	.hub-composer {
+		@apply mt-8;
+	}
+	.hub-composer-title {
+		@apply mb-3 flex items-center gap-3 text-xs font-medium tracking-wide text-muted-foreground uppercase;
+	}
+	.hub-composer-title::before,
+	.hub-composer-title::after {
+		content: '';
+		@apply h-px flex-1 bg-border;
+	}
+	/* The agent's computer is on (a resource in use): its menus turn green. */
+	/* The human drives the computer (ComputerBusy): its screen types and its cursor blinks. */
+	.computer-busy {
+		@apply text-success;
+	}
+	.computer-busy-line {
+		transform-box: fill-box;
+		transform-origin: left center;
+		animation: computer-busy-type 1.6s ease-in-out infinite;
+	}
+	.computer-busy-line.two {
+		animation-delay: 0.4s;
+	}
+	.computer-busy-cursor {
+		animation: computer-busy-blink 0.8s steps(1) infinite;
+	}
+	@keyframes computer-busy-type {
+		0% {
+			transform: scaleX(0.15);
+			opacity: 0.5;
+		}
+		60%,
+		100% {
+			transform: scaleX(1);
+			opacity: 1;
+		}
+	}
+	@keyframes computer-busy-blink {
+		50% {
+			opacity: 0;
+		}
+	}
+	@media (prefers-reduced-motion: reduce) {
+		.computer-busy-line,
+		.computer-busy-cursor {
+			animation: none;
+		}
+	}
+	/* Kept on hover, while its menu is open and in dark mode: the outline button's own states would win. */
+	.computer-on,
+	.computer-on:hover,
+	.computer-on[aria-expanded='true'] {
+		@apply border-success/40! bg-success-soft! text-success-on-soft!;
+	}
+	.computer-on:hover,
+	.computer-on[aria-expanded='true'] {
+		@apply brightness-110;
 	}
 	.work-surface {
 		container-type: inline-size;
@@ -781,7 +844,7 @@
 	}
 	@container work-preview (max-width: 25rem) {
 		.work-toolbar [data-slot='tabs-list'] {
-			@apply w-full! grid-cols-2;
+			@apply w-full! grid-flow-row grid-cols-2;
 		}
 	}
 	.agent-details > [hidden] {

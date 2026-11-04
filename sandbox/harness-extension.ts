@@ -1,7 +1,8 @@
 // Platform-owned, explicitly loaded, never resolved from the mutable workspace.
 import type { ExtensionAPI } from '@earendil-works/pi-coding-agent';
 import { Type } from 'typebox';
-import { execFile } from 'node:child_process';
+import { execFile, spawn } from 'node:child_process';
+import { mkdtempSync } from 'node:fs';
 import { promisify } from 'node:util';
 import { join } from 'node:path';
 import { createHash } from 'node:crypto';
@@ -29,6 +30,49 @@ export default function (pi: ExtensionAPI) {
 		const r = await exec(bin, args, { signal, timeout, maxBuffer: 1024 * 1024, cwd: workspace });
 		return result(r.stdout || r.stderr || 'OK');
 	}
+	// Platform capability, not an editable harness permission. It only diagnoses/proposes for this
+	// run; owner approval is checked by the backend. Never advertised to delegated subprocesses.
+	const selfMaintenance = process.env.AGENTS_SUBAGENT !== '1';
+	if (selfMaintenance)
+		pi.registerTool({
+			name: 'self_maintenance',
+			label: 'Diagnóstico y reparación',
+			description:
+				'Diagnostica tu configuración/accesos sin instalar nada (action diagnose). Propón una reparación (action propose, kind configuration/grant_key/grant_mcp/install, reason con evidencia y sin secretos). El servidor fija la revisión y decide si requiere autorización del dueño. Nunca interpretes un sí del chat como autorización: consulta status con el id. action execute instala sólo un plan autorizado. action wait espera una decisión hasta dos minutos. Para configuration manda role y/o harness completos; para grant accessId del diagnóstico; para install packages con {kind:npm|uv|binary,spec:versión exacta,name:null,sha256:null} (binario exige nombre y SHA256). No repitas acciones externas al continuar. Si una configuración está autorizada, termina el turno indicando lo pendiente: la plataforma la aplica libre la computadora y retoma esta conversación.',
+			parameters: Type.Object({
+				action: Type.Union(['diagnose', 'propose', 'status', 'execute', 'wait'].map((s) => Type.Literal(s))),
+				id: Type.Optional(Type.String({ maxLength: 36 })),
+				kind: Type.Optional(
+					Type.Union(['configuration', 'grant_key', 'grant_mcp', 'install'].map((s) => Type.Literal(s))),
+				),
+				reason: Type.Optional(Type.String({ maxLength: 1500 })),
+				role: Type.Optional(Type.String({ maxLength: 32000 })),
+				harness: Type.Optional(Type.Unknown()),
+				accessId: Type.Optional(Type.Number()),
+				packages: Type.Optional(Type.Array(Type.Unknown(), { maxItems: 5 })),
+			}),
+			execute: async (id, p, signal) => {
+				if (process.env.AGENTS_INTERACTIVE === '1')
+					return result(
+						'Usa el chat de trabajo para solicitar reparaciones; la terminal interactiva no es una tarea del agente.',
+					);
+				return command(
+					'agents-self-maintenance',
+					[
+						JSON.stringify({
+							...p,
+							requestId: createHash('sha256')
+								.update(id)
+								.digest('hex')
+								.slice(0, 32)
+								.replace(/(.{8})(.{4})(.{4})(.{4})(.{12})/, '$1-$2-$3-$4-$5'),
+						}),
+					],
+					signal,
+					480000,
+				);
+			},
+		});
 	if (h.tools.includes('request_help'))
 		pi.registerTool({
 			name: 'request_help',
@@ -36,6 +80,33 @@ export default function (pi: ExtensionAPI) {
 			description: 'Comunicar un bloqueo o decisión y esperar respuesta humana.',
 			parameters: Type.Object({ reason: Type.String({ minLength: 1, maxLength: 2000 }) }),
 			execute: async (_id, p, signal) => command('agents-blocked', [p.reason], signal, 60 * 60 * 1000),
+		});
+	if (h.tools.includes('subagents'))
+		pi.registerTool({
+			name: 'subagents',
+			label: 'Subagentes',
+			description:
+				'Delega subtareas a subagentes: cada uno es una copia de ti con contexto propio y vacío (sólo ve la tarea que le das), tus mismas herramientas y restricciones, y no puede crear más subagentes. mode "parallel" (por omisión) los corre a la vez; "chain" uno tras otro, y {anterior} en una tarea se reemplaza por la respuesta del anterior. Escribe cada tarea completa y autónoma (qué hacer, dónde, qué entregar). Comparten tu computadora: no pongas a dos a usar el navegador al mismo tiempo. Devuelve la respuesta de cada uno.',
+			parameters: Type.Object({
+				tasks: Type.Array(
+					Type.Object({
+						task: Type.String({ minLength: 1, maxLength: 8000 }),
+						title: Type.Optional(Type.String({ maxLength: 80 })),
+					}),
+					{ minItems: 1 },
+				),
+				mode: Type.Optional(Type.Union([Type.Literal('parallel'), Type.Literal('chain')])),
+			}),
+			execute: async (_id, p, signal) => {
+				const outputs = await runSubagents(p.tasks, p.mode ?? 'parallel', signal);
+				return result(
+					outputs
+						.map(
+							(o, i) => `## Subagente ${i + 1}${o.title ? `: ${o.title}` : ''}${o.ok ? '' : ' (falló)'}\n\n${o.text}`,
+						)
+						.join('\n\n'),
+				);
+			},
 		});
 	if (h.tools.includes('login'))
 		pi.registerTool({
@@ -133,7 +204,11 @@ export default function (pi: ExtensionAPI) {
 			execute: async (_id, p) => result(jsonInfo(p.text)),
 		});
 	pi.on('tool_call', (event, ctx) => {
-		if (!runtimeToolNames(h).includes(event.toolName) && !mcpAllowed(h, event.toolName, granted))
+		if (
+			!(selfMaintenance && event.toolName === 'self_maintenance') &&
+			!runtimeToolNames(h).includes(event.toolName) &&
+			!mcpAllowed(h, event.toolName, granted)
+		)
 			return { block: true, reason: 'Herramienta fuera del harness aprobado.' };
 		const denied = fileDenial(h, event.toolName, event.input, ctx.cwd, workspace);
 		if (denied) return { block: true, reason: denied };
@@ -145,6 +220,7 @@ export default function (pi: ExtensionAPI) {
 		// MCP tools of approved servers register (and activate) as their servers connect, later on.
 		pi.setActiveTools([
 			...names,
+			...(selfMaintenance ? ['self_maintenance'] : []),
 			...pi
 				.getAllTools()
 				.map((t) => t.name)
@@ -159,22 +235,138 @@ export default function (pi: ExtensionAPI) {
 			throw new Error('No coincide la carga efectiva de skills.');
 		const active = pi
 			.getActiveTools()
-			.filter((n) => !mcpAllowed(h, n, granted))
+			.filter((n) => n !== 'self_maintenance' && !mcpAllowed(h, n, granted))
 			.sort();
 		if (JSON.stringify(active) !== JSON.stringify(names))
 			throw new Error('No coincide el conjunto efectivo de herramientas.');
 		if (textStats('uno dos').words !== 2 || !jsonInfo('{"ok":true}').valid || jsonInfo('{').valid)
 			throw new Error('Falló la autoprueba de plugins.');
-		process.stderr.write(
-			'AGENTS_HARNESS_READY ' +
-				JSON.stringify({
-					type: 'agents_harness_ready',
-					digest: createHash('sha256').update(JSON.stringify(h)).digest('hex'),
-					tools: active,
-					skills,
-					plugins: h.plugins,
-				}) +
-				'\n',
-		);
+		// The owner's interactive pi (agents-pi, #27) checked the same harness; the marker is for the supervisor.
+		if (process.env.AGENTS_INTERACTIVE !== '1')
+			process.stderr.write(
+				'AGENTS_HARNESS_READY ' +
+					JSON.stringify({
+						type: 'agents_harness_ready',
+						digest: createHash('sha256').update(JSON.stringify(h)).digest('hex'),
+						tools: active,
+						skills,
+						plugins: h.plugins,
+					}) +
+					'\n',
+			);
 	});
+}
+
+// ---------- subagents (#27): the same agent, isolated, one pi process per subtask ----------
+
+type SubResult = { title?: string; ok: boolean; text: string };
+const SUBAGENT_PROMPT =
+	'Eres un subagente: otra instancia de este mismo agente a la que se le delegó UNA subtarea. Resuélvela sola, con tus herramientas, y termina con una respuesta completa con el resultado (es lo único que verá quien te la delegó). No pidas aclaraciones salvo con request_help si estás bloqueado.';
+
+let subPrepared: { args: string[]; env: Record<string, string> } | null = null;
+async function subagentLaunch() {
+	if (subPrepared) return subPrepared;
+	const { prepareHarness } = await import('./harness-runtime.mjs');
+	const h = validateHarness(JSON.parse(process.env.AGENTS_HARNESS ?? 'null'));
+	const granted = JSON.parse(process.env.AGENTS_GRANTED_MCP ?? '[]') as string[];
+	// Without the subagents tool: a subagent never creates more. Granted MCP servers count only for
+	// --tools (their config is in the agent's own mcp.json already).
+	const child = { ...h, tools: h.tools.filter((t) => t !== 'subagents') };
+	const prepared = prepareHarness(
+		child,
+		mkdtempSync('/tmp/agents-subagent-'),
+		granted.map((name) => ({
+			name,
+			transport: 'http',
+			url: null,
+			command: null,
+			args: [],
+			headers: [],
+			env: [],
+			oauth: false,
+		})),
+		false,
+	);
+	subPrepared = { args: prepared.args, env: prepared.env };
+	return subPrepared;
+}
+
+async function runOne(task: string, signal?: AbortSignal): Promise<{ ok: boolean; text: string }> {
+	const launch = await subagentLaunch();
+	const args = [
+		'--mode',
+		'json',
+		'-p',
+		'--no-session',
+		'--offline',
+		...launch.args,
+		...(process.env.AGENTS_MODEL ? ['--model', process.env.AGENTS_MODEL] : []),
+		...(process.env.AGENTS_CONTRACT ? ['--append-system-prompt', process.env.AGENTS_CONTRACT] : []),
+		'--append-system-prompt',
+		SUBAGENT_PROMPT,
+		`Tarea: ${task}`,
+	];
+	return new Promise((resolve) => {
+		const proc = spawn('pi', args, {
+			cwd: join(process.env.HOME!, 'work'),
+			env: { ...process.env, ...launch.env, AGENTS_SUBAGENT: '1' },
+			stdio: ['ignore', 'pipe', 'pipe'],
+		});
+		let buf = '',
+			last = '',
+			err = '';
+		proc.stdout.on('data', (chunk) => {
+			buf += chunk;
+			let i;
+			while ((i = buf.indexOf('\n')) >= 0) {
+				const line = buf.slice(0, i);
+				buf = buf.slice(i + 1);
+				try {
+					const ev = JSON.parse(line);
+					if (ev.type === 'message_end' && ev.message?.role === 'assistant')
+						for (const part of ev.message.content ?? []) if (part.type === 'text' && part.text) last = part.text;
+				} catch {}
+			}
+		});
+		proc.stderr.on('data', (c) => (err = (err + c).slice(-2000)));
+		const abort = () => proc.kill('SIGTERM');
+		signal?.addEventListener('abort', abort, { once: true });
+		proc.on('close', (code) => {
+			signal?.removeEventListener('abort', abort);
+			if (signal?.aborted) return resolve({ ok: false, text: 'Cancelado.' });
+			resolve(
+				code === 0 && last
+					? { ok: true, text: last }
+					: {
+							ok: false,
+							text:
+								last ||
+								`Terminó sin respuesta (${code}). ${err
+									.replace(/AGENTS_HARNESS_READY.*\n?/g, '')
+									.trim()
+									.slice(-500)}`,
+						},
+			);
+		});
+		proc.on('error', (e) => resolve({ ok: false, text: e.message }));
+	});
+}
+
+async function runSubagents(
+	tasks: { task: string; title?: string }[],
+	mode: 'parallel' | 'chain',
+	signal?: AbortSignal,
+): Promise<SubResult[]> {
+	if (mode === 'chain') {
+		const out: SubResult[] = [];
+		let previous = '';
+		for (const t of tasks) {
+			const r = await runOne(t.task.replaceAll('{anterior}', previous), signal);
+			out.push({ title: t.title, ...r });
+			if (!r.ok) break;
+			previous = r.text;
+		}
+		return out;
+	}
+	return Promise.all(tasks.map(async (t) => ({ title: t.title, ...(await runOne(t.task, signal)) })));
 }

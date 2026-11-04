@@ -1,8 +1,16 @@
 import { lazy, Suspense, useEffect, useRef, useState } from 'react';
-import { Check, CheckCheck, Circle, LoaderCircle, RefreshCw, MonitorCheck } from 'lucide-react';
+import { Check, CheckCheck, Circle, Clock, LoaderCircle, RefreshCw, MonitorCheck, TriangleAlert } from 'lucide-react';
 import { sidebarChanged } from '@/lib/sidebar-events';
 import { AccessSuggestions } from '@/components/access-suggestions';
-import { api, isLive, type Agent, type Design, type PublicSettings, type InterviewAnswers } from './api';
+import {
+	api,
+	isLive,
+	type Agent,
+	type Design,
+	type PublicSettings,
+	type InterviewAnswers,
+	type AccessCheck,
+} from './api';
 import { Button } from '@/components/ui/button';
 const DesignChat = lazy(() => import('@/components/design-chat').then((module) => ({ default: module.DesignChat })));
 export { ContractMarkdown, ToolsPanel } from '@/components/design-content';
@@ -456,6 +464,7 @@ function Initialization({
 					</li>
 				))}
 			</ol>
+			{init?.check && <AccessCheckList check={init.check} />}
 			{failed && !complete && (
 				<div className="mt-5">
 					<p role="alert" className="error mb-3">
@@ -476,5 +485,49 @@ function Initialization({
 				</div>
 			)}
 		</section>
+	);
+}
+
+/** What the initialization proved, one line each: CLI tools, MCP servers and keys (names only). */
+function AccessCheckList({ check }: { check: AccessCheck }) {
+	const rows: { ok: boolean | null; label: string; detail?: string }[] = [
+		...(check.tools.names.length
+			? [{ ok: check.tools.ok, label: `CLI: ${check.tools.names.join(', ')}`, detail: check.tools.detail }]
+			: []),
+		...check.mcp.map((m) => ({
+			ok: m.ok,
+			label: `MCP ${m.name}${m.ok ? ` · ${m.tools ?? 0} herramientas` : ''}`,
+			detail: m.ok ? undefined : m.detail,
+		})),
+		...check.keys.map((k) => ({ ok: true, label: `Variable ${k}` })),
+		...check.undelivered.map((k) => ({
+			ok: false,
+			label: k,
+			detail: 'concedido, pero esta instancia no tiene el proxy de salida para entregarlo',
+		})),
+	];
+	if (!rows.length) return null;
+	return (
+		<div className="mt-5 border-t pt-4">
+			<h3 className="mb-2 text-xs font-semibold">Accesos comprobados</h3>
+			<ul className="grid gap-2">
+				{rows.map((r) => (
+					<li key={r.label} className="flex items-start gap-3 text-xs">
+						{r.ok ? (
+							<Check className="size-4 shrink-0 text-success" aria-hidden="true" />
+						) : r.ok === null ? (
+							<Clock className="size-4 shrink-0 text-muted-foreground" aria-hidden="true" />
+						) : (
+							<TriangleAlert className="size-4 shrink-0 text-warning" aria-hidden="true" />
+						)}
+						<span className="min-w-0">
+							<span className="font-mono">{r.label}</span>
+							{r.detail && <span className="block text-muted-foreground">{r.detail}</span>}
+						</span>
+						<span className="sr-only">{r.ok ? 'Funciona' : r.ok === null ? 'Pendiente' : 'Falló'}</span>
+					</li>
+				))}
+			</ul>
+		</div>
 	);
 }

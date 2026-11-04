@@ -300,6 +300,7 @@ export async function view(d: Design) {
 		if (task?.status === 'done') done.add('ready');
 		initialization = {
 			task: task ? tasks.publicTask(task) : null,
+			check: (events.find((e) => e.kind === 'access_check')?.data as tasks.AccessCheck | undefined) ?? null,
 			error: task?.end_reason ?? d.last_error,
 			steps: INIT_STEPS.map((s) => ({ ...s, done: done.has(s.id) })),
 		};
@@ -1146,9 +1147,13 @@ export async function testHarness(personId: number, id: string, version: number)
 		if (!canReview(old)) throw new Error('Responde el cuestionario antes de probar el contrato.');
 		validateContract(old.contract);
 		validateHarness(old.harness);
+		await exec('delete from sandbox_image_checks where expires_at <= now()', [], c);
+		if (await row('select 1 from sandbox_image_checks where person_id=$1', [personId], c))
+			throw new Error('Ya hay una prueba de computadora en curso para tu cuenta.');
 		if (
 			(await row<{ n: number }>(
-				'select count(*) as n from agent_designs where validation_pending and busy_until > now()',
+				`select (select count(*) from agent_designs where validation_pending and busy_until > now()) +
+				(select count(*) from sandbox_image_checks) as n`,
 				[],
 				c,
 			))!.n >= Math.min(2, settings().maxConcurrent)

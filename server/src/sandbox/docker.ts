@@ -25,9 +25,174 @@ async function call(method: string, path: string, body?: unknown, ok: number[] =
 	return text ? JSON.parse(text) : null;
 }
 
+export type SandboxImage = {
+	imageId: string;
+	version: string | null;
+	piVersion: string | null;
+	development: boolean;
+	revision: string | null;
+	dirty: boolean | null;
+};
+const semver = (value: unknown) =>
+	typeof value === 'string' && /^\d+\.\d+\.\d+(?:[-+][\w.-]+)?$/.test(value) ? value : null;
+const piReads = new Map<string, Promise<string | null>>();
+
 export class DockerSandbox implements SandboxProvider {
+	/** Local Docker image identity, distinct from a registry manifest digest. No pull or execution. */
+	async imageInfo(image: string): Promise<SandboxImage> {
+		const info = await call('GET', `/images/${encodeURIComponent(image)}/json`, undefined, [], 10000);
+		const labels = info.Config?.Labels ?? {};
+		const version = semver(labels['org.opencontainers.image.version']);
+		const revision = labels['org.opencontainers.image.revision'];
+		return {
+			imageId: info.Id,
+			version,
+			piVersion: semver(labels['io.cuby.agents.pi.version']),
+			development:
+				!version &&
+				(labels['org.opencontainers.image.version'] === 'dev' ||
+					(info.RepoTags ?? []).some((tag: string) => tag.endsWith(':dev'))),
+			revision: typeof revision === 'string' && /^[a-f0-9]{40}$/.test(revision) ? revision : null,
+			dirty: ['true', 'false'].includes(labels['io.cuby.agents.dirty'])
+				? labels['io.cuby.agents.dirty'] === 'true'
+				: null,
+		};
+	}
+
+	/** Read the installed npm manifest, not pi's CLI or the supervisor. No network, state or secrets. */
+	async imagePiVersion(image: string): Promise<string | null> {
+		if (!/^sha256:[a-f0-9]{64}$/.test(image)) throw new Error('Se requiere el ID inmutable de la imagen.');
+		const pending = piReads.get(image);
+		if (pending) return pending;
+		if (piReads.size >= 2) throw new Error('Hay lecturas de versión en curso.');
+		const read = this.readImagePiVersion(image);
+		piReads.set(image, read);
+		try {
+			return await read;
+		} finally {
+			piReads.delete(image);
+		}
+	}
+
+	private async readImagePiVersion(image: string): Promise<string | null> {
+		const created = await call(
+			'POST',
+			'/containers/create',
+			{
+				Image: image,
+				Entrypoint: ['node'],
+				Cmd: [
+					'--input-type=commonjs',
+					'-e',
+					`const p=JSON.parse(require('node:fs').readFileSync('/usr/local/lib/node_modules/@earendil-works/pi-coding-agent/package.json','utf8')); if(p.name!=='@earendil-works/pi-coding-agent')process.exit(1); process.stdout.write(String(p.version));`,
+				],
+				User: 'agent',
+				Tty: true,
+				WorkingDir: '/tmp',
+				Healthcheck: { Test: ['NONE'] },
+				Labels: { 'agents.image-metadata': process.env.AGENTS_INSTANCE ?? 'dev' },
+				HostConfig: {
+					NetworkMode: 'none',
+					ReadonlyRootfs: true,
+					CapDrop: ['ALL'],
+					SecurityOpt: ['no-new-privileges'],
+					Memory: 128 * 1024 * 1024,
+					MemorySwap: 128 * 1024 * 1024,
+					NanoCpus: 5e8,
+					PidsLimit: 16,
+					LogConfig: { Type: 'json-file', Config: { 'max-size': '16k', 'max-file': '1' } },
+				},
+			},
+			[],
+			5000,
+		);
+		try {
+			await call('POST', `/containers/${created.Id}/start`, undefined, [], 5000);
+			const deadline = Date.now() + 5000;
+			let state;
+			do {
+				state = (await call('GET', `/containers/${created.Id}/json`, undefined, [], 5000)).State;
+				if (!state.Running) break;
+				if (Date.now() >= deadline) throw new Error('La lectura de versión agotó 5 segundos.');
+				await new Promise((resolve) => setTimeout(resolve, 100));
+			} while (true);
+			if (state.ExitCode !== 0) return null;
+			const logs = await fetch(`${API}/containers/${created.Id}/logs?stdout=true&tail=1`, {
+				unix: SOCKET,
+				signal: AbortSignal.timeout(5000),
+			} as RequestInit);
+			if (!logs.ok) throw new Error('No se pudo leer la versión instalada.');
+			return semver((await logs.text()).trim());
+		} finally {
+			await call('DELETE', `/containers/${created.Id}?force=true&v=true`, undefined, [404], 5000);
+		}
+	}
+
 	async imageId(image: string): Promise<string> {
 		return (await call('GET', `/images/${encodeURIComponent(image)}/json`, undefined, [], 10000)).Id;
+	}
+
+	/** Only a digest already associated with the platform's local image; never a caller-supplied registry. */
+	async imagePullRef(imageId: string, platformRef: string): Promise<string | null> {
+		const image = await call('GET', `/images/${encodeURIComponent(imageId)}/json`, undefined, [], 10000);
+		const repo = platformRef.split('@')[0].replace(/:[^/:]+$/, '');
+		return (
+			(image.RepoDigests ?? []).find(
+				(ref: string) => ref.startsWith(`${repo}@`) && /@sha256:[a-f0-9]{64}$/.test(ref),
+			) ?? null
+		);
+	}
+
+	async pullImage(ref: string, progress: (message: string) => Promise<void>) {
+		if (!/^[\w./:-]+@sha256:[a-f0-9]{64}$/.test(ref))
+			throw new Error('La descarga requiere un digest de registry fijo.');
+		const response = await fetch(`${API}/images/create?fromImage=${encodeURIComponent(ref)}`, {
+			unix: SOCKET,
+			method: 'POST',
+			signal: AbortSignal.timeout(10 * 60_000),
+		} as RequestInit);
+		if (!response.ok || !response.body)
+			throw new Error(
+				`No se pudo descargar la imagen (${response.status}). Si el registry requiere acceso, pide Pull en Komodo.`,
+			);
+		const reader = response.body.getReader(),
+			decoder = new TextDecoder();
+		let buffer = '',
+			last = 0;
+		const line = async (text: string) => {
+			if (!text.trim()) return;
+			const event = JSON.parse(text);
+			if (event.errorDetail?.message || event.error)
+				throw new Error(String(event.errorDetail?.message ?? event.error).slice(0, 1000));
+			if (Date.now() - last < 1000 || !event.status) return;
+			last = Date.now();
+			const bytes = event.progressDetail;
+			const detail =
+				Number.isFinite(bytes?.current) && Number.isFinite(bytes?.total) && bytes.total > 0
+					? ` · ${bytes.current} / ${bytes.total} bytes`
+					: '';
+			await progress(
+				`${String(event.status).slice(0, 120)}${event.id ? ` · ${String(event.id).slice(0, 64)}` : ''}${detail}`,
+			);
+		};
+		try {
+			while (true) {
+				const { value, done } = await reader.read();
+				buffer += decoder.decode(value, { stream: !done });
+				if (buffer.length > 1024 * 1024) throw new Error('Respuesta de descarga demasiado grande.');
+				let end;
+				while ((end = buffer.indexOf('\n')) >= 0) {
+					await line(buffer.slice(0, end));
+					buffer = buffer.slice(end + 1);
+				}
+				if (done) {
+					await line(buffer);
+					break;
+				}
+			}
+		} finally {
+			await reader.cancel().catch(() => {});
+		}
 	}
 
 	/** Only platform-owned code, fresh tmpfs, no volumes/secrets/network/model requests. */

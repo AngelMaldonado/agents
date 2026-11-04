@@ -1,0 +1,21 @@
+#!/bin/sh
+# Ask to add an MCP server (by HTTP) to the owner's Accesos, granted to this agent (#27). Nothing is
+# registered until the owner confirms it in the web; its secrets (headers) go in Configuración →
+# Accesos, never here. Usage: agents-mcp add <nombre> <url> ["descripción"]
+set -eu
+usage() {
+	echo 'Uso: agents-mcp add <nombre> <url> ["descripción"]' >&2
+	echo '  nombre: minúsculas, números y guiones (p. ej. github). url: https://… del servidor MCP.' >&2
+	exit 2
+}
+[ "${1:-}" = add ] && [ -n "${2:-}" ] && [ -n "${3:-}" ] || usage
+body=$(jq -cn --arg name "$2" --arg url "$3" --arg description "${4:-Servidor MCP agregado desde la terminal}" \
+	'{name: $name, url: $url, description: $description}')
+reply=$(curl -sS --max-time 20 -X POST -H 'content-type: application/json' --data-binary "$body" http://127.0.0.1:7777/mcp-request)
+if [ "$(printf '%s' "$reply" | jq -r '.ok')" = true ]; then
+	echo "Pedido enviado: confirma «$2» en la web (pestaña Terminal del agente). Se carga en su siguiente tarea."
+	echo 'Si necesita un token, agrégalo después en Configuración → Accesos → Servidores MCP.'
+else
+	echo "No se pudo pedir: $(printf '%s' "$reply" | jq -r '.error // "error desconocido"')" >&2
+	exit 1
+fi

@@ -1,0 +1,52 @@
+#!/usr/bin/env python3
+# Your agent, interactive, in your terminal (#27): the same pi it runs with (its approved role and system
+# prompt, tools, restrictions, skills, MCP servers and keys, with its model), continuing its main chat.
+# Only in a computer session (Computadora → Terminal with the agent free), never during a task.
+# Its model calls count in this session's cost. Arguments go to pi (e.g. pi -p "pregunta").
+# In the owner's terminals `pi` is this command; the agent itself runs the real pi.
+import json
+import os
+import sys
+import urllib.request
+
+REAL = "/usr/local/bin/pi"  # the real pi; in the owner's terminals `pi` is this script (#27)
+args = sys.argv[1:]
+# pi belongs to the validated image, not the mutable volume. Do not run npm or partially update
+# extensions with --all. Package-only/model updates and help still go to pi for their own validation.
+if args and args[0] == "update" and not {"--help", "-h"}.intersection(args[1:]):
+    options = set(args[1:])
+    source = None
+    package_only = bool({"--extensions", "--extension", "--models"}.intersection(options))
+    rest = iter(args[1:])
+    for arg in rest:
+        if arg == "--extension":
+            next(rest, None)  # This value is a package name, even if it is called pi or self.
+        elif not arg.startswith("-") and source is None:
+            source = arg
+    if {"--self", "--all"}.intersection(options) or source in {"self", "pi"} or (source is None and not package_only):
+        print(
+            "Esta instalación de pi está gestionada por Agents.\n"
+            "pi se actualiza junto con la imagen de la computadora, después de validar su compatibilidad.\n"
+            "No se ejecutó npm ni se cambió la versión.\n"
+            "Consulta versiones y actualizaciones en el menú Computadora de Agents.\n"
+            "Para aplicar una, apaga la computadora y valida la imagen desde esa pantalla.",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+
+# pi's other commands (and --version/--help) go straight to the real pi, on the agent's pi folder.
+if args and (args[0] in {"install", "remove", "uninstall", "update", "list", "config", "auth", "mcp"}
+             or args[0] in {"--version", "-v", "--help", "-h"}):
+    os.execv(REAL, [REAL, *args])
+
+try:
+    req = urllib.request.Request("http://127.0.0.1:7777/pi-launch", data=b"{}", method="POST")
+    r = json.load(urllib.request.urlopen(req, timeout=10))
+except Exception as e:  # noqa: BLE001
+    sys.exit(f"No se pudo preguntar a la computadora: {e}")
+if not r.get("ok"):
+    sys.exit(r.get("error", "No se puede abrir pi ahora."))
+os.chdir(os.path.join(os.environ.get("HOME", "/home/agent"), "work"))
+env = {**os.environ, **r["env"]}
+print("pi con la configuración de tu agente, en su chat principal. Sal con Ctrl+C dos veces o /exit.", file=sys.stderr)
+os.execve(REAL, [REAL, *r["args"], *args], env)

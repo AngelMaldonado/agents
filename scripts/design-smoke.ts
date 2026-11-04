@@ -43,7 +43,10 @@ function businessResponse(body: any) {
 	const main = tools.length > 0;
 	if (main) {
 		businessRequests.push(body);
-		assert.deepEqual([...new Set(tools.map((t: any) => t.name))].sort(), runtimeToolNames(harness));
+		assert.deepEqual(
+			[...new Set(tools.map((t: any) => t.name))].sort(),
+			[...runtimeToolNames(harness), 'self_maintenance'].sort(),
+		);
 		assert(JSON.stringify(body.input).includes('Harness aprobado'));
 	}
 	const input = body.input ?? [],

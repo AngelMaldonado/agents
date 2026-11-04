@@ -26,7 +26,6 @@ import { AgentSettings } from './AgentSettings';
 import {
 	Bot,
 	Compass,
-	CreditCard,
 	Globe,
 	Hand,
 	KeyRound,
@@ -36,7 +35,11 @@ import {
 	Plus,
 	type LucideIcon,
 	PanelRightClose,
+	ChevronDown,
+	Computer,
+	Monitor,
 	MonitorPlay,
+	Power,
 	PanelRightOpen,
 	RotateCw,
 	Square,
@@ -47,6 +50,14 @@ import { ResizableHandle, ResizablePanel, ResizablePanelGroup } from '@/componen
 import { ScrollArea } from '@/components/ui/scroll-area';
 import { Button } from '@/components/ui/button';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
+import {
+	DropdownMenu,
+	DropdownMenuContent,
+	DropdownMenuItem,
+	DropdownMenuLabel,
+	DropdownMenuSeparator,
+	DropdownMenuTrigger,
+} from '@/components/ui/dropdown-menu';
 import { WorkChat } from '@/components/work-chat';
 import { useWorkConversations } from '@/lib/use-work-conversations';
 import { ArtifactCards, ArtifactDrawer, ArtifactMarkdown, type ArtifactTarget } from '@/components/artifacts';
@@ -58,15 +69,28 @@ import { crewOf, usePeople } from '@/lib/use-people';
 import { useSlidePanel } from '@/lib/use-slide-panel';
 import { WorkPeek } from '@/components/work-peek';
 import { improveWith } from '@/lib/sidebar-events';
+import { McpRequests } from '@/components/mcp-requests';
+import { useComputerUpdate } from '@/components/computer-update';
 
-type Tab = 'browser' | 'activity' | 'terminal' | 'answer';
+type Tab = 'browser' | 'desktop' | 'activity' | 'terminal' | 'answer';
+// 'browser' is the computer's focused view: its browser, terminal or desktop (Resource).
 type Mode = 'hub' | 'chat' | 'browser' | 'improve';
+type Resource = 'browser' | 'terminal' | 'desktop';
+const RESOURCES: Record<Resource, { label: string; hint: string; icon: LucideIcon }> = {
+	browser: { label: 'Navegador', hint: 'Iniciar sesión o guardar métodos de pago', icon: Globe },
+	terminal: { label: 'Terminal', hint: 'Correr comandos e instalar herramientas', icon: TerminalIcon },
+	desktop: { label: 'Escritorio', hint: 'Ver y manejar toda la pantalla', icon: Monitor },
+};
 const TABS: Record<Tab, { label: string; icon: LucideIcon }> = {
 	browser: { label: 'Navegador', icon: Globe },
+	desktop: { label: 'Escritorio', icon: Monitor },
 	activity: { label: 'Actividad', icon: ListChecks },
 	terminal: { label: 'Terminal', icon: TerminalIcon },
 	answer: { label: 'Respuesta', icon: MessageSquareText },
 };
+// xterm.js and noVNC load only when the owner opens their terminal or the desktop (#27).
+const LiveTerminal = lazy(() => import('@/components/agent-computer').then((m) => ({ default: m.LiveTerminal })));
+const Desktop = lazy(() => import('@/components/agent-computer').then((m) => ({ default: m.Desktop })));
 const AgentImprovement = lazy(() =>
 	import('./AgentImprovement').then((module) => ({ default: module.AgentImprovement })),
 );
@@ -80,7 +104,7 @@ export function AgentView({
 	improving = false,
 	designId,
 	chatId,
-	browsing = false,
+	computer,
 	onRoute,
 	artifact = null,
 }: {
@@ -93,7 +117,8 @@ export function AgentView({
 	designId?: string;
 	chatId?: number;
 	/** #/agent/:id/browser: its browser, maximized. */
-	browsing?: boolean;
+	/** #/agent/:id/browser|terminal|desktop: that resource of its computer, as big as the page allows. */
+	computer?: Resource;
 	artifact?: ArtifactTarget | null;
 	/** Goes to another view of this agent: '' (hub), '/chat/<id>', '/browser', '/improve[/<draft>]'. */
 	onRoute: (suffix: string) => void;
@@ -108,19 +133,20 @@ export function AgentView({
 
 	// The view under an open file is the one it was opened from.
 	const routed = {
-		mode: (improving ? 'improve' : browsing ? 'browser' : chatId ? 'chat' : 'hub') as Mode,
+		mode: (improving ? 'improve' : computer ? 'browser' : chatId ? 'chat' : 'hub') as Mode,
 		chatId,
+		resource: computer ?? 'browser',
 	};
 	const lastView = useRef(routed);
 	if (!artifact) lastView.current = routed;
-	const { mode, chatId: openChat } = artifact ? lastView.current : routed;
-	const suffixOf = (v: { mode: Mode; chatId?: number }) =>
+	const { mode, chatId: openChat, resource } = artifact ? lastView.current : routed;
+	const suffixOf = (v: { mode: Mode; chatId?: number; resource?: Resource }) =>
 		v.mode === 'chat'
 			? `/chat/${v.chatId}`
 			: v.mode === 'improve'
 				? '/improve'
 				: v.mode === 'browser'
-					? '/browser'
+					? `/${v.resource ?? 'browser'}`
 					: '';
 
 	const [improvementVisited, setImprovementVisited] = useState(improving);
@@ -292,10 +318,22 @@ export function AgentView({
 			: null;
 	const liveAgent = isLive(agentTask) ? agentTask : null;
 	const driving = mine && !!liveAgent?.control;
+	// The owner's terminal and desktop (#27): only theirs, only while the computer is on.
+	const computerOn = mine && !!liveAgent && ['running', 'blocked'].includes(liveAgent.status);
+	const computerUpdate = useComputerUpdate({
+		agentId: agent.id,
+		revision: agent.config_revision ?? 1,
+		imageRef: settings.sandboxImage,
+		mine,
+		busy: !!liveAgent,
+		onChanged,
+	});
 	const navigate = (a: 'open' | 'back' | 'forward' | 'reload', url?: string) =>
 		void action(() => api(`/tasks/${liveAgent!.id}/navigate`, { body: { action: a, url } }));
 	useEffect(() => {
-		if (driving) setTab('browser');
+		// Taking control shows the browser, unless the owner chose another tab for that run (the
+		// Computadora menu's terminal or desktop: a browser session is in control from the start).
+		if (driving && pickedTab.current !== liveAgent?.id) setTab('browser');
 	}, [driving]);
 	// «Abrir navegador» opens the maximized browser view; it starts the browser run unless it is on.
 	const browserOn = liveAgent?.kind === 'browser';
@@ -306,6 +344,79 @@ export function AgentView({
 			setTab('browser');
 			onRoute('/browser');
 		});
+	// Menú Computadora (#27): the terminal or the desktop, in the work's tabs. With the computer off, a
+	// session (the browser one) turns it on first; during a task it is that task's computer.
+	// Its focused view; with the computer off, a session (the browser one) turns it on first. During a
+	// task it is that task's computer.
+	const openComputer = (which: Resource) =>
+		which === 'browser' && canOpenBrowser
+			? openBrowser()
+			: void action(async () => {
+					if (!liveAgent) await api(`/agents/${agent.id}/browser`, { method: 'POST' });
+					onRoute(`/${which}`);
+				});
+	// The computer session ends from the Computadora menus: Chrome saves sessions, passwords and cards.
+	const shutdown = () =>
+		void action(async () => {
+			await api(`/tasks/${liveAgent!.id}/close`, { method: 'POST' });
+			// Closed from its own view: back to the hub, where the run finishes saving.
+			if (mode === 'browser') onRoute('');
+		});
+	const shutdownItem = mine && browserOn && (
+		<>
+			<DropdownMenuSeparator />
+			<DropdownMenuItem variant="destructive" onSelect={shutdown}>
+				<Power aria-hidden="true" />
+				<span className="grid">
+					<span>Apagar computadora</span>
+					<span className="text-2xs text-muted-foreground">Guarda sesiones, contraseñas y tarjetas del navegador</span>
+				</span>
+			</DropdownMenuItem>
+		</>
+	);
+	const canOpen = (r: Resource) => (r === 'browser' ? canOpenBrowser || computerOn : !liveAgent || computerOn);
+	// The menu itself: only the owner's, and not while someone else's task waits for the computer.
+	const computerMenu = mine && (
+		<DropdownMenu
+			onOpenChange={(open) => {
+				if (open) void computerUpdate.refresh();
+			}}
+		>
+			<DropdownMenuTrigger asChild>
+				<Button
+					variant="outline"
+					size="sm"
+					aria-label={computerOn ? 'Computadora (encendida)' : 'Computadora'}
+					title={computerOn ? 'La computadora del agente está encendida' : 'La computadora del agente'}
+					className={computerOn ? 'computer-on' : undefined}
+				>
+					<Computer />
+					<span className="agent-action-label">Computadora</span>
+					{computerUpdate.mark}
+					<ChevronDown className="size-3.5 opacity-70" aria-hidden="true" />
+				</Button>
+			</DropdownMenuTrigger>
+			<DropdownMenuContent align="end" className="w-72">
+				<DropdownMenuLabel className="text-xs font-normal text-muted-foreground">
+					{computerOn ? 'Encendida' : liveAgent ? 'Esperando turno' : 'Apagada: se enciende al elegir'}
+				</DropdownMenuLabel>
+				{(Object.keys(RESOURCES) as Resource[]).map((r) => {
+					const { label, hint, icon: Icon } = RESOURCES[r];
+					return (
+						<DropdownMenuItem key={r} disabled={!canOpen(r)} onSelect={() => openComputer(r)}>
+							<Icon aria-hidden="true" />
+							<span className="grid">
+								<span>{label}</span>
+								<span className="text-2xs text-muted-foreground">{hint}</span>
+							</span>
+						</DropdownMenuItem>
+					);
+				})}
+				{computerUpdate.menuItem}
+				{shutdownItem}
+			</DropdownMenuContent>
+		</DropdownMenu>
+	);
 
 	/** The live run's controls: labelled buttons in the hub, icons in the chat view's bar. */
 	const workActions = (compact: boolean) => {
@@ -354,22 +465,6 @@ export function AgentView({
 							onClick={() => void action(() => api(`/tasks/${liveAgent.id}/control`, { body: { on: true } }))}
 						/>
 					)}
-				{driving && (
-					<>
-						<Act
-							icon={CreditCard}
-							label="Tarjetas"
-							title="Guardar tarjetas en el navegador del agente"
-							onClick={() => navigate('open', 'chrome://settings/payments')}
-						/>
-						<Act
-							icon={KeyRound}
-							label="Contraseñas"
-							title="Guardar contraseñas en el navegador del agente"
-							onClick={() => navigate('open', 'chrome://password-manager/passwords')}
-						/>
-					</>
-				)}
 				{driving && liveAgent!.kind === 'task' && (
 					<Act
 						icon={Bot}
@@ -377,21 +472,6 @@ export function AgentView({
 						title="Devolver el navegador al agente; sigue desde la página actual"
 						primary
 						onClick={() => void action(() => api(`/tasks/${liveAgent!.id}/control`, { body: { on: false } }))}
-					/>
-				)}
-				{mine && liveAgent?.kind === 'browser' && (
-					<Act
-						icon={Square}
-						label="Cerrar navegador"
-						title="Cerrar y guardar sesiones, contraseñas y tarjetas en el perfil del agente"
-						primary
-						onClick={() =>
-							void action(async () => {
-								await api(`/tasks/${liveAgent.id}/close`, { method: 'POST' });
-								// Closed from its own view: back to the hub, where the run finishes saving.
-								if (mode === 'browser') onRoute('');
-							})
-						}
 					/>
 				)}
 				{liveAgent && liveAgent.kind !== 'browser' && (directs(liveAgent) || me.admin) && (
@@ -462,15 +542,17 @@ export function AgentView({
 			>
 				<div className="work-toolbar">
 					<TabsList aria-label="Detalle del trabajo">
-						{(Object.keys(TABS) as Tab[]).map((t) => {
-							const { label, icon: Icon } = TABS[t];
-							return (
-								<TabsTrigger key={t} value={t} aria-label={label} title={label}>
-									<Icon aria-hidden="true" />
-									<span className="work-tab-label">{label}</span>
-								</TabsTrigger>
-							);
-						})}
+						{(Object.keys(TABS) as Tab[])
+							.filter((t) => t !== 'desktop' || computerOn)
+							.map((t) => {
+								const { label, icon: Icon } = TABS[t];
+								return (
+									<TabsTrigger key={t} value={t} aria-label={label} title={label}>
+										<Icon aria-hidden="true" />
+										<span className="work-tab-label">{label}</span>
+									</TabsTrigger>
+								);
+							})}
 					</TabsList>
 					{toolbarEnd && (
 						<div className="ml-auto flex min-w-0 flex-wrap items-center justify-end gap-2">{toolbarEnd}</div>
@@ -483,7 +565,17 @@ export function AgentView({
 					<TabsContent value="activity" forceMount hidden={tab !== 'activity'}>
 						<Activity events={task?.id === taskId ? events : []} />
 					</TabsContent>
+					{computerOn && (
+						<TabsContent value="desktop" hidden={tab !== 'desktop'}>
+							{tab === 'desktop' && (
+								<Suspense fallback={null}>
+									<Desktop agentId={agent.id} />
+								</Suspense>
+							)}
+						</TabsContent>
+					)}
 					<TabsContent value="terminal" forceMount hidden={tab !== 'terminal'}>
+						{task?.id === taskId && <McpRequests taskId={taskId} events={events} mine={mine} />}
 						<Terminal events={task?.id === taskId ? events : []} />
 					</TabsContent>
 					<TabsContent value="answer" forceMount hidden={tab !== 'answer'}>
@@ -531,18 +623,7 @@ export function AgentView({
 			people={crewOf(agent, people)}
 			onShare={mine ? () => setSettingsRequest({ section: 'share', at: Date.now() }) : undefined}
 		>
-			{canOpenBrowser && (
-				<Button
-					variant="outline"
-					size="sm"
-					aria-label="Abrir navegador"
-					title="Abrir el navegador del agente para iniciar sesión o guardar métodos de pago"
-					onClick={openBrowser}
-				>
-					<Globe />
-					<span className="agent-action-label">Abrir navegador</span>
-				</Button>
-			)}
+			{computerMenu}
 			{mine && (
 				<AutomejoraLink
 					agentId={agent.id}
@@ -617,6 +698,7 @@ export function AgentView({
 
 	return (
 		<div className={`page agent-view${mode === 'improve' ? ' is-improving' : ''}`} data-view={mode}>
+			{computerUpdate.dialog}
 			{mode === 'hub' && (
 				<div className="agent-hub">
 					{header}
@@ -838,13 +920,59 @@ export function AgentView({
 							<span className="text-muted-foreground" aria-hidden="true">
 								/
 							</span>
-							<span className="truncate px-1.5 font-semibold" aria-current="page">
-								Navegador
-							</span>
+							{mine ? (
+								// Switches between the computer's browser, terminal and desktop, all focused.
+								<DropdownMenu
+									onOpenChange={(open) => {
+										if (open) void computerUpdate.refresh();
+									}}
+								>
+									<DropdownMenuTrigger asChild>
+										<Button
+											variant="ghost"
+											size="sm"
+											className={`gap-1.5 px-1.5 font-semibold${computerOn ? ' computer-on border' : ''}`}
+											aria-current="page"
+										>
+											{(() => {
+												const Icon = RESOURCES[resource].icon;
+												return <Icon aria-hidden="true" />;
+											})()}
+											{RESOURCES[resource].label}
+											{computerUpdate.mark}
+											<ChevronDown className="size-3.5 opacity-70" aria-hidden="true" />
+										</Button>
+									</DropdownMenuTrigger>
+									<DropdownMenuContent align="start" className="w-72">
+										{(Object.keys(RESOURCES) as Resource[]).map((r) => {
+											const { label, hint, icon: Icon } = RESOURCES[r];
+											return (
+												<DropdownMenuItem
+													key={r}
+													disabled={r === resource || !canOpen(r)}
+													onSelect={() => openComputer(r)}
+												>
+													<Icon aria-hidden="true" />
+													<span className="grid">
+														<span>{label}</span>
+														<span className="text-2xs text-muted-foreground">{hint}</span>
+													</span>
+												</DropdownMenuItem>
+											);
+										})}
+										{computerUpdate.menuItem}
+										{shutdownItem}
+									</DropdownMenuContent>
+								</DropdownMenu>
+							) : (
+								<span className="truncate px-1.5 font-semibold" aria-current="page">
+									{RESOURCES[resource].label}
+								</span>
+							)}
 						</nav>
-						<div className="ml-auto flex shrink-0 items-center gap-0.5" aria-label="Acciones del navegador">
+						<div className="ml-auto flex shrink-0 items-center gap-0.5" aria-label="Acciones de la computadora">
 							{workActions(true)}
-							{canOpenBrowser && !browserOn && (
+							{resource === 'browser' && canOpenBrowser && !browserOn && (
 								<IconButton icon={Globe} label="Abrir navegador" onClick={openBrowser} />
 							)}
 							{mine && <AutomejoraLink agentId={agent.id} designId={lastDraftId} iconOnly />}
@@ -852,7 +980,35 @@ export function AgentView({
 						</div>
 					</HeaderSlot>
 					{errors}
-					<div className="browser-focus">{browserPane}</div>
+					{resource === 'browser' ? (
+						<div className="browser-focus">{browserPane}</div>
+					) : (
+						<div className="browser-focus flex-col">
+							{!mine ? (
+								<p className="muted">Sólo el dueño del agente usa su terminal y su escritorio.</p>
+							) : computerOn ? (
+								<Suspense fallback={null}>
+									{resource === 'terminal' ? (
+										<LiveTerminal fill agentId={agent.id} onClose={() => onRoute('')} />
+									) : (
+										<Desktop fill agentId={agent.id} />
+									)}
+								</Suspense>
+							) : (
+								<div className="grid place-items-center gap-3 py-16 text-center" role="status">
+									<p className="muted">
+										{liveAgent ? 'Encendiendo la computadora del agente…' : 'La computadora del agente está apagada.'}
+									</p>
+									{!liveAgent && (
+										<Button size="sm" onClick={() => openComputer(resource)}>
+											<Computer aria-hidden="true" />
+											Encender
+										</Button>
+									)}
+								</div>
+							)}
+						</div>
+					)}
 				</>
 			)}
 			{mode === 'improve' && (
@@ -1037,6 +1193,32 @@ function EventBody({ e }: { e: TaskEvent }) {
 					<TriangleAlert aria-hidden="true" /> {e.data.message}
 				</span>
 			);
+		case 'mcp_request':
+			return (
+				<span className="muted">
+					{e.data.status === 'added'
+						? `MCP «${e.data.name}» agregado a los Accesos del dueño y concedido.`
+						: e.data.status === 'discarded'
+							? `MCP «${e.data.name}» descartado.`
+							: `Pidieron agregar el MCP «${e.data.name}» (${e.data.url}); lo confirma el dueño en Terminal.`}
+				</span>
+			);
+		case 'access_check': {
+			const failed = [
+				...(e.data.tools?.ok === false ? ['CLI'] : []),
+				...(e.data.mcp ?? [])
+					.filter((m: { ok: boolean | null }) => m.ok === false)
+					.map((m: { name: string }) => m.name),
+				...(e.data.undelivered ?? []),
+			];
+			return (
+				<span className="muted">
+					{failed.length
+						? `Accesos comprobados, con fallas: ${failed.join(', ')}.`
+						: 'Accesos comprobados: herramientas, MCP y variables listos.'}
+				</span>
+			);
+		}
 		default:
 			return <span className="muted">{e.data.message ?? JSON.stringify(e.data)}</span>;
 	}

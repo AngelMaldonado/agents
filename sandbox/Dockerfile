@@ -4,7 +4,7 @@ FROM node:24-bookworm-slim
 
 ENV DEBIAN_FRONTEND=noninteractive
 RUN apt-get update && apt-get install -y --no-install-recommends \
-      ca-certificates curl git jq ripgrep tini python3 xvfb xauth \
+      ca-certificates curl git jq ripgrep tini python3 xvfb xauth x11vnc openbox tint2 xterm x11-xserver-utils jgmenu wmctrl htop pcmanfm librsvg2-common hsetroot mousepad \
       libxcb-shm0 libx11-xcb1 libx11-6 libxcb1 libxext6 libxrandr2 libxcomposite1 libxcursor1 libxdamage1 \
       libxfixes3 libxi6 libgtk-3-0 libpangocairo-1.0-0 libpango-1.0-0 libatk1.0-0 libcairo-gobject2 libcairo2 \
       libgdk-pixbuf-2.0-0 libxrender1 libasound2 libfreetype6 libfontconfig1 libdbus-1-3 libnss3 libnss3-tools \
@@ -14,6 +14,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 
 # Pinned: the backend speaks pi's RPC protocol and agent-browser's stream protocol.
 ARG PI_VERSION=1.4.0
+LABEL io.cuby.agents.pi.version="${PI_VERSION}"
 ARG AGENT_BROWSER_VERSION=0.39.2
 RUN npm install -g --ignore-scripts @earendil-works/pi-coding-agent@${PI_VERSION} \
     && npm install -g agent-browser@${AGENT_BROWSER_VERSION} \
@@ -65,13 +66,21 @@ RUN set -eu; \
     install -m 0755 "/tmp/uv-${arch}-unknown-linux-musl/uv" /usr/local/bin/uv; \
     rm -rf /tmp/uv.tar.gz "/tmp/uv-${arch}-unknown-linux-musl"
 COPY bin/ /usr/local/bin/
-COPY supervisor.mjs harness*.mjs harness*.ts /opt/agents/
+# The owner's desktop (#27): one workspace and no Debian menu; agents-theme generates the bar, both
+# menus and the window theme from this base at every start.
+COPY desktop/ /opt/agents/desktop/
+# In the owner's terminals `pi` opens their agent (agents-pi); the agent itself runs the real pi.
+RUN mkdir -p /opt/agents/owner-bin && ln -s /usr/local/bin/agents-pi /opt/agents/owner-bin/pi
+RUN sed -i 's#<number>4</number>#<number>1</number>#; s#<file>/var/lib/openbox/debian-menu.xml</file>##' /etc/xdg/openbox/rc.xml \
+    && cp /opt/agents/desktop/mimeapps.list /etc/xdg/mimeapps.list
+COPY supervisor.mjs self-maintenance.mjs harness*.mjs harness*.ts /opt/agents/
 # Resolve pi's pinned TypeBox/API dependencies for the platform-owned extension (no npm at runtime).
 RUN ln -s /usr/local/lib/node_modules/@earendil-works/pi-coding-agent/node_modules /opt/agents/node_modules
 
 # --no-sandbox: the container is the sandbox (no new privileges, all capabilities dropped).
 # --no-proxy-server: Chrome browses directly; the egress proxy of API keys (#24) is only for pi's tools.
-# Headed on a virtual display (agent-browser starts Xvfb) and without the automation flag:
+# Headed on a virtual display (the supervisor's Xvfb :99 with openbox, which the owner's desktop view
+# shows through x11vnc; agent-browser starts its own only if that one is missing) and without the automation flag:
 # headless Chrome says "HeadlessChrome" and webdriver=true, and sites like MercadoLibre block it.
 # The profile (cookies, logins, storage) lives in the agent's volume; its cache does not.
 ENV AGENT_BROWSER_EXECUTABLE_PATH=/usr/local/bin/agents-chrome \

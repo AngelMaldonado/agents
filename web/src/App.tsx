@@ -3,6 +3,8 @@ import { api, type Agent, type Person, type PublicSettings } from './api';
 import { connect, onTask, useConnected } from './live';
 import { Entry, Invite } from './Entry';
 import { Gallery } from './Gallery';
+import { ComputerUpdatesProvider } from './lib/computer-updates';
+import { Toaster } from '@/components/ui/sonner';
 import { AppShell } from '@/components/app-shell';
 import { AppSettings, type SettingsTab } from '@/components/app-settings';
 import { Skeleton } from '@/components/ui/skeleton';
@@ -90,7 +92,9 @@ export function App() {
 	if (!settings) return null;
 
 	const designerMatch = hash.match(/^\/new(?:\/([\da-f-]+))?$/i);
-	const agentMatch = hash.match(/^\/agent\/(\d+)(?:\/(improve)(?:\/([\da-f-]+))?|\/chat\/(\d+)|\/(browser))?$/i);
+	const agentMatch = hash.match(
+		/^\/agent\/(\d+)(?:\/(improve)(?:\/([\da-f-]+))?|\/chat\/(\d+)|\/(browser|terminal|desktop))?$/i,
+	);
 	const artifactMatch = hash.match(/^\/agent\/(\d+)\/artifact\/(\d+)\/([^/]+)$/i);
 	let artifact = null;
 	if (artifactMatch) {
@@ -108,89 +112,92 @@ export function App() {
 	};
 
 	return (
-		<AppShell
-			me={me}
-			agents={agents}
-			connected={connected}
-			hash={hash}
-			agentName={agent?.name}
-			onAgentsChanged={() => void loadAgents()}
-			onSettings={() => setSettingsTab('ai')}
-			onLogout={async () => {
-				await api('/logout', { method: 'POST' });
-				setSettingsTab(null);
-				setAgents([]);
-				setMe(null);
-				go('/');
-			}}
-		>
-			<AppSettings
-				tab={settingsTab}
-				onTab={setSettingsTab}
-				onClose={() => setSettingsTab(null)}
+		<ComputerUpdatesProvider key={me.id} personId={me.id} imageRef={settings.sandboxImage} onChanged={loadAgents}>
+			<Toaster />
+			<AppShell
 				me={me}
 				agents={agents}
-				pinIsSet={pinIsSet}
-				onChanged={changed}
-			/>
-			{designerMatch ? (
-				<Suspense
-					fallback={
-						<div className="page" role="status">
-							Cargando diseñador…
-						</div>
-					}
-				>
-					<AgentDesigner
-						settings={settings}
-						designId={designerMatch[1]}
-						onDraft={(id) => go(`/new/${id}`)}
-						onApplied={async (id) => {
-							await loadAgents();
-							go(`/agent/${id}`);
-						}}
-						onBack={() => {
-							void loadAgents();
-							go('/');
-						}}
-					/>
-				</Suspense>
-			) : agent ? (
-				<Suspense
-					fallback={
-						<div className="page" role="status">
-							Cargando agente…
-						</div>
-					}
-				>
-					<AgentView
-						key={agent.id}
-						agent={agent}
+				connected={connected}
+				hash={hash}
+				agentName={agent?.name}
+				onAgentsChanged={() => void loadAgents()}
+				onSettings={() => setSettingsTab('ai')}
+				onLogout={async () => {
+					await api('/logout', { method: 'POST' });
+					setSettingsTab(null);
+					setAgents([]);
+					setMe(null);
+					go('/');
+				}}
+			>
+				<AppSettings
+					tab={settingsTab}
+					onTab={setSettingsTab}
+					onClose={() => setSettingsTab(null)}
+					me={me}
+					agents={agents}
+					pinIsSet={pinIsSet}
+					onChanged={changed}
+				/>
+				{designerMatch ? (
+					<Suspense
+						fallback={
+							<div className="page" role="status">
+								Cargando diseñador…
+							</div>
+						}
+					>
+						<AgentDesigner
+							settings={settings}
+							designId={designerMatch[1]}
+							onDraft={(id) => go(`/new/${id}`)}
+							onApplied={async (id) => {
+								await loadAgents();
+								go(`/agent/${id}`);
+							}}
+							onBack={() => {
+								void loadAgents();
+								go('/');
+							}}
+						/>
+					</Suspense>
+				) : agent ? (
+					<Suspense
+						fallback={
+							<div className="page" role="status">
+								Cargando agente…
+							</div>
+						}
+					>
+						<AgentView
+							key={agent.id}
+							agent={agent}
+							me={me}
+							settings={settings}
+							improving={!!agentMatch?.[2]}
+							designId={agentMatch?.[3]}
+							chatId={agentMatch?.[4] ? Number(agentMatch[4]) : undefined}
+							computer={agentMatch?.[5]?.toLowerCase() as 'browser' | 'terminal' | 'desktop' | undefined}
+							artifact={artifact}
+							onRoute={(suffix) => go(`/agent/${agent.id}${suffix}`)}
+							onBack={() => go('/')}
+							onChanged={changed}
+						/>
+					</Suspense>
+				) : agentMatch || artifactMatch ? (
+					<div className="page">
+						<p className="muted">Ese agente no existe o no es tuyo.</p>
+					</div>
+				) : (
+					<Gallery
+						agents={agents}
 						me={me}
 						settings={settings}
-						improving={!!agentMatch?.[2]}
-						designId={agentMatch?.[3]}
-						chatId={agentMatch?.[4] ? Number(agentMatch[4]) : undefined}
-						browsing={!!agentMatch?.[5]}
-						artifact={artifact}
-						onRoute={(suffix) => go(`/agent/${agent.id}${suffix}`)}
-						onBack={() => go('/')}
-						onChanged={changed}
+						onOpen={(id) => go(`/agent/${id}`)}
+						onChanged={loadAgents}
 					/>
-				</Suspense>
-			) : agentMatch || artifactMatch ? (
-				<div className="page">
-					<p className="muted">Ese agente no existe o no es tuyo.</p>
-				</div>
-			) : (
-				<Gallery
-					agents={agents}
-					me={me}
-					settings={settings}
-					onOpen={(id) => go(`/agent/${id}`)}
-					onChanged={loadAgents}
-				/>
-			)}
-		</AppShell>
+				)}
+			</AppShell>
+		</ComputerUpdatesProvider>
 	);
 }
