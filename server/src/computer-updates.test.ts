@@ -35,16 +35,17 @@ async function fixture(count = 1) {
 		{ settings } = await import('./settings');
 	const { harnessHash } = await import('./harnesses'),
 		{ runtimeToolNames } = await import('../../sandbox/harness');
-	const list = await Promise.all(
-		Array.from({ length: count }, (_, i) =>
-			agents.create(owner, {
+	// One after another: list order is id order, which is how a job lists its items.
+	const list = [];
+	for (let i = 0; i < count; i++)
+		list.push(
+			await agents.create(owner, {
 				name: `Computadora ${i}`,
 				role: `Rol ${i}`,
 				model: settings().models[0].id,
 				image: oldImage,
 			}),
-		),
-	);
+		);
 	const probes: string[] = [],
 		pulls: string[] = [];
 	const engine = {
@@ -218,7 +219,8 @@ run('a queued job keeps its frozen target, and a changed definition fails withou
 	expect((await f.agents.get(f.list[0].id))!.harness_image).toBe(newImage);
 	await db!.exec('update agents set config_revision=config_revision+1 where id=$1', [f.list[1].id]);
 	await jobs.attempt(job.id, f.list[1].id, f.engine);
-	expect((await jobs.get(job.id, owner)).items[1].error).toContain('configuración cambió');
+	const changed = (await jobs.get(job.id, owner)).items.find((i) => i.agent_id === f.list[1].id)!;
+	expect(changed.error).toContain('configuración cambió');
 	expect((await f.agents.get(f.list[1].id))!.harness_image).toBe(oldImage);
 });
 
