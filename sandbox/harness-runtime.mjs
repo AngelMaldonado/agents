@@ -11,7 +11,7 @@ export const harnessDigest = (h) =>
  * secrets replaced by placeholders the egress proxy swaps). They join the approved ones in mcp.json
  * and in --tools, but not the digest: a harness server with the same name wins.
  */
-export function prepareHarness(value, dir, granted = []) {
+export function prepareHarness(value, dir, granted = [], selfMaintenance = true) {
 	const h = validateHarness(value);
 	mkdirSync(dir, { recursive: true });
 	const skillArgs = [];
@@ -56,7 +56,13 @@ export function prepareHarness(value, dir, granted = []) {
 				),
 			}
 		: null;
-	const tools = [...runtimeToolNames(h), ...mcp.map((s) => `${mcpPrefix(s.name)}*`)];
+	// CLI selection is applied separately from session_start activation: include the platform tool
+	// explicitly, but never advertise it to a delegated child process.
+	const tools = [
+		...runtimeToolNames(h),
+		...(selfMaintenance ? ['self_maintenance'] : []),
+		...mcp.map((s) => `${mcpPrefix(s.name)}*`),
+	];
 	return {
 		harness: h,
 		digest: harnessDigest(h),

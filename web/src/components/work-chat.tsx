@@ -36,6 +36,7 @@ import {
 	type Question,
 } from '@/api';
 import { workTranscript, type WorkBinding } from '@/lib/work-transcript';
+import { maintenanceToolUI, DiagnoseButton } from './self-maintenance';
 import { helpReplyTarget } from '@/lib/work-access';
 import { ArtifactMarkdown, ArtifactCards } from './artifacts';
 import { Questionnaire, type QuestionDraft } from './questionnaire';
@@ -112,6 +113,14 @@ function WorkMessage() {
 		!props.conversation?.archived_at &&
 		(!task || !props.directs || props.directs(task));
 	const draftKey = task && blocked ? `${task.id}:${blocked.id}` : '';
+	// A stable component: a new one on every render (onRefresh changes) remounted the cards before their
+	// diagnosis arrived, so they never left «Revisando…» and fetched again and again.
+	const refreshRef = useRef(props.onRefresh);
+	refreshRef.current = props.onRefresh;
+	const MaintenanceUI = useMemo(
+		() => maintenanceToolUI(props.agent.id, props.agent.mine, () => refreshRef.current()),
+		[props.agent.id, props.agent.mine],
+	);
 	return (
 		<MessagePrimitive.Root className={`work-message designer-message designer-message-${role}`}>
 			<span className="sr-only">{role === 'user' ? 'Tú' : 'Agente'}</span>
@@ -121,6 +130,7 @@ function WorkMessage() {
 				<div className="work-message-body designer-message-content">
 					<MessagePrimitive.Parts
 						components={{
+							tools: { Fallback: MaintenanceUI },
 							Text: ({ text }) => (
 								<ArtifactMarkdown
 									text={text}
@@ -800,6 +810,7 @@ export function WorkChat(props: Props) {
 											<div className="mr-auto flex items-center gap-1">
 												<AttachButton onFiles={(f) => void attach.add(f)} disabled={busy || !!props.loading} />
 												{props.composerActions}
+												{agent.mine && <DiagnoseButton agentId={agent.id} />}
 											</div>
 											{attach.files.length && !unsent ? (
 												<Button

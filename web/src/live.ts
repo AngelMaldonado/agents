@@ -5,6 +5,7 @@
 // Frames (thumbnails or full) are kept per agent, the newest only.
 import { useEffect, useState, useSyncExternalStore } from 'react';
 import type { Task, TaskEvent } from './api';
+import type { ComputerUpdateJob } from '../../shared/computer-updates';
 
 export type Frame = {
 	taskId: number;
@@ -18,6 +19,7 @@ const frames = new Map<number, Frame>(); // agent id -> frame
 const frameSubs = new Map<number, Set<Listener>>();
 const taskSubs = new Set<(t: Task) => void>();
 const eventSubs = new Set<(taskId: number, e: TaskEvent) => void>();
+const computerUpdateSubs = new Set<(job: ComputerUpdateJob, personId: number) => void>();
 let connected = false;
 const connSubs = new Set<Listener>();
 
@@ -57,6 +59,8 @@ export function connect() {
 				taskSubs.forEach((l) => l(m.task));
 			} else if (m.t === 'event') {
 				eventSubs.forEach((l) => l(m.taskId, m.event));
+			} else if (m.t === 'computer-update') {
+				computerUpdateSubs.forEach((l) => l(m.job, m.personId));
 			} else if (m.t === 'monitor') {
 				monitorSubs.forEach((l) => l(m));
 			}
@@ -130,6 +134,13 @@ export function onEvent(fn: (taskId: number, e: TaskEvent) => void) {
 	eventSubs.add(fn);
 	return () => {
 		eventSubs.delete(fn);
+	};
+}
+
+export function onComputerUpdate(fn: (job: ComputerUpdateJob, personId: number) => void) {
+	computerUpdateSubs.add(fn);
+	return () => {
+		computerUpdateSubs.delete(fn);
 	};
 }
 

@@ -15,6 +15,7 @@ import { receive, SUPPLIER_ROLE } from './inbox';
 const SUPPLIER_HOURS = 168;
 import { whatsappConversation } from './conversations';
 import { decodeHelp } from './help';
+import { parseRepairDecision } from '../../shared/self-maintenance';
 import * as cuby from './cuby-whatsapp';
 import { TZ } from './channels';
 import * as aliases from './aliases';
@@ -1026,6 +1027,33 @@ async function groupInbound(
 	const list = await groupAgents(g);
 	if (!list.length) return { ignored: true }; // the next sync closes it
 	const say = (t: string) => sayInGroup(n, g, null, t);
+	const repairDecision = parseRepairDecision(raw);
+	if (repairDecision) {
+		const actor = await row<{ person_id: number | null }>(
+			"select person_id from whatsapp_phones where number_id=$1 and phone=$2 and list='allow'",
+			[n.id, phone],
+		);
+		try {
+			if (!actor?.person_id || actor.person_id !== g.person_id)
+				throw new Error('Sólo el dueño vinculado puede autorizar esta propuesta.');
+			const repair = await (
+				await import('./self-maintenance')
+			).decideCode(
+				repairDecision.code,
+				actor.person_id,
+				list.map((a) => a.id),
+				repairDecision.approve,
+			);
+			await say(
+				`${repair.code}: ${repair.status === 'rejected' ? 'rechazada' : 'decisión registrada; el servidor comprobará y aplicará la propuesta cuando corresponda'}.`,
+			);
+		} catch {
+			await say(
+				'No se pudo registrar la decisión: comprueba que eres el dueño y que la propuesta sigue vigente en este grupo. No se tomó el mensaje como autorización.',
+			);
+		}
+		return { command: true };
+	}
 	let text = raw;
 	// The member's own aliases pick agents too (a guest has none).
 	const mine = await aliases.of(g.person_id);
@@ -1349,6 +1377,51 @@ export async function onRun(
 		}
 	} catch (err) {
 		console.error(`whatsapp run ${runId}:`, (err as Error).message);
+	}
+}
+
+// Repair notices are private to linked owner destinations that originated the run. No guest groups.
+export async function maintenanceNotice(runId: number, text: string) {
+	if (!available()) return;
+	try {
+		const a = await row<{ id: number; name: string; owner_id: number; conversation_id: number }>(
+			`select a.id,a.name,a.person_id as owner_id,r.conversation_id from runs r join agents a on a.id=r.agent_id where r.id=$1`,
+			[runId],
+		);
+		if (!a) return;
+		const sources = await rows<{ number_id: string; group_id: string }>(
+			"select context->'whatsapp'->>'number' as number_id,context->'whatsapp'->>'group' as group_id from messages where run_id=$1 and source='whatsapp'",
+			[runId],
+		);
+		for (const source of [
+			...new Map(
+				sources
+					.filter((s) => /^\d+$/.test(s.number_id ?? '') && /^\d+$/.test(s.group_id ?? ''))
+					.map((s) => [`${s.number_id}:${s.group_id}`, s]),
+			).values(),
+		]) {
+			const g = await row<GroupRow>(
+				`select g.* from whatsapp_groups g join whatsapp_phones p on p.number_id=g.number_id and p.phone=g.phone
+			 where g.id=$1 and g.number_id=$2 and g.person_id=$3 and g.owner_id=$3 and p.person_id=$3 and p.list='allow' and g.status='open'`,
+				[Number(source.group_id), Number(source.number_id), a.owner_id],
+			);
+			const n = g
+				? await row<NumberRow>(`${SELECT} where n.id=$1 and n.deleted_at is null and n.status='linked'`, [g.number_id])
+				: null;
+			if (!g || !n?.jid) continue;
+			const chunks = text.match(/[\s\S]{1,3000}/g) ?? [];
+			for (let i = 0; i < chunks.length; i++)
+				await sayInGroup(
+					n,
+					g,
+					a,
+					`${chunks.length > 1 ? `Parte ${i + 1}/${chunks.length}\n` : ''}${chunks[i]}`,
+					[],
+					a.conversation_id,
+				);
+		}
+	} catch {
+		console.warn('No se pudo entregar el aviso privado de mantenimiento por WhatsApp.');
 	}
 }
 

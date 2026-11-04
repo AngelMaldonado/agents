@@ -1,0 +1,3 @@
+#!/bin/sh
+# A terminal window on the owner's desktop (#27), with the desktop's colors. Its arguments go to xterm.
+exec xterm -fa Monospace -fs 11 -bg '#0b0d10' -fg '#e6e6e6' -geometry 110x30 "$@"

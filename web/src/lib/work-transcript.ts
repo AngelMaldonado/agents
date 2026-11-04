@@ -52,7 +52,34 @@ export function workTranscript(records: WorkRecord[], inputs: ConversationInput[
 				);
 			steps = [];
 		};
+		const repairCards = new Set<string>();
 		for (const e of events) {
+			if (e.kind === 'self_repair' || e.kind === 'self_diagnosis') {
+				const key = e.kind === 'self_repair' ? String(e.data.id) : String(e.id);
+				if (repairCards.has(key)) continue;
+				repairCards.add(key);
+				flush();
+				entries.push({
+					message: {
+						id: prefix + `maintenance:${key}`,
+						role: 'assistant',
+						content: [
+							{
+								type: 'tool-call',
+								toolCallId: prefix + `maintenance:${key}`,
+								toolName: e.kind,
+								args: e.data,
+								result: { recorded: true },
+							},
+						],
+						createdAt: new Date(e.at),
+					},
+					binding: { record, event: e },
+					at: e.at,
+					order: entries.length,
+				});
+				continue;
+			}
 			if (e.kind === 'tool') {
 				steps.push(e);
 				continue;

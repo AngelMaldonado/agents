@@ -39,8 +39,10 @@ import * as secrets from './secrets';
 import * as accesses from './accesses';
 import { browserSnapshot, readSnapshot, saveSnapshot, type BrowserSnapshot } from './snapshots';
 import { definition, digest, defaultHarness, withHarnessPrompt, type Definition } from './harnesses';
-import { runtimeToolNames } from '../../sandbox/harness';
+import { runtimeToolNames, validateMcpServer } from '../../sandbox/harness';
 import { newRunWorkflowId, isNewRunWorkflowId, admissionWorkflowId } from './run-identity';
+import { maintenancePending, ComputerUpdating } from './computer-maintenance';
+import { agentRequest, installation, installationResult } from './self-maintenance';
 export const snapshot = (runId: number) => readSnapshot(DATA_DIR, runId);
 
 export type Status = 'queued' | 'starting' | 'running' | 'blocked' | 'done' | 'incomplete' | 'cancelled' | 'error';
@@ -147,7 +149,7 @@ export const byLlmToken = (token: string) =>
 
 export async function events(taskId: number, after = 0, chatOnly = false) {
 	const saved = await rows<{ id: number; at: number; kind: string; data: any }>(
-		`select seq as id, at, kind, data from run_events where run_id = $1 and seq > $2 and (not $3::boolean or kind in ('text','blocked','help_answer','help_reply','steer','follow_up','unblocked','help_expired')) order by seq limit $4`,
+		`select seq as id, at, kind, data from run_events where run_id = $1 and seq > $2 and (not $3::boolean or kind in ('text','blocked','help_answer','help_reply','steer','follow_up','unblocked','help_expired','self_repair','self_diagnosis')) order by seq limit $4`,
 		[taskId, after, chatOnly, chatOnly ? null : 2000],
 	);
 	const answered = new Map(
@@ -278,13 +280,145 @@ export const applyQuota = (personId: number, quota: number) => ensureQueue(perso
 
 type AgentRef = { id: number; person_id: number; model: string };
 
+// ---------- what the initialization proved about the agent's CLI tools, MCP servers and keys ----------
+
+export type AccessCheck = {
+	tools: { ok: boolean; names: string[]; detail?: string };
+	mcp: { name: string; ok: boolean | null; tools?: number; detail?: string }[];
+	keys: string[];
+	undelivered: string[];
+};
+const text = (v: unknown, max = 400) => String(v ?? '').slice(0, max);
+const names = (v: unknown) => (Array.isArray(v) ? v.slice(0, 40).map((n) => text(n, 80)) : []);
+/** The sandbox's report, bounded: it is the agent's computer talking. */
+function accessCheck(msg: any): AccessCheck {
+	const t = msg?.tools ?? {};
+	return {
+		tools: { ok: t.ok !== false, names: names(t.names), ...(t.detail ? { detail: text(t.detail) } : {}) },
+		mcp: (Array.isArray(msg?.mcp) ? msg.mcp.slice(0, 20) : []).map((m: any) => ({
+			name: text(m?.name, 40),
+			ok: m?.ok === true ? true : m?.ok === null ? null : false,
+			...(typeof m?.tools === 'number' ? { tools: m.tools } : {}),
+			...(m?.detail ? { detail: text(m.detail, 200) } : {}),
+		})),
+		keys: names(msg?.keys),
+		undelivered: names(msg?.undelivered),
+	};
+}
+export function initAnswer(c: AccessCheck | undefined) {
+	const lines = ['Entorno inicializado: contrato guardado, memoria preparada y Chrome comprobado.'];
+	if (c) {
+		if (c.tools.names.length)
+			lines.push(
+				c.tools.ok
+					? `- **Herramientas CLI** instaladas: ${c.tools.names.join(', ')}.`
+					: `- ⚠️ **Herramientas CLI** no se instalaron (${c.tools.names.join(', ')}): ${c.tools.detail ?? 'error'}. Se reintenta en la primera tarea.`,
+			);
+		for (const m of c.mcp)
+			lines.push(
+				m.ok
+					? `- **MCP ${m.name}**: conectado, ${m.tools ?? 0} herramientas.`
+					: m.ok === null
+						? `- **MCP ${m.name}**: pendiente, ${m.detail ?? 'inicia sesión'}.`
+						: `- ⚠️ **MCP ${m.name}**: no conectó (${m.detail ?? 'error'}).`,
+			);
+		if (c.keys.length) lines.push(`- **Variables** disponibles: ${c.keys.map((k) => `\`${k}\``).join(', ')}.`);
+		if (c.undelivered.length)
+			lines.push(
+				`- ⚠️ **No entregadas** (falta el proxy de salida de esta instancia): ${c.undelivered.map((k) => `\`${k}\``).join(', ')}.`,
+			);
+	}
+	lines.push('', 'Listo para recibir tareas.');
+	return lines.join('\n');
+}
+
+// ---------- the owner's terminal and desktop (#27) ----------
+
+type Channel = { data: (b: Buffer) => void; closed: () => void };
+const channels = new Map<string, Channel>();
+
+/**
+ * Opens the owner's terminal (a shell) or desktop (VNC) on the agent's computer while it is on: a run
+ * or a browser session. The caller checked that `person` owns the agent. Returns null when no
+ * computer is on, or its image is older than this.
+ */
+export function openChannel(
+	agentId: number,
+	person: { id: number; name: string },
+	kind: 'pty' | 'vnc',
+	on: Channel,
+	size?: { cols: number; rows: number },
+) {
+	const l = [...live.values()].find((x) => x.ref.agent_id === agentId && x.sup && !x.ending);
+	if (!l?.sup) return null;
+	const sup = l.sup,
+		id = randomUUID();
+	let open = true;
+	const finish = () => {
+		if (!open) return;
+		open = false;
+		channels.delete(id);
+		if (kind === 'pty')
+			void event(l.ref, 'system', { message: `${person.name} cerró su terminal en esta computadora.` });
+		on.closed();
+	};
+	channels.set(id, { data: on.data, closed: finish });
+	sup.send(JSON.stringify({ t: 'chan', op: 'open', id, kind, ...(size ?? {}) }));
+	if (kind === 'pty')
+		void event(l.ref, 'system', { message: `${person.name} abrió una terminal en esta computadora.` });
+	return {
+		write: (b: Buffer) => open && sup.send(JSON.stringify({ t: 'chan', op: 'in', id, data: b.toString('base64') })),
+		resize: (cols: number, rows: number) =>
+			open &&
+			sup.send(
+				JSON.stringify({
+					t: 'chan',
+					op: 'size',
+					id,
+					cols: Math.max(1, Math.min(500, Math.round(cols) || 80)),
+					rows: Math.max(1, Math.min(500, Math.round(rows) || 24)),
+				}),
+			),
+		close: () => {
+			if (open) sup.send(JSON.stringify({ t: 'chan', op: 'close', id }));
+			finish();
+		},
+	};
+}
+
+/** The owner answers an agents-mcp request: added to their Accesos and granted to the agent, or not. */
+export async function answerMcpRequest(personId: number, taskId: number, rid: string, accept: boolean) {
+	const t = await getTask(taskId);
+	const agent = t && (await row<{ person_id: number }>('select person_id from agents where id = $1', [t.agent_id]));
+	if (!t || agent?.person_id !== personId) throw new Error('Sólo el dueño del agente confirma esto.');
+	const all = (await events(taskId)).filter((e) => e.kind === 'mcp_request' && (e.data as { rid: string }).rid === rid);
+	const req = all[0]?.data as { name: string; url: string; description: string } | undefined;
+	if (!req) throw new Error('Ese pedido no existe.');
+	if (all.length > 1) throw new Error('Ese pedido ya se respondió.');
+	const ref = { id: t.id, person_id: t.person_id, agent_id: t.agent_id };
+	if (!accept) {
+		await event(ref, 'mcp_request', { ...req, rid, status: 'discarded' });
+		return;
+	}
+	await accesses.saveMcp(personId, {
+		name: req.name,
+		url: req.url,
+		description: req.description || 'Servidor MCP agregado desde la terminal',
+		transport: 'http',
+		headers: [],
+	});
+	const m = (await accesses.listMcp(personId)).find((x) => x.name === req.name)!;
+	await accesses.grantMcp(personId, m.id, [...new Set([...m.agents, t.agent_id])]);
+	await event(ref, 'mcp_request', { ...req, rid, status: 'added' });
+}
+
 /** Throws a readable error when the agent can't run now (model, keys, proxy, quota). */
 export async function checkRunnable(agent: AgentRef, opts: { initialization?: boolean } = {}) {
 	const providerName = agent.model.split('/')[0] as Provider;
 	if (providerName !== 'openai')
 		throw new Error('Este agente usa un modelo que ya no está en el catálogo: cámbialo por uno GPT.');
 	if (!(await proxyOf(agent.person_id)) && !(await hasKey(agent.person_id, providerName))) {
-		throw new Error('Falta tu CLIProxyAPI o tu API key de OpenAI (Ajustes).');
+		throw new Error('Falta tu CLIProxyAPI o tu API key de OpenAI (Configuración → API Key).');
 	}
 	await checkProxyModel(agent.person_id, agent.model);
 	if (
@@ -326,6 +460,7 @@ async function insertRun(
 			);
 			if (!current || current.model !== agent.model)
 				throw new Error('La configuración del agente cambió. Recarga y reintenta.');
+			if (status === 'queued' && (await maintenancePending(agent.id, c))) throw new ComputerUpdating();
 			const message = await row<{ conversation_id: number; run_id: number | null }>(
 				`select m.conversation_id,m.run_id from messages m join conversations c on c.id=m.conversation_id and c.agent_id=m.agent_id where m.id=$1 and m.agent_id=$2 for update of m`,
 				[messageId, agent.id],
@@ -396,6 +531,7 @@ export async function enqueue(
 	prompt: string,
 	opts: { admin: boolean; kind?: Kind; context?: unknown; sender?: string | null; personId?: number },
 ) {
+	if (await maintenancePending(agent.id)) throw new ComputerUpdating();
 	// A browser session calls no model: it only needs a free slot.
 	if (opts.kind === 'browser') {
 		if ((await quotaOf(agent.person_id)) < 1)
@@ -510,9 +646,8 @@ async function startSandbox(runId: number): Promise<{ deadline: number; minutes:
 	]))!;
 	try {
 		await removeContainers(runId);
-		// A browser session runs no harness: it takes today's image, the one that knows that mode,
-		// not the image the agent's harness was validated on.
-		if (t.kind === 'browser') t.definition = null;
+		// Browser/terminal/desktop use the same pinned image as tasks and subagents. A newer
+		// platform tag never upgrades just the owner's computer behind the approved revision.
 		if (t.definition && !t.definition.image) {
 			const { digest: _digest, harnessDigest: _harnessDigest, ...value } = t.definition;
 			value.image = await new DockerSandbox().imageId(s.sandboxImage);
@@ -557,7 +692,7 @@ async function startSandbox(runId: number): Promise<{ deadline: number; minutes:
 		if (/No such image/i.test((err as Error).message) && t.definition?.image) {
 			return {
 				failed:
-					'No se pudo crear la computadora: la imagen con la que se validó este agente ya no existe en el servidor. Vuelve a validar y aprobar su configuración en Automejora.',
+					'No se pudo crear la computadora: la imagen aprobada ya no existe en el servidor. Usa Computadora → Versiones para validar y actualizar su imagen.',
 			};
 		}
 		return { failed: 'No se pudo crear la computadora.' };
@@ -567,18 +702,31 @@ async function startSandbox(runId: number): Promise<{ deadline: number; minutes:
 }
 
 /**
- * Keeps on the sandbox host the image each agent was validated on, and today's: a prune would otherwise
+ * Keeps on the sandbox host each agent's approved image, its previous distinct image and today's: a prune would otherwise
  * delete them and its agents would refuse to run until revalidated (Radar Dev and the PR reviewer in dev,
  * 2-nov-2026). Never throws: a missing image is skipped (it is already gone).
  */
+export async function pinnedImages() {
+	return (
+		await rows<{ image: string }>(
+			`select distinct image from (
+				select harness_image as image from agents where deleted_at is null
+				union all
+				select target->>'imageId' as image from computer_update_jobs where status in ('queued','preparing','running')
+				union all
+				select previous.image from agents a cross join lateral (
+					select image from agent_revisions where agent_id=a.id and image is distinct from a.harness_image
+					and revision < a.config_revision order by revision desc limit 1
+				) previous where a.deleted_at is null
+			) pinned where image ~ '^sha256:[a-f0-9]{64}$'`,
+		)
+	).map((r) => r.image);
+}
+
 export async function keepPinnedImages() {
 	if (process.env.AGENTS_KEEP_IMAGES === '0') return;
 	const docker = new DockerSandbox();
-	const images = (
-		await rows<{ image: string }>(
-			"select distinct harness_image as image from agents where deleted_at is null and harness_image ~ '^sha256:[a-f0-9]{64}$'",
-		)
-	).map((r) => r.image);
+	const images = await pinnedImages();
 	try {
 		images.push(await docker.imageId(settings().sandboxImage));
 	} catch {
@@ -767,12 +915,20 @@ export async function attach(cred: { token?: string; session?: string }, sup: Su
 		// Every message that joined while the run waited goes into its first prompt.
 		const { prompt, files } = await startPrompt(t.id);
 		// The owner's granted keys and MCP servers (#24): secrets as placeholders the egress proxy swaps;
-		// the agent's own leftover secrets win. A browser session only signs a server in: no secrets.
-		const work = run.kind !== 'browser';
+		// the agent's own leftover secrets win. A browser session gets them too: it is also the owner's own
+		// computer session, whose terminal tries them (agents-config check, #27); no agent runs in it.
+		const work = true;
 		const proxy = accesses.proxyConfig();
 		const proxyToken = work && proxy ? await accesses.issueProxyToken(t.id) : null;
 		const access = await accesses.forRun(t.agent_id, proxyToken, work ? await secrets.forRun(t.agent_id) : {});
-		const granted = await accesses.grantedTo(t.agent_id);
+		const given = await accesses.grantedTo(t.agent_id);
+		const sites = await grantedNames(t.agent_id);
+		const missing = work ? access.undelivered : [];
+		const granted = {
+			keys: given.keys.filter((k) => !missing.includes(k.name)),
+			mcp: given.mcp.filter((m) => !missing.includes(m.name)),
+			missing,
+		};
 		const ownMcp = new Set((harness.mcp ?? []).map((s) => s.name));
 		const logouts = await accesses.pendingLogouts(t.agent_id);
 		// A harness server with that name keeps its session: only the granted one went away.
@@ -788,12 +944,33 @@ export async function attach(cred: { token?: string; session?: string }, sup: Su
 				harnessDigest: run.definition?.harnessDigest,
 				prompt,
 				files,
-				system: withHarnessPrompt(systemPrompt(agent, await grantedNames(t.agent_id), granted), harness),
+				system: withHarnessPrompt(systemPrompt(agent, sites, granted), harness),
+				// What the web has for this run, readable on the computer (~/config, #27): names, never values.
+				config: {
+					name: agent.name,
+					role: agent.role,
+					model: t.model,
+					revision: run.definition?.revision ?? null,
+					digest: run.definition?.digest ?? null,
+					harnessDigest: run.definition?.harnessDigest ?? null,
+					image: run.definition?.image ?? null,
+					keys: given.keys.map((k) => ({ ...k, delivered: !missing.includes(k.name) })),
+					mcp: given.mcp.map((m) => ({ ...m, delivered: !missing.includes(m.name) })),
+					sites,
+				},
 				blockedWaitMs: s.blockedWaitMinutes * 60_000,
 				piSession: conv.pi_session_id,
+				// The owner's `agents-pi` in a computer session continues the agent's main chat (#27).
+				mainPiSession: (
+					await row<{ pi_session_id: string }>(
+						'select pi_session_id from conversations where agent_id = $1 and is_default',
+						[t.agent_id],
+					)
+				)?.pi_session_id,
 				// The agent's credentials go only to its own work; a browser session may sign an MCP server in.
 				secrets: work ? access.env : {},
-				grantedMcp: access.grantedMcp,
+				grantedMcp: access.grantedMcp.filter((m) => !missing.includes(m.name)),
+				undelivered: missing,
 				proxy: proxyToken && proxy ? { url: accesses.proxyUrlFor(proxyToken), ca: proxy.ca } : undefined,
 				mcpLogouts: logouts.filter((l) => !ownMcp.has(l.server)),
 				mcpLogin:
@@ -868,6 +1045,15 @@ function onSupervisor(l: Live, raw: string) {
 		l.takeover = !!msg.takeover;
 		return;
 	}
+	// The owner's terminal and desktop (#27): bytes, at typing and screen rate, outside the event chain.
+	if (msg.t === 'chan_out') {
+		channels.get(String(msg.id))?.data(Buffer.from(String(msg.data ?? ''), 'base64'));
+		return;
+	}
+	if (msg.t === 'chan_closed') {
+		channels.get(String(msg.id))?.closed();
+		return;
+	}
 	if (msg.t === 'collected') {
 		// After the files queued before it, so they are saved by then.
 		serial(l, async () => l.collected?.());
@@ -899,6 +1085,11 @@ function onSupervisor(l: Live, raw: string) {
 				await event(ref, 'harness', { digest: msg.digest, tools: msg.tools, skills: msg.skills, plugins: msg.plugins });
 				break;
 			}
+			case 'access_check': {
+				const t = await getTask(ref.id);
+				if (t?.kind === 'initialize') await event(ref, 'access_check', accessCheck(msg));
+				break;
+			}
 			case 'initialization': {
 				const t = await getTask(ref.id);
 				if (t?.kind === 'initialize' && ['workspace', 'tools', 'browser'].includes(msg.step))
@@ -923,10 +1114,8 @@ function onSupervisor(l: Live, raw: string) {
 					});
 					break;
 				}
-				await exec('update runs set answer=$2 where id=$1', [
-					ref.id,
-					'Entorno inicializado: contrato guardado, memoria preparada, herramientas disponibles y Chrome comprobado. Listo para recibir tareas.',
-				]);
+				const check = (await events(ref.id)).find((e) => e.kind === 'access_check')?.data as AccessCheck | undefined;
+				await exec('update runs set answer=$2 where id=$1', [ref.id, initAnswer(check)]);
 				await signalEnd(ref.id, { status: 'done', reason: null });
 				break;
 			}
@@ -970,6 +1159,25 @@ function onSupervisor(l: Live, raw: string) {
 				l.sup?.send(JSON.stringify({ t: 'cred_res', id: msg.id, ...reply }));
 				break;
 			}
+			case 'self_request': {
+				let result;
+				try {
+					const request = msg.request;
+					if (!request || typeof request !== 'object') throw new Error('Petición inválida.');
+					result =
+						request.action === 'install_begin'
+							? await installation(ref.id, String(request.id))
+							: request.action === 'install_result'
+								? await installationResult(ref.id, String(request.id), request.ok === true)
+								: await agentRequest(ref.id, request);
+				} catch {
+					result = {
+						error: 'No se autorizó o no se pudo validar la operación. Revisa la propuesta y la configuración vigente.',
+					};
+				}
+				l.sup?.send(JSON.stringify({ t: 'self_result', id: msg.id, result }));
+				break;
+			}
 			case 'notify': {
 				// whatsapp_notify: the agent tells its owner's contacts something, as its contract says.
 				const reply = await whatsapp
@@ -977,6 +1185,37 @@ function onSupervisor(l: Live, raw: string) {
 					.catch((err) => ({ ok: false, error: (err as Error).message }));
 				await event(ref, 'system', { message: whatsapp.noticeLine(reply) });
 				l.sup?.send(JSON.stringify({ t: 'notify_res', id: msg.id, ...reply }));
+				break;
+			}
+			case 'mcp_request': {
+				// agents-mcp add: kept as an event the owner confirms in the web; nothing is registered yet.
+				const name = String(msg.name ?? '').trim(),
+					url = String(msg.url ?? '').trim();
+				let error = '';
+				try {
+					validateMcpServer({
+						name,
+						description: String(msg.description ?? '').trim() || 'Servidor MCP agregado desde la terminal',
+						transport: 'http',
+						url,
+						command: null,
+						args: [],
+						headers: [],
+						env: [],
+						oauth: false,
+					});
+				} catch (err) {
+					error = (err as Error).message.replace(/^Harness: /, '');
+				}
+				if (!error)
+					await event(ref, 'mcp_request', {
+						rid: randomUUID(),
+						name,
+						url,
+						description: String(msg.description ?? '').slice(0, 300),
+						status: 'pending',
+					});
+				l.sup?.send(JSON.stringify({ t: 'mcp_request_done', id: msg.id, ok: !error, ...(error ? { error } : {}) }));
 				break;
 			}
 			case 'note':
@@ -1127,11 +1366,21 @@ async function onPi(l: Live, ev: any) {
 			break;
 		}
 		case 'tool_execution_start':
-			await event(ref, 'tool', { id: ev.toolCallId, name: ev.toolName, summary: summarize(ev.toolName, ev.args) });
+			await event(ref, 'tool', {
+				id: ev.toolCallId,
+				name: ev.toolName,
+				summary:
+					ev.toolName === 'self_maintenance'
+						? 'Diagnóstico/propuesta privados del dueño'
+						: summarize(ev.toolName, ev.args),
+			});
 			await setState(ref.id, toolState(ev.toolName, ev.args));
 			break;
 		case 'tool_execution_end': {
-			const out = textOf(ev.result);
+			const out =
+				ev.toolName === 'self_maintenance'
+					? 'Operación privada de mantenimiento; consulta la tarjeta del dueño.'
+					: textOf(ev.result);
 			await event(ref, 'tool_end', {
 				id: ev.toolCallId,
 				name: ev.toolName,
@@ -1146,7 +1395,13 @@ async function onPi(l: Live, ev: any) {
 			break;
 		case 'agent_settled': {
 			// A message queued while it worked starts the next turn of the same run.
-			if (!l.lastError && !ev.aborted && (await deliverQueued(l, 'prompt'))) break;
+			if (
+				!l.lastError &&
+				!ev.aborted &&
+				!(await maintenancePending(ref.agent_id)) &&
+				(await deliverQueued(l, 'prompt'))
+			)
+				break;
 			if (l.lastError)
 				await signalEnd(ref.id, {
 					status: 'error',

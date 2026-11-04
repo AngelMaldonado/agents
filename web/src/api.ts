@@ -181,9 +181,17 @@ export type Design = {
 	progress?: DesignProgress | null;
 	initialization: {
 		task: Task | null;
+		/** What it proved: CLI tools installed, MCP servers that answered, keys in its environment. */
+		check: AccessCheck | null;
 		error: string | null;
 		steps: { id: string; label: string; done: boolean }[];
 	} | null;
+};
+export type AccessCheck = {
+	tools: { ok: boolean; names: string[]; detail?: string };
+	mcp: { name: string; ok: boolean | null; tools?: number; detail?: string }[];
+	keys: string[];
+	undelivered: string[];
 };
 export type BrowserSnapshot = { jpeg: string; url: string; captured_at: number };
 export type TaskEvent = { id: number; at: number; kind: string; data: any };

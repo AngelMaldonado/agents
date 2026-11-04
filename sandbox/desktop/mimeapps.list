@@ -1,0 +1,7 @@
+# The desktop's default apps (#27): Markdown and plain text open in the editor from the file manager.
+[Default Applications]
+text/markdown=org.xfce.mousepad.desktop
+text/x-markdown=org.xfce.mousepad.desktop
+text/plain=org.xfce.mousepad.desktop
+text/csv=org.xfce.mousepad.desktop
+application/json=org.xfce.mousepad.desktop

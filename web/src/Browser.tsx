@@ -1,6 +1,6 @@
 // Read-only, except during a takeover: then the owner's mouse, wheel and keyboard on the live view
 // go to the agent's Chrome (agent-browser's stream format, in the page's CSS pixels).
-import { useEffect, useLayoutEffect, useRef, useState, type KeyboardEvent, type PointerEvent } from 'react';
+import { useEffect, useRef, useState, type KeyboardEvent, type PointerEvent } from 'react';
 import { ArrowLeft, ArrowRight, RotateCw } from 'lucide-react';
 import { sendInput, useFrame } from './live';
 import type { BrowserSnapshot } from './api';
@@ -65,27 +65,7 @@ export function Browser({
 		bar = useRef<HTMLDivElement>(null),
 		view = useRef<HTMLDivElement>(null),
 		image = useRef<HTMLImageElement>(null);
-	const [imageAspect, setImageAspect] = useState({ taskId, ratio: 16 / 9 });
-	const ratio = imageAspect.taskId === taskId && jpeg ? imageAspect.ratio : 16 / 9;
-	const [fitWidth, setFitWidth] = useState<number>();
 	const driving = control && live && !historical;
-	useLayoutEffect(() => {
-		if (!fit) return;
-		const container = element.current?.parentElement;
-		if (!container || !bar.current) return;
-		const measure = () => {
-			if (!container.clientWidth || !container.clientHeight) return;
-			const frameStyle = getComputedStyle(element.current!);
-			const border = parseFloat(frameStyle.borderTopWidth) + parseFloat(frameStyle.borderBottomWidth);
-			const bodyHeight = Math.max(0, container.clientHeight - bar.current!.offsetHeight - border);
-			setFitWidth(Math.min(container.clientWidth, bodyHeight * ratio + border));
-		};
-		measure();
-		const observer = new ResizeObserver(measure);
-		observer.observe(container);
-		observer.observe(bar.current);
-		return () => observer.disconnect();
-	}, [fit, ratio]);
 
 	// ---------- takeover input ----------
 	const lastMove = useRef(0);
@@ -181,7 +161,6 @@ export function Browser({
 		<div
 			ref={element}
 			className={`browser ${compact ? 'compact' : ''} ${fit ? 'fitted' : ''} ${driving ? 'driving' : ''}`}
-			style={fit ? { width: fitWidth } : undefined}
 		>
 			<div ref={bar} className="browser-bar">
 				{driving && onNavigate ? (
@@ -266,7 +245,6 @@ export function Browser({
 			<div
 				ref={view}
 				className="browser-view"
-				style={fit ? { aspectRatio: ratio } : undefined}
 				tabIndex={driving ? 0 : undefined}
 				aria-label={driving ? 'Navegador del agente bajo tu control: el teclado y el mouse van a la página' : undefined}
 				onPointerDown={
@@ -306,14 +284,6 @@ export function Browser({
 							src={`data:image/jpeg;base64,${jpeg}`}
 							alt={historical ? `Captura del trabajo #${taskId}` : live ? 'Pantalla del agente' : 'Última pantalla'}
 							draggable={false}
-							onLoad={(e) => {
-								const img = e.currentTarget;
-								if (img.naturalWidth > 0 && img.naturalHeight > 0)
-									setImageAspect((previous) => {
-										const ratio = img.naturalWidth / img.naturalHeight;
-										return previous.taskId === taskId && previous.ratio === ratio ? previous : { taskId, ratio };
-									});
-							}}
 						/>
 						{driving && ripple && (
 							<span

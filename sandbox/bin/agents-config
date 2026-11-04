@@ -1,0 +1,99 @@
+#!/usr/bin/env python3
+# What the web (Postgres) has for this agent and whether it works (#27). Usage:
+#   agents-config          what is configured (from ~/config, written at the start of each task)
+#   agents-config check    try it now: each MCP answers tools/list, each key reaches its domain through
+#                          the egress proxy, each CLI is installed and runs
+import json
+import os
+import sys
+import urllib.request
+
+HOME = os.environ.get("HOME", "/home/agent")
+CONFIG = os.path.join(HOME, "config")
+G, Y, R, D, B, X = "\033[32m", "\033[33m", "\033[31m", "\033[2m", "\033[1m", "\033[0m"
+OK, BAD, WAIT = f"{G}✓{X}", f"{R}✗{X}", f"{Y}…{X}"
+
+
+def show():
+    for name in ("agente.md", "accesos.md", "cli.md"):
+        path = os.path.join(CONFIG, name)
+        if not os.path.exists(path):
+            print("Todavía no hay ~/config: la computadora no ha arrancado una tarea o sesión.")
+            return
+        print(open(path).read())
+    print(f"{D}Rol: ~/config/rol.md · prompt completo: ~/config/prompt.md · harness: ~/config/harness.json{X}")
+    print(f"{D}Para probar que funciona: agents-config check{X}")
+
+
+def check():
+    print(f"{B}Comprobando lo configurado en la web…{X} (MCP, API Keys y CLI; tarda unos segundos)\n")
+    req = urllib.request.Request("http://127.0.0.1:7777/check", data=b"{}", method="POST")
+    try:
+        r = json.load(urllib.request.urlopen(req, timeout=300))
+    except Exception as e:  # noqa: BLE001
+        print(f"{BAD} No se pudo preguntar a la computadora: {e}")
+        sys.exit(1)
+    if r.get("error"):
+        print(f"{BAD} {r['error']}")
+        sys.exit(1)
+    fails = 0
+
+    print(f"{B}Servidores MCP{X}")
+    if not r.get("mcp"):
+        print(f"  {D}ninguno{X}")
+    for m in r.get("mcp", []):
+        if m.get("ok"):
+            print(f"  {OK} {m['name']}: conectado, {m.get('tools', 0)} herramientas")
+        elif m.get("ok") is None:
+            print(f"  {WAIT} {m['name']}: {m.get('detail', 'pendiente')}")
+        else:
+            fails += 1
+            print(f"  {BAD} {m['name']}: {m.get('detail', 'no conectó')}")
+
+    print(f"\n{B}API Keys{X}")
+    if not r.get("keys"):
+        print(f"  {D}ninguna concedida{X}")
+    for k in r.get("keys", []):
+        if not k.get("delivered"):
+            fails += 1
+            print(f"  {BAD} {k['name']}: concedida pero no entregada (falta el proxy de salida)")
+        elif not k.get("inEnv"):
+            fails += 1
+            print(f"  {BAD} {k['name']}: no está en el entorno")
+        elif k.get("real"):
+            print(f"  {OK} {k['name']}: en el entorno con su valor real")
+        elif "proxy" in k:
+            mark = OK if k.get("proxyOk") else BAD
+            fails += 0 if k.get("proxyOk") else 1
+            print(f"  {mark} {k['name']}: marcador en el entorno; {k['proxy']}")
+        else:
+            print(f"  {OK} {k['name']}: marcador en el entorno ({', '.join(k.get('domains', [])) or 'sin dominios'})")
+    if r.get("keys"):
+        print(f"  {D}El proxy pone la key sólo hacia sus dominios; que el servicio la acepte lo dice tu CLI o tu script.{X}")
+
+    print(f"\n{B}Herramientas CLI{X}")
+    tools = r.get("tools", {})
+    if tools.get("ok") is False:
+        fails += 1
+        print(f"  {BAD} instalación: {tools.get('detail', 'falló')}")
+    if not r.get("cli"):
+        print(f"  {D}ninguna aprobada{X}")
+    for c in r.get("cli", []):
+        mark = OK if c.get("ok") else BAD
+        fails += 0 if c.get("ok") else 1
+        print(f"  {mark} {c['name']}: {c.get('detail', '')}")
+
+    print()
+    print(f"{G}{B}Todo funciona.{X}" if not fails else f"{R}{B}{fails} cosa(s) por revisar.{X}")
+    sys.exit(0 if not fails else 1)
+
+
+if __name__ == "__main__":
+    cmd = sys.argv[1] if len(sys.argv) > 1 else "show"
+    if cmd == "check":
+        check()
+    elif cmd == "show":
+        show()
+    else:
+        print("Uso: agents-config [check]", file=sys.stderr)
+        sys.exit(2)

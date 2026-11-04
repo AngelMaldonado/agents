@@ -1,0 +1,3 @@
+# The desktop's GTK2 apps (pcmanfm, #27): the icon theme the image already has.
+gtk-icon-theme-name = "Adwaita"
+gtk-font-name = "Sans 10"

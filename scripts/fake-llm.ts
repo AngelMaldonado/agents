@@ -9,11 +9,12 @@
 //   [texto]       answers without tools or files    [lento]       ~20 s of work (to get messages mid-run)
 //   [proxy]       curls httpbin.org with $TEST_KEY (the egress proxy of API keys, #24)
 //   [adjunto]     reads the attachments in ~/work/in/
+//   [diag]        what the agent really has: tools pi offers (mcp__… too), key variables, CLI PATH, mcp.json
 //   "anota el número N"  writes N to ~/work/nota.txt
 //   "qué número anotaste"  reads it back and quotes what the conversation says
 //   anything else: visits a page and leaves a screenshot and a summary in ~/work/out/
 type Step = { text: string | ((ctx: Ctx) => string) } | { bash: string | ((prompt: string) => string) };
-type Ctx = { history: string; lastOutput: string };
+type Ctx = { history: string; lastOutput: string; tools: string[] };
 
 const SITE = `mkdir -p ~/site && printf '%s' '<html><body><h1>Portal de prueba</h1><form action="/ok.html"><input id="u" name="u"><input id="p" name="p" type="password"><button>Entrar</button></form></body></html>' > ~/site/login.html && echo '<h1>Dentro del portal</h1>' > ~/site/ok.html && (cd ~/site && nohup python3 -m http.server 8000 >/dev/null 2>&1 &) && sleep 1 && echo listo`;
 
@@ -40,6 +41,16 @@ const SCRIPTS: { match: RegExp; steps: Step[] }[] = [
 				bash: 'echo "variable: ${TEST_KEY:0:4}…"; [ -n "$HTTPS_PROXY" ] && echo "con proxy"; curl -s https://httpbin.org/headers -H "Authorization: Bearer $TEST_KEY" | grep -i \'"authorization"\'',
 			},
 			{ text: (c) => `Resultado del proxy:\n\n\`\`\`\n${c.lastOutput.trim()}\n\`\`\`` },
+		],
+	},
+	{
+		// Granted keys, MCP servers and CLI tools (#24, Crear agente): names only, never a value.
+		match: /\[diag\]/,
+		steps: [
+			{
+				bash: 'echo "PATH: $PATH"; for v in $(env | cut -d= -f1 | grep -E "^[A-Z][A-Z0-9_]+$" | grep -vE "^(PATH|HOME|USER|SHELL|LANG|TZ|TERM|PWD|SHLVL|HOSTNAME|OLDPWD|DISPLAY|XAUTHORITY|_)$|^(AGENTS_|AGENT_BROWSER_|PI_|NODE_|NPM_|UV_|HTTP|NO_PROXY|SSL_|REQUESTS_|CURL_|GIT_|OPENAI_)" | sort); do eval "x=\\${$v}"; echo "env $v=${x:0:4}…"; done; ls "$HOME/state/tools/bin" "$HOME/state/tools/npm/node_modules/.bin" 2>&1 | tr "\\n" " "; echo; jq -c "{mcpServers: (.mcpServers // {} | keys)}" "$PI_CODING_AGENT_DIR/mcp.json" 2>&1',
+			},
+			{ text: (c) => `Diagnóstico:\n\n\`\`\`\n${c.lastOutput.trim()}\ntools: ${c.tools.join(' ')}\n\`\`\`` },
 		],
 	},
 	{
@@ -138,7 +149,7 @@ const textOf = (item: any): string =>
 const isUser = (item: any) => item?.role === 'user';
 const isSteer = (item: any) => textOf(item).includes('Steer de prueba');
 
-function plan(input: any[]) {
+function plan(input: any[], tools: string[] = []) {
 	// The run's prompt: the last user message that is not a test steer.
 	let at = -1;
 	for (let i = input.length - 1; i >= 0; i--)
@@ -157,6 +168,7 @@ function plan(input: any[]) {
 			.map(textOf)
 			.join('\n'),
 		lastOutput: String(results.at(-1)?.output ?? ''),
+		tools,
 	};
 	const steered =
 		since.some((i) => isUser(i) && isSteer(i)) &&
@@ -211,7 +223,10 @@ Bun.serve({
 		if (!req.url.endsWith('/v1/responses')) return new Response('not here', { status: 404 });
 		const body = await req.json();
 		const input: any[] = Array.isArray(body.input) ? body.input : [];
-		const { prompt, step, ctx, steered } = plan(input);
+		const tools = (Array.isArray(body.tools) ? body.tools : []).map((t: any) =>
+			String(t?.name ?? t?.function?.name ?? '?'),
+		);
+		const { prompt, step, ctx, steered } = plan(input, tools);
 		await Bun.sleep(1500); // look like thinking
 
 		const id = `resp_fake_${Date.now()}_${++seq}`;

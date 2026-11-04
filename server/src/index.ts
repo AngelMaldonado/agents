@@ -38,6 +38,11 @@ import * as inbox from './inbox';
 import * as monitor from './monitor';
 import * as whatsapp from './whatsapp';
 import * as aliases from './aliases';
+import * as transfers from './transfers';
+import * as imageUpdates from './image-updates';
+import * as computerUpdates from './computer-updates';
+import * as selfMaintenance from './self-maintenance';
+import { randomUUID } from 'node:crypto';
 import { createHash } from 'node:crypto';
 import * as cuby from './cuby-whatsapp';
 import * as secrets from './secrets';
@@ -57,6 +62,10 @@ await agents.loadShares();
 		console.log(`agent secrets -> person keys: ${moved.migrated} migrated, ${moved.conflicts} to resolve`);
 }
 await tasks.recover();
+await computerUpdates.recover();
+computerUpdates.startReconciler();
+await selfMaintenance.recoverRepairs();
+selfMaintenance.startRepairReconciler();
 tasks.startImageKeeper(); // a prune must not delete the images agents were validated on
 await inbox.startRouter();
 whatsapp.startSleeper(); // WhatsApp groups follow lists, shares and agents; «escribiendo…» while one works
@@ -518,6 +527,129 @@ app.delete('/api/agents/:id', async (c) => {
 	for (const s of await channels.schedules(a.id)) await channels.deleteSchedule(a.id, s.name);
 	void whatsapp.syncGroups(); // a group left without agents closes
 	return c.json({ ok: true });
+});
+
+// Jobs are private to their requester, including for admins. The DB record precedes durable dispatch.
+async function enqueueComputerUpdate(job: Awaited<ReturnType<typeof computerUpdates.request>>) {
+	await computerUpdates
+		.dispatch(job.id)
+		.catch((e) => console.warn('computer update queued for reconciliation:', (e as Error).message));
+	void tasks.keepPinnedImages();
+	return job;
+}
+app.get('/api/computer-updates', async (c) => {
+	c.header('Cache-Control', 'private, no-store');
+	return c.json(await computerUpdates.overview(c.get('me').id));
+});
+app.post('/api/computer-updates', async (c) => {
+	try {
+		return c.json(await enqueueComputerUpdate(await computerUpdates.request(c.get('me').id, await c.req.json())), 202);
+	} catch (err) {
+		return fail(c, err);
+	}
+});
+app.get('/api/computer-updates/:job', async (c) => {
+	try {
+		c.header('Cache-Control', 'private, no-store');
+		return c.json(await computerUpdates.get(c.req.param('job'), c.get('me').id));
+	} catch (err) {
+		return fail(c, err, 404);
+	}
+});
+app.post('/api/computer-updates/:job/cancel', async (c) => {
+	try {
+		return c.json(await computerUpdates.cancelPending(c.req.param('job'), c.get('me').id));
+	} catch (err) {
+		return fail(c, err);
+	}
+});
+app.post('/api/computer-updates/:job/retry', async (c) => {
+	try {
+		const input = await c.req.json();
+		return c.json(
+			await enqueueComputerUpdate(
+				await computerUpdates.retryFailed(c.req.param('job'), c.get('me').id, input?.requestId),
+			),
+			202,
+		);
+	} catch (err) {
+		return fail(c, err);
+	}
+});
+
+// Private repair data and decisions. Shared users and admins other than the owner cannot approve.
+app.get('/api/agents/:id/self-diagnosis', async (c) => {
+	if (!(await ownAgent(c))) return c.json({ error: 'Sólo el dueño revisa la configuración.' }, 403);
+	c.header('Cache-Control', 'private, no-store');
+	try {
+		return c.json(await selfMaintenance.diagnose(Number(c.req.param('id')), c.get('me').id));
+	} catch (err) {
+		return fail(c, err);
+	}
+});
+app.get('/api/self-repairs/:id', async (c) => {
+	c.header('Cache-Control', 'private, no-store');
+	try {
+		return c.json(await selfMaintenance.getRepair(c.req.param('id'), c.get('me').id));
+	} catch (err) {
+		return fail(c, err, 404);
+	}
+});
+app.post('/api/self-repairs/:id/decision', async (c) => {
+	try {
+		const input = await c.req.json();
+		if (typeof input.approve !== 'boolean') return c.json({ error: 'Elige autorizar o rechazar.' }, 400);
+		const repair = await selfMaintenance.decide(c.req.param('id'), c.get('me').id, input.approve);
+		return c.json(repair, 202);
+	} catch (err) {
+		return fail(c, err);
+	}
+});
+
+// Computer image and pi: only the owner may inspect/apply the platform's published target.
+app.get('/api/agents/:id/computer-update', async (c) => {
+	if (!(await ownAgent(c))) return c.json({ error: 'Sólo su dueño actualiza la computadora.' }, 403);
+	try {
+		c.header('Cache-Control', 'private, no-store');
+		return c.json(await imageUpdates.view(Number(c.req.param('id')), c.get('me').id));
+	} catch (err) {
+		return fail(c, err);
+	}
+});
+app.post('/api/agents/:id/computer-update', async (c) => {
+	if (!(await ownAgent(c))) return c.json({ error: 'Sólo su dueño actualiza la computadora.' }, 403);
+	try {
+		const input = await c.req.json();
+		const job = await computerUpdates.request(c.get('me').id, {
+			requestId: input?.requestId ?? randomUUID(),
+			imageId: input?.imageId,
+			agents: [{ id: Number(c.req.param('id')), revision: input?.revision }],
+			shutdown: input?.shutdown,
+		});
+		return c.json(await enqueueComputerUpdate(job), 202);
+	} catch (err) {
+		return fail(c, err);
+	}
+});
+
+// Giving it to someone else (transfers.ts): only its owner, with its computer off.
+app.post('/api/agents/:id/transfer', async (c) => {
+	const a = await ownAgent(c);
+	if (!a) return c.json({ error: 'Sólo su dueño lo transfiere.' }, 403);
+	const input = await c.req.json().catch(() => ({}));
+	if (input?.confirmName !== a.name)
+		return c.json({ error: 'Escribe el nombre exacto del agente para confirmar la transferencia.' }, 400);
+	const r = await transfers.transfer(a, input.to, c.get('me').id);
+	void whatsapp.syncGroups(); // its groups follow its new owner
+	return c.json(r);
+});
+app.post('/api/agents/:id/copy', async (c) => {
+	const a = await ownAgent(c);
+	if (!a) return c.json({ error: 'Sólo su dueño lo copia.' }, 403);
+	const input = await c.req.json().catch(() => ({}));
+	const r = await transfers.copy(a, input.to, c.get('me').id);
+	void whatsapp.syncGroups();
+	return c.json({ to: r.to, agentId: r.agent.id, name: r.agent.name, schedules: r.schedules });
 });
 
 app.get('/api/agents/:id/tasks', async (c) => {
@@ -1370,6 +1502,72 @@ app.get(
 		};
 	}),
 );
+
+// ---------- the owner's terminal and desktop on the agent's computer (#27) ----------
+// Only its owner (not people it is shared with, not an admin), only while the computer is on.
+// Terminal: text frames {t:'in',d} / {t:'size',cols,rows}; binary frames out. Desktop: raw RFB both ways.
+
+const channelRoute = (kind: 'pty' | 'vnc') =>
+	upgradeWebSocket((c) => {
+		const agentId = Number(c.req.param('id'));
+		const ready = (async () => {
+			const me = await people.whoIs(getCookie(c, people.COOKIE));
+			const a = me ? await agents.get(agentId) : null;
+			return me && a && a.person_id === me.id ? me : null;
+		})();
+		let ch: ReturnType<typeof tasks.openChannel> = null;
+		let closed = false;
+		// What the client sends right after connecting (its size, the first keys) waits for the channel.
+		const early: Parameters<typeof take>[0][] = [];
+		const take = (data: unknown) => {
+			if (!ch) return void (early.length < 256 && early.push(data));
+			if (kind === 'pty' && typeof data === 'string') {
+				let m: any;
+				try {
+					m = JSON.parse(data);
+				} catch {
+					return;
+				}
+				if (m.t === 'in' && typeof m.d === 'string') ch.write(Buffer.from(m.d.slice(0, 64 * 1024)));
+				else if (m.t === 'size') ch.resize(Number(m.cols), Number(m.rows));
+				return;
+			}
+			if (kind === 'vnc' && typeof data !== 'string') {
+				const d = data as ArrayBuffer | Uint8Array | Blob;
+				if (d instanceof Blob) void d.arrayBuffer().then((b) => ch?.write(Buffer.from(b)));
+				else ch.write(Buffer.from(d instanceof Uint8Array ? d : new Uint8Array(d)));
+			}
+		};
+		return {
+			onOpen(_e, ws) {
+				void ready.then((me) => {
+					if (closed) return;
+					if (!me) return ws.close(4403, 'Sólo el dueño del agente.');
+					ch = tasks.openChannel(agentId, me, kind, {
+						data: (b) => ws.send(new Uint8Array(b)),
+						closed: () => ws.close(1000, 'cerrado'),
+					});
+					if (!ch) return ws.close(4409, 'La computadora del agente está apagada.');
+					for (const d of early.splice(0)) take(d);
+				});
+			},
+			onMessage(e) {
+				take(e.data);
+			},
+			onClose() {
+				closed = true;
+				ch?.close();
+			},
+		};
+	});
+app.get('/api/agents/:id/terminal', channelRoute('pty'));
+app.get('/api/agents/:id/desktop', channelRoute('vnc'));
+
+app.post('/api/tasks/:id/mcp-requests/:rid', async (c) => {
+	const body = await c.req.json().catch(() => ({}));
+	await tasks.answerMcpRequest(c.get('me').id, Number(c.req.param('id')), c.req.param('rid'), body.accept === true);
+	return c.json({ ok: true });
+});
 
 // ---------- the web app (built) ----------
 

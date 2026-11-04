@@ -79,6 +79,12 @@ export function publish(ownerId: number, msg: Record<string, unknown>) {
 	for (const v of viewers) if (canSee(v, ownerId, agentId)) v.send(data);
 }
 
+/** Private maintenance progress: neither admins nor shared-agent viewers inherit it. */
+export function toPerson(personId: number, msg: Record<string, unknown>) {
+	const data = JSON.stringify(msg);
+	for (const v of viewers) if (v.person.id === personId) v.send(data);
+}
+
 /** agente: only those with the agent's view open. */
 export function toWatchers(agentId: number, ownerId: number, msg: Record<string, unknown>) {
 	const data = JSON.stringify(msg);

@@ -16,6 +16,7 @@ COPY web/package.json web/
 RUN LEFTHOOK=0 bun install --frozen-lockfile
 COPY server server
 COPY sandbox/harness.ts sandbox/
+COPY shared shared
 COPY web web
 RUN cd web && bun --bun vite build
 
@@ -27,6 +28,7 @@ COPY web/package.json web/
 RUN LEFTHOOK=0 bun install --production --frozen-lockfile
 COPY server server
 COPY sandbox/harness.ts sandbox/
+COPY shared shared
 COPY --from=build /app/web/dist web/dist
 COPY --from=whatsapp /agents-whatsapp /usr/local/bin/agents-whatsapp
 # production: Bun serves plain errors, not its development pages with stack traces.

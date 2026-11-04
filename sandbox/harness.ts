@@ -21,6 +21,12 @@ export const TOOLS = [
 		description: 'Usar sólo accesos concedidos por el dueño; no revela contraseñas.',
 	},
 	{
+		id: 'subagents',
+		name: 'Subagentes',
+		description:
+			'Delegar subtareas a subagentes con contexto aislado, en paralelo o en cadena. Heredan las herramientas y restricciones del agente, sin poder crear más subagentes; comparten su computadora (también el navegador) y el costo de la tarea.',
+	},
+	{
 		id: 'whatsapp_notify',
 		name: 'Avisar por WhatsApp',
 		description:

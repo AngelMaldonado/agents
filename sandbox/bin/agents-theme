@@ -1,0 +1,265 @@
+#!/usr/bin/env python3
+# The owner's desktop themes (#27): background, bar, «Inicio» menu, right-click menu and window
+# decorations, all from one table. The chosen one is kept in the agent's volume (~/state), so it
+# is there at the next run. Usage: agents-theme init | bg | set <id> | list
+import json
+import os
+import subprocess
+import sys
+
+STATE = os.path.join(os.environ.get("HOME", "/home/agent"), "state", "desktop-theme")
+OUT = "/tmp/agents-desktop"
+ICONS = "/usr/share/icons/Adwaita/24x24/legacy"
+
+# bg: one color (solid) or two (vertical gradient). bar/fg/active: the bar and its buttons;
+# menu/sel/selfg/border: both menus; ob: an openbox theme the image has; r: corner radius.
+THEMES = {
+    "basico": dict(name="Básico", bg=["#1b2230"], bar="#11151c", fg="#c9d1d9", active="#2a3342",
+                   menu="#11151c", sel="#2a3342", selfg="#ffffff", border="#2a3342", ob="Onyx", r=8),
+    "claro": dict(name="Claro", bg=["#e8ecf2"], bar="#f7f9fc", fg="#1f2937", active="#d5dde8",
+                  menu="#ffffff", sel="#d5dde8", selfg="#111827", border="#c5cfdc", ob="Clearlooks", r=10),
+    "synthwave": dict(name="Synthwave", bg=["#2b0a3d", "#ff2a6d"], bar="#1a0526", fg="#05d9e8",
+                      active="#ff2a6d", menu="#1a0526", sel="#ff2a6d", selfg="#ffffff", border="#05d9e8",
+                      ob="Nightmare", r=14),
+    "matrix": dict(name="Matrix", bg=["#000000"], bar="#000a00", fg="#00ff41", active="#003b00",
+                   menu="#000a00", sel="#00ff41", selfg="#000000", border="#00ff41", ob="Nightmare-02", r=6),
+    "oceano": dict(name="Océano", bg=["#021b38", "#0e7c86"], bar="#021b38", fg="#bff7ff",
+                   active="#0e7c86", menu="#032a4f", sel="#0e7c86", selfg="#ffffff", border="#4fd1c5",
+                   ob="Natura", r=16),
+    "atardecer": dict(name="Atardecer", bg=["#ff7e5f", "#6a0572"], bar="#3d0a4f", fg="#ffe3c2",
+                      active="#ff7e5f", menu="#3d0a4f", sel="#ff7e5f", selfg="#2b0033", border="#feb47b",
+                      ob="Orang", r=18),
+    "caramelo": dict(name="Caramelo", bg=["#ffd1dc", "#b8f2e6"], bar="#fff0f5", fg="#6b2d5c",
+                     active="#ffb3c6", menu="#fff7fb", sel="#ffb3c6", selfg="#4a1040", border="#ff8fab",
+                     ob="Clearlooks-Olive", r=20),
+    "lava": dict(name="Lava", bg=["#120000", "#ff3c00"], bar="#1a0000", fg="#ffb199", active="#ff3c00",
+                 menu="#1a0000", sel="#ff3c00", selfg="#ffffff", border="#ff7b00", ob="Syscrash", r=12),
+    "bosque": dict(name="Bosque", bg=["#0b2e13", "#3a7d44"], bar="#0b2010", fg="#d8f3dc", active="#2d6a4f",
+                   menu="#0b2010", sel="#52b788", selfg="#081c15", border="#52b788", ob="Natura", r=14),
+    "retro": dict(name="Retro", bg=["#008080"], bar="#c0c0c0", fg="#000000", active="#a0a0a0",
+                  menu="#c0c0c0", sel="#000080", selfg="#ffffff", border="#808080", ob="Raleigh", r=4),
+}
+
+ITEMS = [  # label, command, icon
+    ("Terminal", "agents-xterm -T Terminal", "utilities-terminal"),
+    ("Navegador", "wmctrl -a Chrom", "web-browser"),
+    ("Archivos (~/work)", "pcmanfm /home/agent/work", "system-file-manager"),
+    ("Editor de texto", "mousepad", "accessories-text-editor"),
+    ("Configuración del agente", "pcmanfm /home/agent/config", "document-properties"),
+    ("Comprobar accesos",
+     "agents-xterm -T 'Comprobar accesos' -e bash -c 'agents-config check; read -rp \"Enter para cerrar\" _'",
+     "emblem-default"),
+    ("Configuración de pi", "pcmanfm /home/agent/state/pi-agent", "/opt/agents/desktop/icons/pi-brain.svg"),
+    ("Monitor", "agents-xterm -T Monitor -e htop", "emblem-system"),
+]
+
+
+def icon(name):
+    if name.startswith("/"):  # our own icons (the brain of «Configuración de pi»)
+        return name if os.path.exists(name) else ""
+    path = os.path.join(ICONS, name + ".png")
+    return path if os.path.exists(path) else ""
+
+
+def current():
+    try:
+        tid = open(STATE).read().strip()
+    except OSError:
+        tid = "basico"
+    return tid if tid in THEMES else "basico"
+
+
+def write(name, text):
+    with open(os.path.join(OUT, name), "w") as f:
+        f.write(text)
+
+
+def jg_csv(tid):
+    lines = [f"{label},{cmd},{icon(ic)}" for label, cmd, ic in ITEMS]
+    lines += ["^sep()", f"Tema,^checkout(temas),{icon('preferences-desktop-theme')}", "", "^tag(temas)"]
+    for k, t in THEMES.items():
+        mark = "✓ " if k == tid else "    "
+        lines.append(f"{mark}{t['name']},agents-theme set {k},{icon('preferences-desktop-wallpaper')}")
+    return "\n".join(lines) + "\n"
+
+
+def jg_rc(t):
+    return f"""stay_alive = 0
+position_mode = pointer
+menu_width = 220
+menu_padding_top = 8
+menu_padding_bottom = 8
+menu_padding_left = 8
+menu_padding_right = 8
+menu_radius = {t['r']}
+menu_border = 1
+item_height = 30
+item_radius = {max(4, t['r'] // 2)}
+icon_size = 20
+icon_text_spacing = 10
+font = Sans 10
+color_menu_bg = {t['menu']} 100
+color_menu_border = {t['border']} 100
+color_norm_fg = {t['fg']} 100
+color_sel_bg = {t['sel']} 100
+color_sel_fg = {t['selfg']} 100
+color_sep_fg = {t['border']} 60
+"""
+
+
+def tint2(t):
+    r = t["r"]
+    return f"""# Generated by agents-theme ({t['name']}).
+rounded = {r}
+border_width = 1
+background_color = {t['bar']} 100
+border_color = {t['border']} 70
+
+rounded = {max(4, r // 2)}
+border_width = 0
+background_color = {t['active']} 100
+border_color = {t['active']} 0
+
+rounded = {max(4, r // 2)}
+border_width = 0
+background_color = {t['bar']} 0
+border_color = {t['bar']} 0
+
+panel_items = PTC
+panel_size = 98% 34
+panel_margin = 0 6
+panel_padding = 8 4 8
+panel_background_id = 1
+panel_position = bottom center horizontal
+panel_layer = top
+wm_menu = 1
+panel_dock = 0
+autohide = 0
+
+taskbar_mode = single_desktop
+taskbar_padding = 0 0 6
+taskbar_background_id = 0
+taskbar_active_background_id = 0
+
+task_text = 1
+task_icon = 1
+task_centered = 0
+task_maximum_size = 220 26
+task_padding = 8 2 6
+task_font = Sans 9
+task_font_color = {t['fg']} 100
+task_background_id = 3
+task_active_background_id = 2
+task_active_font_color = {t['selfg'] if t['active'] == t['sel'] else t['fg']} 100
+
+time1_format = %H:%M
+time1_font = Sans Bold 9
+clock_font_color = {t['fg']} 100
+clock_padding = 6 0
+clock_background_id = 0
+
+button = new
+button_icon = {icon('user-home') or icon('emblem-system')}
+button_text = Inicio
+button_lclick_command = jgmenu --config-file={OUT}/jgmenurc --csv-file={OUT}/start.csv
+button_padding = 10 3 6
+button_background_id = 2
+button_font = Sans Bold 9
+button_font_color = {t['selfg'] if t['active'] == t['sel'] else t['fg']} 100
+"""
+
+
+def ob_menu(tid):
+    def item(label, cmd, ic):
+        cmd = cmd.replace("&", "&amp;")
+        return f'    <item label="{label}" icon="{icon(ic)}"><action name="Execute"><command>{cmd}</command></action></item>'
+
+    themes = "\n".join(
+        item(("✓ " if k == tid else "") + t["name"], f"agents-theme set {k}", "preferences-desktop-wallpaper")
+        for k, t in THEMES.items()
+    )
+    items = "\n".join(item(*i) for i in ITEMS)
+    return f"""<?xml version="1.0" encoding="UTF-8"?>
+<openbox_menu xmlns="http://openbox.org/3.4/menu">
+  <menu id="temas" label="Tema" icon="{icon('preferences-desktop-theme')}">
+{themes}
+  </menu>
+  <menu id="root-menu" label="Computadora">
+{items}
+    <separator />
+    <menu id="temas" />
+  </menu>
+</openbox_menu>
+"""
+
+
+def ob_rc(t):
+    rc = open("/etc/xdg/openbox/rc.xml").read()
+    start = rc.index("<theme>")
+    name_at = rc.index("<name>", start)
+    end = rc.index("</name>", name_at)
+    rc = rc[: name_at + len("<name>")] + t["ob"] + rc[end:]
+    return rc.replace("<file>menu.xml</file>", f"<file>{OUT}/menu.xml</file>")
+
+
+LIGHT = {"claro", "caramelo", "retro"}
+
+
+def editor(tid):
+    # mousepad's settings (GSETTINGS_BACKEND=keyfile: there is no dbus here): Markdown highlighted in a
+    # color scheme that suits the theme, with line numbers.
+    home = os.environ.get("HOME", "/home/agent")
+    path = os.path.join(home, ".config", "glib-2.0", "settings")
+    os.makedirs(path, exist_ok=True)
+    scheme = "solarized-light" if tid in LIGHT else "oblivion"
+    with open(os.path.join(path, "keyfile"), "w") as f:
+        f.write(
+            "[org/xfce/mousepad/preferences/view]\n"
+            f"color-scheme='{scheme}'\nshow-line-numbers=true\nhighlight-current-line=true\nword-wrap=true\n"
+        )
+
+
+def generate(tid):
+    os.makedirs(OUT, exist_ok=True)
+    t = THEMES[tid]
+    editor(tid)
+    write("jgmenurc", jg_rc(t))
+    write("start.csv", jg_csv(tid))
+    write("tint2rc", tint2(t))
+    write("menu.xml", ob_menu(tid))
+    write("rc.xml", ob_rc(t))
+
+
+def background(tid):
+    bg = THEMES[tid]["bg"]
+    args = ["hsetroot", "-solid", bg[0]] if len(bg) == 1 else ["hsetroot", "-add", bg[1], "-add", bg[0], "-gradient", "0"]
+    subprocess.run(args, check=False)
+
+
+def main():
+    cmd = sys.argv[1] if len(sys.argv) > 1 else "list"
+    if cmd == "list":
+        tid = current()
+        for k, t in THEMES.items():
+            print(("* " if k == tid else "  ") + f"{k:<10} {t['name']}")
+    elif cmd == "init":
+        generate(current())
+    elif cmd == "bg":
+        background(current())
+    elif cmd == "set" and len(sys.argv) > 2 and sys.argv[2] in THEMES:
+        tid = sys.argv[2]
+        os.makedirs(os.path.dirname(STATE), exist_ok=True)
+        with open(STATE, "w") as f:
+            f.write(tid)
+        subprocess.run(["pkill", "-x", "jgmenu"], check=False)  # an open menu keeps the old colors
+        generate(tid)
+        background(tid)
+        subprocess.run(["pkill", "-USR1", "-x", "tint2"], check=False)
+        subprocess.run(["openbox", "--reconfigure"], check=False)
+    else:
+        print("Uso: agents-theme list | set <" + "|".join(THEMES) + ">", file=sys.stderr)
+        sys.exit(2)
+
+
+if __name__ == "__main__":
+    main()

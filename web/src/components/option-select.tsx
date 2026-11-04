@@ -10,6 +10,7 @@ export function OptionSelect({
 	id,
 	className,
 	size = 'default',
+	placeholder,
 }: {
 	label: string;
 	value: string;
@@ -19,11 +20,13 @@ export function OptionSelect({
 	id?: string;
 	className?: string;
 	size?: 'sm' | 'default';
+	/** Shown while nothing is chosen. */
+	placeholder?: string;
 }) {
 	return (
 		<Select value={value} onValueChange={onValueChange} disabled={disabled}>
 			<SelectTrigger size={size} id={id} aria-label={label} className={cn('w-full min-w-0', className)}>
-				<SelectValue />
+				<SelectValue placeholder={placeholder} />
 			</SelectTrigger>
 			<SelectContent position="popper" className="max-w-[calc(100vw-2rem)]">
 				{options.map((option) => (

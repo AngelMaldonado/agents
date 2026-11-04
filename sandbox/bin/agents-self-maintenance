@@ -1,0 +1,45 @@
+#!/usr/bin/env node
+// Client for the platform-owned local bridge. No credentials or arbitrary commands.
+if (process.env.AGENTS_SUBAGENT === '1') {
+	console.error('Sólo el agente principal solicita mantenimiento.');
+	process.exit(1);
+}
+const input = JSON.parse(process.argv[2] ?? '{}');
+async function request(payload) {
+	const response = await fetch('http://127.0.0.1:7777/self-maintenance', {
+		method: 'POST',
+		headers: { 'content-type': 'application/json' },
+		body: JSON.stringify(payload),
+		signal: AbortSignal.timeout(330000),
+	});
+	const value = await response.json();
+	if (value.error) throw new Error(value.error);
+	return value;
+}
+try {
+	let value;
+	if (input.action === 'wait') {
+		const deadline = Date.now() + 120000;
+		do {
+			value = await request({ action: 'status', id: input.id });
+			if (value.status !== 'pending') break;
+			await new Promise((r) => setTimeout(r, 2000));
+		} while (Date.now() < deadline);
+	} else value = await request(input);
+	if (value.action?.kind === 'install' && value.status === 'approved')
+		value = await request({ action: 'execute', id: value.id });
+	console.log(JSON.stringify(value));
+	if (value.status === 'approved' && value.action?.kind !== 'install')
+		console.log(
+			'Guarda en tu respuesta el punto pendiente y termina el turno. La plataforma esperará a que quede libre la computadora, aplicará la reparación y retomará esta conversación. No vuelvas a ejecutar acciones externas ya hechas.',
+		);
+	if (value.status === 'pending')
+		console.log(
+			'Falta la autorización registrada del dueño. Usa action wait para esperar o termina explicando qué queda pendiente. Un mensaje de chat no sustituye esa autorización.',
+		);
+} catch {
+	console.error(
+		'No se pudo completar la operación de mantenimiento. Consulta el estado por su ID antes de reintentar; no se afirma que se haya reparado.',
+	);
+	process.exit(1);
+}
