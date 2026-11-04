@@ -87,6 +87,36 @@ async function describe() {
 /** Nothing to do (wip already in main): said plainly, not as an error. */
 class NothingToRelease extends Error {}
 
+/**
+ * Where an earlier run stopped. wip ahead of main: null, the whole release runs. wip already in main:
+ * main's SHA if its publication did not finish (no beta tag on it and publishable commits since the
+ * last one), so the run picks up after the merge; otherwise there is nothing to do.
+ */
+async function unpublished() {
+	const branch = `origin/${config.releaseBranch}`;
+	await command('git', ['fetch', '--quiet', 'origin', config.releaseBranch]);
+	if (Number(await command('git', ['rev-list', '--count', `${branch}..HEAD`], true)) > 0) return null;
+	await command('git', ['fetch', '--quiet', '--tags', 'origin']);
+	const sha = await command('git', ['rev-parse', branch], true);
+	const beta = nextBeta((await command('git', ['tag', '--list', 'v*'], true)).split('\n').filter(Boolean));
+	const tagged = beta && (await command('git', ['rev-list', '-n', '1', beta.latest], true)) === sha;
+	const messages =
+		beta && !tagged
+			? (await command('git', ['log', '--format=%B%x1e', `${beta.latest}..${sha}`], true))
+					.split('\x1e')
+					.map((m) => m.trim())
+					.filter(Boolean)
+			: [];
+	if (!releasable(messages))
+		throw new NothingToRelease(
+			`wip no tiene commits nuevos sobre ${config.releaseBranch}: nada que integrar ni publicar (la última release ya lo trae).`,
+		);
+	emit(
+		`${config.releaseBranch} (${sha.slice(0, 7)}) ya está integrado pero sin publicar: se retoma desde la publicación, sin pruebas, PR ni merge.\n`,
+	);
+	return sha;
+}
+
 let fd, lock, work;
 try {
 	emit(`Agents release · ${config.platform} · logs ${logfile}\n`);
@@ -106,12 +136,9 @@ try {
 			throw new Error('Hay cambios sin commit; no se corrigen ni confirman automáticamente.');
 		if ((await command('git', ['branch', '--show-current'], true)) !== config.workBranch)
 			throw new Error('Ejecuta desde wip.');
-		// Before ten minutes of tests: with nothing in wip that main lacks there is no PR to open.
-		await command('git', ['fetch', '--quiet', 'origin', config.releaseBranch]);
-		if (Number(await command('git', ['rev-list', '--count', `origin/${config.releaseBranch}..HEAD`], true)) === 0)
-			throw new NothingToRelease(
-				`wip no tiene commits nuevos sobre ${config.releaseBranch}: nada que integrar ni publicar (la última release ya lo trae).`,
-			);
+		// Before ten minutes of tests: with nothing in wip that main lacks there is no PR to open, but maybe
+		// an earlier run merged and stopped before publishing; then it resumes there.
+		const pending = await unpublished();
 		await command('gh', ['auth', 'status']);
 		if (
 			(await command('gh', ['variable', 'get', 'AGENTS_RELEASE_ENABLED', '--repo', config.repository], true)) !== 'true'
@@ -129,150 +156,154 @@ try {
 		if (!fields.key || !fields.secret) throw new Error('Faltan key/secret de API Komodo en 1Password.');
 		privateValues.push(fields.key, fields.secret);
 		const env = { ...process.env, AGENTS_RELEASE_KOMODO_KEY: fields.key, AGENTS_RELEASE_KOMODO_SECRET: fields.secret };
-		// No sandbox image builds, signing keys, SSH sessions or custom runners on this Mac.
-		for (const args of [['sanitize', 'history'], ['format', 'check'], ['lint'], ['check']]) await command('just', args);
-		// What the PR's CI would run, here first, so the PR does not fail on what we could see now: the tests
-		// against a database and both E2E smokes (real sandboxes on reko-2, fake GPT). Needs `just dev` up.
-		emit('Pruebas con base y E2E locales (just dev test / design / sharing) antes de abrir la PR…\n');
-		for (const args of [
-			['dev', 'test'],
-			['dev', 'design'],
-			['dev', 'sharing'],
-		])
-			await command('just', args);
-		const { title, body } = await describe();
-		await command('git', ['push', '-u', 'origin', config.workBranch]);
-		const list = () =>
-			command(
-				'gh',
-				[
+		let sha = pending;
+		if (!sha) {
+			// No sandbox image builds, signing keys, SSH sessions or custom runners on this Mac.
+			for (const args of [['sanitize', 'history'], ['format', 'check'], ['lint'], ['check']])
+				await command('just', args);
+			// What the PR's CI would run, here first, so the PR does not fail on what we could see now: the tests
+			// against a database and both E2E smokes (real sandboxes on reko-2, fake GPT). Needs `just dev` up.
+			emit('Pruebas con base y E2E locales (just dev test / design / sharing) antes de abrir la PR…\n');
+			for (const args of [
+				['dev', 'test'],
+				['dev', 'design'],
+				['dev', 'sharing'],
+			])
+				await command('just', args);
+			const { title, body } = await describe();
+			await command('git', ['push', '-u', 'origin', config.workBranch]);
+			const list = () =>
+				command(
+					'gh',
+					[
+						'pr',
+						'list',
+						'--repo',
+						config.repository,
+						'--head',
+						config.workBranch,
+						'--base',
+						config.releaseBranch,
+						'--state',
+						'open',
+						'--json',
+						'number,url',
+					],
+					true,
+				).then(JSON.parse);
+			let prs = await list();
+			if (!prs.length) {
+				await command('gh', [
 					'pr',
-					'list',
+					'create',
 					'--repo',
 					config.repository,
 					'--head',
 					config.workBranch,
 					'--base',
 					config.releaseBranch,
-					'--state',
-					'open',
-					'--json',
-					'number,url',
-				],
-				true,
-			).then(JSON.parse);
-		let prs = await list();
-		if (!prs.length) {
+					'--title',
+					title,
+					'--body',
+					body,
+				]);
+				prs = await list();
+			}
+			if (prs.length !== 1) throw new Error('No hay una PR inequívoca.');
+			const pr = prs[0];
+			// A PR left from an earlier attempt gets today's title and list.
 			await command('gh', [
 				'pr',
-				'create',
+				'edit',
+				String(pr.number),
 				'--repo',
 				config.repository,
-				'--head',
-				config.workBranch,
-				'--base',
-				config.releaseBranch,
 				'--title',
 				title,
 				'--body',
 				body,
 			]);
-			prs = await list();
-		}
-		if (prs.length !== 1) throw new Error('No hay una PR inequívoca.');
-		const pr = prs[0];
-		// A PR left from an earlier attempt gets today's title and list.
-		await command('gh', [
-			'pr',
-			'edit',
-			String(pr.number),
-			'--repo',
-			config.repository,
-			'--title',
-			title,
-			'--body',
-			body,
-		]);
-		emit(`PR ${pr.url}\n`);
-		// Wait for the checks main requires, ourselves: `gh pr checks --watch --required` exits with «no
-		// required checks reported» while a required job does not exist yet (Required checks has
-		// `needs: [quality, sandbox]`, so GitHub registers it only when those finish).
-		const required = (
-			await command(
-				'gh',
-				[
-					'api',
-					`repos/${config.repository}/branches/${config.releaseBranch}/protection/required_status_checks`,
-					'--jq',
-					'.contexts[]',
-				],
-				true,
-			)
-		)
-			.split('\n')
-			.filter(Boolean);
-		if (!required.length) throw new Error(`${config.releaseBranch} no exige checks; no se integra sin ellos.`);
-		const deadline = Date.now() + 60 * 60_000;
-		let last = '';
-		for (;;) {
-			const rollup = JSON.parse(
+			emit(`PR ${pr.url}\n`);
+			// Wait for the checks main requires, ourselves: `gh pr checks --watch --required` exits with «no
+			// required checks reported» while a required job does not exist yet (Required checks has
+			// `needs: [quality, sandbox]`, so GitHub registers it only when those finish).
+			const required = (
 				await command(
 					'gh',
-					['pr', 'view', String(pr.number), '--repo', config.repository, '--json', 'statusCheckRollup'],
+					[
+						'api',
+						`repos/${config.repository}/branches/${config.releaseBranch}/protection/required_status_checks`,
+						'--jq',
+						'.contexts[]',
+					],
 					true,
-				),
-			).statusCheckRollup;
-			// Check runs carry name/status/conclusion; commit statuses carry context/state.
-			const checks = rollup.map((c) => ({
-				name: c.name ?? c.context,
-				done: c.status ? c.status === 'COMPLETED' : c.state !== 'PENDING' && c.state !== 'EXPECTED',
-				ok: ['SUCCESS', 'SKIPPED', 'NEUTRAL'].includes(c.conclusion ?? c.state),
-				success: (c.conclusion ?? c.state) === 'SUCCESS',
-			}));
-			const failed = checks.filter((c) => c.done && !c.ok).map((c) => c.name);
-			if (failed.length) throw new Error(`Checks fallidos en la PR: ${failed.join(', ')}.`);
-			// A required check counts only as SUCCESS: a skipped one must not let the merge through.
-			const passed = required.filter((name) => checks.some((c) => c.name === name && c.done && c.success));
-			const summary = checks.map((c) => `${c.name}: ${c.done ? 'ok' : 'en curso'}`).join(' · ') || 'sin checks aún';
-			if (summary !== last) emit(`Checks · ${summary}\n`);
-			last = summary;
-			if (passed.length === required.length) break;
-			if (Date.now() > deadline)
-				throw new Error(`Los checks requeridos (${required.join(', ')}) no terminaron en 60 minutos.`);
-			await new Promise((done) => setTimeout(done, 15000));
-		}
-		const head = await command(
-			'gh',
-			['pr', 'view', String(pr.number), '--repo', config.repository, '--json', 'headRefOid', '--jq', '.headRefOid'],
-			true,
-		);
-		// Invoking just release is the authorization. There is deliberately no interactive confirmation.
-		emit(`Merge protegido del SHA ${head}; sin prompt interactivo.\n`);
-		await command('gh', [
-			'pr',
-			'merge',
-			String(pr.number),
-			'--repo',
-			config.repository,
-			'--merge',
-			'--match-head-commit',
-			head,
-		]);
-		const sha = await command(
-			'gh',
-			[
+				)
+			)
+				.split('\n')
+				.filter(Boolean);
+			if (!required.length) throw new Error(`${config.releaseBranch} no exige checks; no se integra sin ellos.`);
+			const deadline = Date.now() + 60 * 60_000;
+			let last = '';
+			for (;;) {
+				const rollup = JSON.parse(
+					await command(
+						'gh',
+						['pr', 'view', String(pr.number), '--repo', config.repository, '--json', 'statusCheckRollup'],
+						true,
+					),
+				).statusCheckRollup;
+				// Check runs carry name/status/conclusion; commit statuses carry context/state.
+				const checks = rollup.map((c) => ({
+					name: c.name ?? c.context,
+					done: c.status ? c.status === 'COMPLETED' : c.state !== 'PENDING' && c.state !== 'EXPECTED',
+					ok: ['SUCCESS', 'SKIPPED', 'NEUTRAL'].includes(c.conclusion ?? c.state),
+					success: (c.conclusion ?? c.state) === 'SUCCESS',
+				}));
+				const failed = checks.filter((c) => c.done && !c.ok).map((c) => c.name);
+				if (failed.length) throw new Error(`Checks fallidos en la PR: ${failed.join(', ')}.`);
+				// A required check counts only as SUCCESS: a skipped one must not let the merge through.
+				const passed = required.filter((name) => checks.some((c) => c.name === name && c.done && c.success));
+				const summary = checks.map((c) => `${c.name}: ${c.done ? 'ok' : 'en curso'}`).join(' · ') || 'sin checks aún';
+				if (summary !== last) emit(`Checks · ${summary}\n`);
+				last = summary;
+				if (passed.length === required.length) break;
+				if (Date.now() > deadline)
+					throw new Error(`Los checks requeridos (${required.join(', ')}) no terminaron en 60 minutos.`);
+				await new Promise((done) => setTimeout(done, 15000));
+			}
+			const head = await command(
+				'gh',
+				['pr', 'view', String(pr.number), '--repo', config.repository, '--json', 'headRefOid', '--jq', '.headRefOid'],
+				true,
+			);
+			// Invoking just release is the authorization. There is deliberately no interactive confirmation.
+			emit(`Merge protegido del SHA ${head}; sin prompt interactivo.\n`);
+			await command('gh', [
 				'pr',
-				'view',
+				'merge',
 				String(pr.number),
 				'--repo',
 				config.repository,
-				'--json',
-				'mergeCommit',
-				'--jq',
-				'.mergeCommit.oid',
-			],
-			true,
-		);
+				'--merge',
+				'--match-head-commit',
+				head,
+			]);
+			sha = await command(
+				'gh',
+				[
+					'pr',
+					'view',
+					String(pr.number),
+					'--repo',
+					config.repository,
+					'--json',
+					'mergeCommit',
+					'--jq',
+					'.mergeCommit.oid',
+				],
+				true,
+			);
+		}
 		if (!/^[a-f0-9]{40}$/.test(sha)) throw new Error('SHA integrado inválido.');
 		const token = await command('gh', ['auth', 'token'], true);
 		privateValues.push(token);
