@@ -13,6 +13,9 @@ export async function startDbos() {
 		logLevel: process.env.AGENTS_DBOS_LOG ?? 'warn',
 	});
 	await DBOS.launch();
+	launched = true;
 }
+/** Whether this process runs DBOS (the server does; tests and scripts usually do not). */
+export let launched = false;
 
 export const stopDbos = () => DBOS.shutdown();

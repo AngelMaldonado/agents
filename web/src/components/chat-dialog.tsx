@@ -46,7 +46,7 @@ export function ChatDialog<T extends ChatRef>({
 			title={edit?.action === 'delete' ? '¿Eliminar este chat?' : 'Renombrar chat'}
 			description={
 				edit?.action === 'delete'
-					? `«${chat?.title}» desaparece de tus listas y de la búsqueda. Sus mensajes, trabajos y archivos se conservan.`
+					? `«${chat?.title}» desaparece de tus listas y de la búsqueda. Sus mensajes, turnos y archivos se conservan.`
 					: undefined
 			}
 		>

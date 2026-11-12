@@ -146,7 +146,7 @@ function AgentMarks({ agent, me }: { agent: Agent; me: Person }) {
 				) : (
 					<Working
 						queued={agent.task!.status === 'queued'}
-						label={agent.task!.status === 'queued' ? 'Trabajo en cola' : 'Trabajando'}
+						label={agent.task!.status === 'queued' ? 'Turno en cola' : 'Trabajando'}
 					/>
 				))}
 			{marks.map(({ icon: Icon, label }) => (
@@ -375,7 +375,7 @@ function AgentItem({
 						<DropdownMenuItem
 							onSelect={onRename}
 							disabled={live}
-							title={live ? 'Espera a que termine su trabajo.' : undefined}
+							title={live ? 'Espera a que termine su turno.' : undefined}
 						>
 							<Pencil aria-hidden="true" />
 							Renombrar
@@ -401,7 +401,7 @@ function AgentItem({
 							<DropdownMenuItem
 								variant="destructive"
 								disabled={live}
-								title={live ? 'Termina o cancela su trabajo antes de eliminarlo.' : undefined}
+								title={live ? 'Termina o cancela su turno antes de eliminarlo.' : undefined}
 								onSelect={onDelete}
 							>
 								<Trash2 aria-hidden="true" />
@@ -542,7 +542,7 @@ function AgentDialog({
 			title={deleting ? `¿Eliminar a ${agent?.name}?` : naming ? `Alias de ${agent?.name}` : 'Renombrar agente'}
 			description={
 				deleting
-					? 'Se retira de la galería y se eliminan sus horarios; sus conversaciones y trabajos no se purgan. Para confirmar, escribe su nombre exacto.'
+					? 'Se retira de la galería y se eliminan sus horarios; sus trabajos y turnos no se purgan. Para confirmar, escribe su nombre exacto.'
 					: naming
 						? `Tus nombres cortos para este agente, separados por comas: sólo valen para ti. Con @alias le mandas un mensaje desde cualquier chat, y en WhatsApp lo eliges con «alias: …» o /agente alias. Sin alias, responde a @${agent?.handle ?? ''}.`
 						: 'Cambia sólo el nombre (queda como una revisión nueva de su definición).'

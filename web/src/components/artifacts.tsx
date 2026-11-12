@@ -66,7 +66,7 @@ export function ArtifactMarkdown({
 export function ArtifactCards({ files, agentId, runId }: { files: Artifact[]; agentId: number; runId: number }) {
 	if (!files.length) return null;
 	return (
-		<div className="mt-4 grid min-w-0 gap-2" aria-label="Archivos del trabajo">
+		<div className="mt-4 grid min-w-0 gap-2" aria-label="Archivos del turno">
 			{files.map((f) => {
 				const Icon = raster(f.name) ? Image : /\.csv$/i.test(f.name) ? Table2 : FileText;
 				return (
@@ -118,7 +118,7 @@ export function ArtifactDrawer({
 			void api<Preview>(`/tasks/${target.runId}/files/${encodeURIComponent(target.name)}/preview`)
 				.then((p) => {
 					if (p.agentId !== agentId || p.runId !== target.runId || p.name !== target.name)
-						throw new Error('El archivo no pertenece a este trabajo.');
+						throw new Error('El archivo no pertenece a este turno.');
 					if (alive) setPreview(p);
 				})
 				.catch((e) => {
@@ -150,7 +150,7 @@ export function ArtifactDrawer({
 				<DialogHeader className="shrink-0 border-b p-5 pr-12">
 					<DialogTitle className="break-all text-sm">{target?.name ?? 'Archivo'}</DialogTitle>
 					<DialogDescription>
-						Archivo privado del trabajo #{target?.runId}. Sólo quienes tienen acceso a este trabajo pueden abrirlo.
+						Archivo privado del turno #{target?.runId}. Sólo quienes tienen acceso a este turno pueden abrirlo.
 					</DialogDescription>
 				</DialogHeader>
 				<div className="flex shrink-0 flex-wrap items-center gap-2 border-b p-3">

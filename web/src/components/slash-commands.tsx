@@ -20,7 +20,7 @@ export function useWorkCommands({
 			...skills.map((s) => ({ id: `skill:${s.name}`, description: s.description, execute: () => onSkill(s.name) })),
 			{
 				id: 'reload',
-				description: 'Recargar la configuración vigente (contrato, herramientas, MCP); reinicia el trabajo en curso',
+				description: 'Recargar la configuración vigente (contrato, herramientas, MCP); reinicia el turno en curso',
 				execute: onReload,
 			},
 		],

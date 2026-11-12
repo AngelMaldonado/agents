@@ -54,6 +54,7 @@ test('rejects truncation, refusals, invalid JSON and arbitrary model fields inst
 		contract: { name: 'A', prompt: 'Rol' },
 		harness: null,
 		schedules: null,
+		goalMode: null,
 		ready: true,
 		questions: [],
 		accesses: [],

@@ -1,11 +1,15 @@
-import { useEffect, useRef, useState, type ReactNode } from 'react';
+import { lazy, Suspense, useEffect, useRef, useState, type ReactNode } from 'react';
 import { AgentHandover } from '@/components/agent-handover';
-import { CalendarDays, Globe, KeyRound, Settings2, SlidersHorizontal, Trash2 } from 'lucide-react';
+import { CalendarDays, Globe, Handshake, KeyRound, Settings2, SlidersHorizontal, Trash2, Workflow } from 'lucide-react';
 import { SaveButton, useSaving } from '@/components/actions';
+import { BehaviorSection, ExperimentalSection } from '@/components/agent-behavior';
 import { api, isLive, type Agent, type PublicSettings } from './api';
 import { AgentConfiguration } from './AgentConfiguration';
 import { Channels } from './Channels';
 import { AgentSchedules } from './AgentSchedules';
+import { AgentDelegations } from '@/components/agent-delegations';
+// The canvas library is heavy: loaded when the tab opens.
+const AgentFlows = lazy(() => import('@/components/agent-flows').then((m) => ({ default: m.AgentFlows })));
 import { AgentAccesses } from './AgentTools';
 import { ShareAgent } from './ShareAgent';
 import { AgentHarness } from '@/components/agent-harness';
@@ -35,6 +39,7 @@ export function AgentSettings({
 	onDeleted,
 	iconOnly = false,
 	request,
+	onRoute,
 }: {
 	agent: Agent;
 	settings: PublicSettings;
@@ -47,8 +52,16 @@ export function AgentSettings({
 	iconOnly?: boolean;
 	/** Opens it from elsewhere (the header's «Compartir»): a new value opens it at that section. */
 	request?: { section: 'share'; at: number } | null;
+	/** Goes to another view of the agent (a trabajo's hub from Tareas or Encargos), closing this. */
+	onRoute?: (suffix: string) => void;
 }) {
 	const [open, setOpen] = useState(false);
+	const openJob = onRoute
+		? (suffix: string) => {
+				setOpen(false);
+				onRoute(suffix);
+			}
+		: undefined;
 	// «Compartir» from the sidebar's menu: taken here, once this button is on screen (on arriving at the
 	// hub, or right away if it already is), so it is never mistaken for a stale request.
 	const [fromSidebar, setFromSidebar] = useState<{ section: 'share'; at: number } | null>(null);
@@ -166,6 +179,18 @@ export function AgentSettings({
 									<span>Horarios</span>
 								</TabsTrigger>
 							)}
+							{mine && (
+								<TabsTrigger value="flows" aria-label="Tareas">
+									<Workflow />
+									<span>Tareas</span>
+								</TabsTrigger>
+							)}
+							{mine && (
+								<TabsTrigger value="delegations" aria-label="Encargos">
+									<Handshake />
+									<span>Encargos</span>
+								</TabsTrigger>
+							)}
 							<TabsTrigger value="advanced" aria-label="Avanzado">
 								<SlidersHorizontal />
 								<span>Avanzado</span>
@@ -179,6 +204,8 @@ export function AgentSettings({
 								<EditAgent key={agent.config_revision} agent={agent} settings={settings} onSaved={onChanged} />
 							</section>
 						)}
+						{mine && <BehaviorSection agent={agent} onChanged={onChanged} />}
+						{mine && <ExperimentalSection agent={agent} onChanged={onChanged} />}
 						{mine && <ShareAgent agent={agent} onChanged={onChanged} />}
 						<AgentConfiguration agent={agent} settings={settings} mine={mine} />
 					</SettingsPanel>
@@ -201,6 +228,21 @@ export function AgentSettings({
 					{mine && visited.has('schedules') && (
 						<SettingsPanel value="schedules" active={tab}>
 							<AgentSchedules agentId={agent.id} />
+						</SettingsPanel>
+					)}
+					{mine && visited.has('flows') && (
+						<SettingsPanel value="flows" active={tab}>
+							<Suspense fallback={<p className="muted">Cargando flujos…</p>}>
+								<AgentFlows agentId={agent.id} onOpenJob={openJob && ((c) => openJob(`/job/${c}/flujo`))} />
+							</Suspense>
+						</SettingsPanel>
+					)}
+					{mine && visited.has('delegations') && (
+						<SettingsPanel value="delegations" active={tab}>
+							<AgentDelegations
+								agentId={agent.id}
+								onOpenJob={openJob && ((c, d) => openJob(`/job/${c}/encargos/${d}`))}
+							/>
 						</SettingsPanel>
 					)}
 					{visited.has('advanced') && (
@@ -300,6 +342,7 @@ function EditAgent({ agent, settings, onSaved }: { agent: Agent; settings: Publi
 	);
 }
 
+/** Hours without activity that close one of its trabajos (the next thing asked opens a new one). */
 function BrowserProfile({
 	agent,
 	pending,

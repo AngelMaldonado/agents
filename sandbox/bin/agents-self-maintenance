@@ -1,4 +1,4 @@
-#!/usr/bin/env node
+#!/usr/bin/env bun
 // Client for the platform-owned local bridge. No credentials or arbitrary commands.
 if (process.env.AGENTS_SUBAGENT === '1') {
 	console.error('Sólo el agente principal solicita mantenimiento.');

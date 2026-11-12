@@ -246,7 +246,7 @@ run('the company number: link a phone, get a group «Agentes …» with your age
 	await whatsapp.syncGroups();
 	expect(added).toEqual([{ thread, add: ['+524442223333'] }]);
 
-	// A supplier on the company number: Cuby Compras writes to them one to one in a thread of its own (open
+	// A external on the company number: Cuby Compras writes to them one to one in a thread of its own (open
 	// 7 days), and their answer in that thread goes back to the conversation that asked.
 	await db!.exec('update agents set role = $2 where id = $1', [
 		a.id,
@@ -255,10 +255,10 @@ run('the company number: link a phone, get a group «Agentes …» with your age
 	await whatsapp.setLists(me, number, {
 		allow: [
 			{ phone: '+52 444 222 3333', personId: ana },
-			{ phone: '+52 444 888 9999', label: 'Ferretería', supplier: true },
+			{ phone: '+52 444 888 9999', label: 'Ferretería', external: true },
 		],
 	});
-	const ferre = (await whatsapp.agentView(a.id, anaP)).contacts.find((c) => c.kind === 'supplier')!;
+	const ferre = (await whatsapp.agentView(a.id, anaP)).contacts.find((c) => c.kind === 'external')!;
 	await whatsapp.setContact(a.id, anaP, { key: ferre.key, enabled: true });
 	const asking = (await db!.row<{ id: number }>(
 		`insert into runs (agent_id, person_id, conversation_id, workflow_id, model, status)
@@ -276,7 +276,7 @@ run('the company number: link a phone, get a group «Agentes …» with your age
 		text: expect.stringMatching(/^Hola, soy Cuby Compras, asistente de IA de ana-.*\n\n¿Precio del cemento\?$/),
 	});
 	const quoteThread = (await db!.row<{ thread_id: string }>(
-		'select thread_id from whatsapp_supplier_threads where agent_id = $1',
+		'select thread_id from whatsapp_external_threads where agent_id = $1',
 		[a.id],
 	))!.thread_id;
 	expect(quoteThread).toMatch(/^thr-/);
@@ -297,11 +297,59 @@ run('the company number: link a phone, get a group «Agentes …» with your age
 		await db!.row('select conversation_id, sender from messages where agent_id = $1 order by id desc limit 1', [a.id]),
 	).toEqual({
 		conversation_id: msg!.conversation_id,
-		sender: 'Ferretería (+524448889999), proveedor de tu dueño (no es tu dueño)',
+		sender: 'Ferretería (+524448889999), contacto externo de tu dueño (no es tu dueño)',
 	});
 	// The next one goes in the same thread, without introducing the agent again.
 	await whatsapp.notify(asking, { to: ['Ferretería'], text: '¿Y con entrega mañana?' }, noon);
 	expect(sent.at(-1)).toMatchObject({ threadId: quoteThread, text: '¿Y con entrega mañana?' });
+
+	// A direct guest on the company number writes first, in the general chat; the agent answers in a thread
+	// of its own titled with its name, and what follows goes in that thread.
+	await db!.exec("update runs set status = 'done' where id = $1", [asking]);
+	await whatsapp.setLists(me, number, {
+		allow: [
+			{ phone: '+52 444 222 3333', personId: ana },
+			{ phone: '+52 444 888 9999', label: 'Ferretería', external: true },
+			{ phone: '+52 444 777 6666', label: 'Cliente', direct: true },
+		],
+	});
+	const client = (await whatsapp.agentView(a.id, anaP)).contacts.find((c) => c.kind === 'direct')!;
+	await whatsapp.setContact(a.id, anaP, { key: client.key, enabled: true });
+	const fromClient = (text: string, threadId?: string) =>
+		cuby.handle({
+			id: 5,
+			event: 'message.received',
+			mode: 'test',
+			data: { messageId: crypto.randomUUID(), from: '+5214447776666', threadId, kind: 'text', text, fromName: 'C' },
+		});
+	await fromClient('¿Tienen envío?');
+	const question = (await db!.row<{ id: number; conversation_id: number; sender: string }>(
+		'select id, conversation_id, sender from messages where agent_id = $1 order by id desc limit 1',
+		[a.id],
+	))!;
+	expect(question.sender).toBe('Cliente (+524447776666), invitado de tu dueño (no es tu dueño)');
+	const clientRun = (await db!.row<{ id: number }>(
+		`insert into runs (agent_id, person_id, conversation_id, workflow_id, model, status, answer)
+		 values ($1, $2, $3, $4, 'openai/gpt-6-sol', 'done', 'Sí, a todo el país.') returning id`,
+		[a.id, ana, question.conversation_id, `cuby-direct-${a.id}`],
+	))!.id;
+	await db!.exec('update messages set run_id = $2 where id = $1', [question.id, clientRun]);
+	await whatsapp.onRun(clientRun, 'done');
+	expect(sent.at(-1)).toMatchObject({
+		to: '+524447776666',
+		thread: { title: 'Cuby Compras', expectsReplyHours: 168 },
+		text: '*Cuby Compras:* Sí, a todo el país.',
+	});
+	const directThread = (await db!.row<{ thread_id: string }>(
+		'select thread_id from whatsapp_direct_chats where agent_id = $1',
+		[a.id],
+	))!.thread_id;
+	expect(directThread).toMatch(/^thr-/);
+	await fromClient('/ayuda', directThread);
+	expect(sent.at(-1)).toMatchObject({
+		threadId: directThread,
+		text: expect.stringContaining('Hablas con Cuby Compras'),
+	});
 
 	// Without agents of hers, the group closes with a line.
 	await db!.exec('update agents set deleted_at = now() where id = $1', [a.id]);

@@ -342,7 +342,7 @@ export async function handle(e: CubyEvent) {
 		quoted: d.inReplyTo ?? '',
 		// A group Agents created (one person's group with someone's agents): its thread is its address.
 		...(d.group ? { group: d.threadId } : {}),
-		// One to one, the thread it came in (a supplier answering the agent that wrote to them).
+		// One to one, the thread it came in (an external contact answering the agent that wrote to them).
 		...(!d.group && d.threadId ? { thread: d.threadId } : {}),
 	});
 	console.log(`cuby-whatsapp ← ${d.kind} ${who}: ${JSON.stringify(result).slice(0, 160)}`);

@@ -1,0 +1,5 @@
+#!/bin/sh
+# The trabajo it works on (job_done, job_goal): the platform keeps its objective and closes it.
+# Usage: agents-job <done|goal> '<json>'
+if [ -z "$1" ] || [ -z "$2" ]; then echo 'Uso: agents-job <done|goal> <json>' >&2; exit 2; fi
+exec curl -sS --max-time 25 -X POST -H 'content-type: application/json' --data-binary "$2" "http://127.0.0.1:7777/job/$1"

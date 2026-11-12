@@ -8,6 +8,7 @@ import {
 	runtimeToolNames,
 	harnessInstructions,
 	mcpAllowed,
+	type DelegationTemplate,
 } from '../../sandbox/harness';
 import { fileDenial, textStats, jsonInfo } from '../../sandbox/harness-policy';
 import { definition, proposalDigest, harnessHash } from './harnesses';
@@ -226,4 +227,181 @@ test('CLI installs are pinned: npm name@version, uv name==version, binaries by h
 		{ kind: 'binary', spec: 'https://x/gh', name: 'gh', sha256: null },
 	])
 		expect(() => validateHarness({ ...defaultHarness(), installs: [bad] })).toThrow('instalación inválida');
+});
+
+test('encargos: templates validated and sorted, their tools named for pi, the tool needs a template', () => {
+	const template: DelegationTemplate = {
+		name: 'cotizar',
+		description: 'Cotiza con un contacto externo.',
+		objective: 'Cotiza {lista} con entrega el {fecha}.',
+		intro: 'Buen día, le escribo de parte de {dueno}.',
+		rules: ['No aceptes más de {tope} por kilo.'],
+		collect: { list: true, fields: [{ name: 'precio_kg', description: 'Pesos por kilo', type: 'number' }] },
+		escalate: ['Si pide anticipo.'],
+		files: true,
+		maxMessages: 10,
+		maxHours: 48,
+	};
+	const base = { ...defaultHarness(), tools: [...defaultHarness().tools, 'delegations'] };
+	const h = validateHarness({ ...base, delegations: [template] });
+	expect(h.delegations).toEqual([template]);
+	expect(runtimeToolNames(h)).toEqual(
+		expect.arrayContaining(['delegation_cancel', 'delegation_message', 'delegation_start', 'delegation_status']),
+	);
+	expect(runtimeToolNames(h)).not.toContain('delegations');
+	expect(harnessInstructions(h)).toContain(
+		'- cotizar: Cotiza con un contacto externo. Parámetros: lista, fecha, dueno, tope.',
+	);
+	// Empty is omitted: an agent without encargos keeps its digest.
+	expect('delegations' in validateHarness({ ...defaultHarness(), delegations: [] })).toBe(false);
+	expect(() => validateHarness(base)).toThrow('al menos una plantilla');
+	for (const bad of [
+		{ ...template, name: 'Cotizar' },
+		{ ...template, maxMessages: 0 },
+		{ ...template, maxHours: 500 },
+		{ ...template, collect: { list: false, fields: [] } },
+		{ ...template, collect: { list: false, fields: [{ name: 'x', description: 'y', type: 'date' }] } },
+		{ ...template, extra: true },
+		{ ...template, files: 'sí' },
+	])
+		expect(() => validateHarness({ ...base, delegations: [bad] })).toThrow('Harness');
+});
+
+test('flujos: a recipe is checked against what the contract has, steps only depend on earlier ones', () => {
+	const template: DelegationTemplate = {
+		name: 'cotizar',
+		description: 'Cotiza.',
+		objective: 'Cotiza {lista}.',
+		intro: 'Hola.',
+		rules: [],
+		collect: { list: false, fields: [{ name: 'precio', description: 'Pesos', type: 'number' }] },
+		escalate: [],
+		files: false,
+		maxMessages: 5,
+		maxHours: 24,
+	};
+	const step = (key: string, kind: string, depends: string[] = [], extra: Record<string, unknown> = {}) => ({
+		key,
+		title: key,
+		kind,
+		depends,
+		instructions: kind === 'delegation' || kind === 'wait' ? '' : `Haz ${key}.`,
+		optional: false,
+		hours: kind === 'wait' ? 2 : null,
+		delegation:
+			kind === 'delegation'
+				? { template: 'cotizar', contact: 'Carnicería', params: [{ name: 'lista', value: '{lista}' }] }
+				: null,
+		...extra,
+	});
+	const recipe = {
+		name: 'carrito',
+		description: 'El carrito de la semana.',
+		objective: 'Arma el carrito de la semana {semana}.',
+		produces: { list: true, fields: [{ name: 'producto', description: 'Qué', type: 'text' }] },
+		steps: [
+			step('heb', 'subagent'),
+			step('carne', 'delegation'),
+			step('armar', 'agent', ['heb', 'carne']),
+			step('ok', 'question', ['armar']),
+		],
+		maxHours: 48,
+		maxDelegations: 2,
+		maxWakes: 10,
+	};
+	const base = {
+		...defaultHarness(),
+		tools: [...defaultHarness().tools, 'delegations', 'flows', 'subagents'],
+		delegations: [template],
+	};
+	const h = validateHarness({ ...base, flows: [recipe] });
+	expect(h.flows![0].steps.map((s) => s.key)).toEqual(['heb', 'carne', 'armar', 'ok']);
+	// Recipes only preload a list: the task tools are the platform's, never the harness's.
+	expect(runtimeToolNames(h).filter((n) => /^(flow|task)_/.test(n))).toEqual([]);
+	expect(harnessInstructions(h)).toContain('### Recetas');
+	// Up to 12 tasks, like any list.
+	expect(() =>
+		validateHarness({
+			...base,
+			flows: [{ ...recipe, steps: Array.from({ length: 13 }, (_, i) => step(`t${i}`, 'agent')) }],
+		}),
+	).toThrow('de 1 a 12 tareas');
+	expect(harnessInstructions(h)).toContain('- carrito: El carrito de la semana. Parámetros: semana, lista.');
+	expect(() => validateHarness({ ...base, flows: [] })).toThrow('al menos una receta');
+	const bad: [unknown[], string][] = [
+		[[step('a', 'agent', ['b']), step('b', 'agent')], 'pasos anteriores'], // a cycle cannot even be written
+		[[step('a', 'agent'), step('a', 'agent')], 'repetido'],
+		[
+			[step('a', 'delegation', [], { delegation: { template: 'otra', contact: '', params: [] } })],
+			'plantilla de encargo',
+		],
+		[[step('a', 'wait', [], { hours: 500 })], '1 a 168'],
+		[
+			[step('a', 'agent', [], { delegation: { template: 'cotizar', contact: '', params: [] } })],
+			'sólo un paso delegation',
+		],
+		[[step('a', 'delegation'), step('b', 'delegation'), step('c', 'delegation')], 'tope'],
+	];
+	for (const [steps, message] of bad)
+		expect(() => validateHarness({ ...base, flows: [{ ...recipe, steps }] })).toThrow(message);
+	// A subagent step needs the subagents tool.
+	expect(() =>
+		validateHarness({ ...base, tools: base.tools.filter((t) => t !== 'subagents'), flows: [recipe] }),
+	).toThrow('subagents');
+});
+
+test("encargos: the turn's schema uses JSON Schema types (a template's text is a string)", async () => {
+	const { turnSchema } = await import('./delegations');
+	const schema = turnSchema({
+		name: 'x',
+		description: 'x',
+		objective: 'x',
+		intro: 'x',
+		rules: [],
+		collect: {
+			list: true,
+			fields: [
+				{ name: 'a', description: 'a', type: 'text' },
+				{ name: 'b', description: 'b', type: 'number' },
+				{ name: 'c', description: 'c', type: 'boolean' },
+			],
+		},
+		escalate: [],
+		files: false,
+		maxMessages: 1,
+		maxHours: 1,
+	}) as { properties: { data: { items: { properties: Record<string, { type: string[] }> } } } };
+	const types = Object.values(schema.properties.data.items.properties).map((p) => p.type[0]);
+	expect(types).toEqual(['string', 'number', 'boolean']);
+	// Every JSON Schema type GPT takes; «text» was the 400 of 5-nov-2026.
+	for (const t of types) expect(['string', 'number', 'integer', 'boolean', 'object', 'array', 'null']).toContain(t);
+});
+
+test('rúbrica: the owner weighs the platform criteria, 0 turns one off, a default weight is not kept', async () => {
+	const { RUBRIC, rubricOf } = await import('../../sandbox/harness');
+	const h = validateHarness({
+		...defaultHarness(),
+		rubric: [
+			{ key: 'cost', weight: 5 },
+			{ key: 'third_parties', weight: 0 },
+			{ key: 'correct', weight: 5 }, // its default: not kept
+		],
+	});
+	expect(h.rubric).toEqual([
+		{ key: 'cost', weight: 5 },
+		{ key: 'third_parties', weight: 0 },
+	]);
+	const weights = Object.fromEntries(rubricOf(h).map((c) => [c.key, c.weight]));
+	expect(weights).toMatchObject({ cost: 5, third_parties: 0, correct: 5, honesty: 5 });
+	expect(rubricOf(h)).toHaveLength(RUBRIC.length);
+	expect('rubric' in validateHarness({ ...defaultHarness(), rubric: [] })).toBe(false);
+	for (const bad of [
+		[{ key: 'nope', weight: 1 }],
+		[{ key: 'cost', weight: 9 }],
+		[
+			{ key: 'cost', weight: 1 },
+			{ key: 'cost', weight: 2 },
+		],
+	])
+		expect(() => validateHarness({ ...defaultHarness(), rubric: bad })).toThrow('Harness');
 });

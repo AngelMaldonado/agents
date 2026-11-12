@@ -12,7 +12,7 @@ test('bash permits reusable scripts and local dependencies without changing the 
 	const prompt = withHarnessPrompt(systemPrompt(agent, []), h);
 	for (const text of [
 		'crear, ejecutar y conservar scripts propios',
-		'dependencias locales con uv o npm dentro de ~/work',
+		'dependencias locales con uv o bun (la computadora corre con Bun; no hay Node.js ni npm) dentro de ~/work',
 		'sin una aprobación adicional por cada script o paquete',
 		'~/work/tools/',
 		'versiones',

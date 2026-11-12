@@ -1,3 +1,5 @@
+import { JobBar } from '@/components/job-bar';
+import { JobTasks } from '@/components/job-tasks';
 import {
 	createContext,
 	useCallback,
@@ -622,6 +624,12 @@ export function WorkChat(props: Props) {
 			>
 				<ThreadPrimitive.Root className="work-chat designer-thread" data-empty={transcript.messages.length === 0}>
 					{list && <ConversationTabs readOnly={!agent.mine} disabled={busy} />}
+					{conversation && !conversation.is_default && !historical && (
+						<>
+							<JobBar agentId={agent.id} conversation={conversation} onChanged={onRefresh} />
+							<JobTasks agentId={agent.id} conversation={conversation} />
+						</>
+					)}
 					<ScrollArea type="auto" className="designer-thread-scroll" viewportProps={{ asChild: true }}>
 						<ThreadPrimitive.Viewport
 							ref={viewport}
@@ -673,7 +681,7 @@ export function WorkChat(props: Props) {
 										<h2>{historical ? 'Conversación guardada' : '¿Qué quieres resolver?'}</h2>
 										<p>
 											{historical
-												? 'Esta ejecución no tiene mensajes de trabajo.'
+												? 'Este turno no tiene mensajes.'
 												: `Escribe a ${agent.name}. Puedes continuar aquí después de cada ejecución.`}
 										</p>
 										{conversation && !conversation.is_default && (
@@ -727,6 +735,10 @@ export function WorkChat(props: Props) {
 							</p>
 						) : conversation.archived_at ? (
 							<p className="text-sm text-muted-foreground">Tab cerrado. Reábrelo desde Recientes para continuar.</p>
+						) : conversation.status && conversation.status !== 'open' && !conversation.is_default ? (
+							<p className="text-sm text-muted-foreground">
+								Este trabajo terminó. Reábrelo arriba para seguir en él, o empieza un trabajo nuevo.
+							</p>
 						) : (
 							<>
 								{attach.error && (
@@ -831,8 +843,8 @@ export function WorkChat(props: Props) {
 																type="button"
 																size="icon"
 																variant="outline"
-																aria-label="Detener el trabajo"
-																title="Detener el trabajo"
+																aria-label="Detener el turno"
+																title="Detener el turno"
 															>
 																<Square className="size-3 fill-current" aria-hidden="true" />
 															</Button>

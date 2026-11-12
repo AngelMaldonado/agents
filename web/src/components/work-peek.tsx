@@ -114,8 +114,8 @@ export function WorkPeek({
 			<button
 				type="button"
 				className="work-peek-open"
-				aria-label="Mostrar el trabajo"
-				title="Mostrar el trabajo (arrástrala para moverla)"
+				aria-label="Mostrar el turno"
+				title="Mostrar el turno (arrástrala para moverla)"
 				onClick={() => {
 					if (dragged.current) {
 						dragged.current = false;

@@ -28,7 +28,11 @@ FAKE_LLM_PORT=8318
 
 SERVER_PORT=8787
 WA_PORT=8790 # the WhatsApp bridge
-WEB_URL=http://localhost:5173
+WEB_PORT=5173
+if [ -f "$DEV/web-port" ]; then
+	read -r WEB_PORT < "$DEV/web-port"
+fi
+WEB_URL="http://localhost:$WEB_PORT"
 LLM_MODE_FILE="$DEV/llm" # "fake" or "real" (just dev fake on|off)
 
 PG_BIN=/opt/homebrew/opt/postgresql@18/bin
@@ -79,3 +83,35 @@ server_env() {
 
 docker_ready() { curl -sf --max-time 3 --unix-socket "$DOCKER_SOCK" http://docker/_ping >/dev/null 2>&1; }
 pg_ready() { pg_isready -q -h 127.0.0.1 -p "$PG_PORT" -U agents -d agents; }
+
+# Choose once before starting tmux so the backend and `just dev open` share Vite's URL.
+pick_web_port() {
+	WEB_PORT="$(python3 - <<'PY'
+import errno
+import socket
+
+for port in range(5173, 65536):
+    sockets = []
+    try:
+        for family, _, _, _, address in socket.getaddrinfo("localhost", port, type=socket.SOCK_STREAM):
+            sock = socket.socket(family, socket.SOCK_STREAM)
+            sockets.append(sock)
+            if family == socket.AF_INET6:
+                sock.setsockopt(socket.IPPROTO_IPV6, socket.IPV6_V6ONLY, 1)
+            sock.bind(address)
+        print(port)
+        break
+    except OSError as error:
+        if error.errno != errno.EADDRINUSE:
+            raise
+    finally:
+        for sock in sockets:
+            sock.close()
+else:
+    raise SystemExit("No free port for the dev UI")
+PY
+)" || return
+	mkdir -p "$DEV"
+	printf '%s\n' "$WEB_PORT" > "$DEV/web-port"
+	WEB_URL="http://localhost:$WEB_PORT"
+}

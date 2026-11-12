@@ -33,6 +33,11 @@ import { grantedNames, resolveCredential } from './vault';
 import { quotaOf } from './people';
 import { stateMount } from './state';
 import { createDelivery, startDelivery, notify } from './channels';
+import * as delegations from './delegations';
+import * as flows from './flows';
+import * as memories from './memories';
+import * as simCard from './simulated-card';
+import * as jobs from './jobs';
 import { requestRoute, startPrompt, filesFor, render, receive } from './inbox';
 import * as whatsapp from './whatsapp';
 import * as secrets from './secrets';
@@ -622,6 +627,8 @@ async function sandboxRunFn(runId: number) {
 	if (delivery) await startDelivery(delivery);
 	// After the existing steps, so replaying an older workflow keeps its order.
 	if (status) await DBOS.runStep(() => whatsapp.onRun(runId, status as 'done'), { name: 'whatsapp' });
+	// Modo objetivo: a trabajo with a list goes on by itself (or sleeps on what will wake it, or stalls).
+	if (status) await DBOS.runStep(() => flows.afterRun(runId), { name: 'goal' });
 }
 const sandboxRun = DBOS.registerWorkflow(sandboxRunFn, { name: 'sandboxRun' });
 
@@ -907,8 +914,8 @@ export async function attach(cred: { token?: string; session?: string }, sup: Su
 			run.definition ??
 			(await row<{ name: string; role: string }>('select name, role from agents where id = $1', [t.agent_id]))!;
 		const harness = run.definition?.harness ?? defaultHarness();
-		const conv = (await row<{ pi_session_id: string }>(
-			'select c.pi_session_id from runs r join conversations c on c.id = r.conversation_id where r.id = $1',
+		const conv = (await row<{ pi_session_id: string; id: number }>(
+			'select c.pi_session_id, c.id from runs r join conversations c on c.id = r.conversation_id where r.id = $1',
 			[t.id],
 		))!;
 		const s = settings();
@@ -934,6 +941,12 @@ export async function attach(cred: { token?: string; session?: string }, sup: Su
 		// A harness server with that name keeps its session: only the granted one went away.
 		const kept = logouts.filter((l) => ownMcp.has(l.server)).map((l) => l.id);
 		if (kept.length) await accesses.logoutsDone(t.agent_id, kept);
+		// Pagos simulados (the agent's switch), live: its browser intercepts clicks to pay and blocks payment
+		// requests, shows a confirmation as if it had paid, and its simulated card as saved. The agent is not told.
+		const simulating = !!(
+			await row<{ on: boolean }>('select simulated_payments as on from agents where id = $1', [t.agent_id])
+		)?.on;
+		const card = simulating ? await simCard.fullCard(t.agent_id) : null;
 		sup.send(
 			JSON.stringify({
 				t: 'start',
@@ -944,7 +957,34 @@ export async function attach(cred: { token?: string; session?: string }, sup: Su
 				harnessDigest: run.definition?.harnessDigest,
 				prompt,
 				files,
-				system: withHarnessPrompt(systemPrompt(agent, sites, granted), harness),
+				simulation: simulating,
+				// Its assigned card, whole, only inside its computer (the wrapper fills {{tarjeta.*}} with it).
+				...(card ? { card } : {}),
+				system: [
+					withHarnessPrompt(
+						systemPrompt(
+							{
+								...agent,
+								// The switch is live (not frozen in its definition): its owner may turn it on any time.
+								goal_mode: !!(
+									await row<{ on: boolean }>('select goal_mode as on from agents where id = $1', [t.agent_id])
+								)?.on,
+								// Its assigned card, as the agent knows it (never the full number).
+								card: card ? simCard.cardLine(card) : null,
+							},
+							sites,
+							granted,
+						),
+						harness,
+					),
+					// Its trabajo and the recent ones (what it did before, now that each one is a conversation).
+					await jobs.jobBlock(conv.id),
+					await flows.activeBlock(t.agent_id, conv.id),
+					// What it remembers from other trabajos: pinned and recent memories (the rest, by mem_search).
+					await memories.block(t.agent_id),
+				]
+					.filter(Boolean)
+					.join('\n\n'),
 				// What the web has for this run, readable on the computer (~/config, #27): names, never values.
 				config: {
 					name: agent.name,
@@ -1185,6 +1225,64 @@ function onSupervisor(l: Live, raw: string) {
 					.catch((err) => ({ ok: false, error: (err as Error).message }));
 				await event(ref, 'system', { message: whatsapp.noticeLine(reply) });
 				l.sup?.send(JSON.stringify({ t: 'notify_res', id: msg.id, ...reply }));
+				break;
+			}
+			case 'simulated': {
+				// Pagos simulados: the browser stopped a payment and showed the agent it was done. People see it
+				// in the turn's activity and the list's saga; the agent does not (its context never has these).
+				await event(ref, 'system', { message: await flows.simulated(ref.id, msg) });
+				break;
+			}
+			case 'job': {
+				// job_done / job_goal: the trabajo it works on (its conversation).
+				const op = String(msg.op ?? '');
+				const result = await jobs.handle(ref.id, op, (msg.args ?? {}) as Record<string, unknown>);
+				await event(ref, 'system', {
+					message: result.ok
+						? op === 'done'
+							? `Dio por terminado el trabajo #${result.trabajo}.`
+							: `Fijó el objetivo del trabajo #${result.trabajo}.`
+						: `Trabajo (${op}) no se pudo: ${result.error}`,
+				});
+				l.sup?.send(JSON.stringify({ t: 'job_res', id: msg.id, result }));
+				break;
+			}
+			case 'flow': {
+				// task_plan/update/ask/list: the server checks and keeps the trabajo's list.
+				const op = String(msg.op ?? '');
+				const result = await flows.handle(ref.id, op, (msg.args ?? {}) as Record<string, unknown>);
+				// Reading the list is not activity; writing it is.
+				if (op !== 'list')
+					await event(ref, 'system', {
+						message: result.ok
+							? `Tareas del trabajo #${result.trabajo}: ${{ plan: 'cambió la lista', update: 'registró una tarea', ask: 'preguntó al dueño' }[op] ?? op}.`
+							: `Tareas (${op}) no se pudo: ${result.error}`,
+					});
+				l.sup?.send(JSON.stringify({ t: 'flow_res', id: msg.id, result }));
+				break;
+			}
+			case 'memory': {
+				// mem_save/search/forget: what the agent knows from one trabajo to the next.
+				const op = String(msg.op ?? '');
+				const result = await memories.handle(ref.id, op, (msg.args ?? {}) as Record<string, unknown>);
+				const said = memories.activity(op, result);
+				if (said) await event(ref, 'system', { message: said });
+				l.sup?.send(JSON.stringify({ t: 'memory_res', id: msg.id, result }));
+				break;
+			}
+			case 'delegation': {
+				// delegation_start/status/message/cancel: the server checks and runs the encargo.
+				const op = String(msg.op ?? '');
+				const result = await delegations.handle(ref.id, op, (msg.args ?? {}) as Record<string, unknown>);
+				if (op !== 'status')
+					await event(ref, 'system', {
+						message: result.ok
+							? op === 'start'
+								? `Lanzó el encargo #${result.id} con ${result.contacto}.`
+								: `Encargo #${result.id}: ${op === 'cancel' ? 'cancelado' : 'instrucción enviada'}.`
+							: `Encargo (${op}) no se pudo: ${result.error}`,
+					});
+				l.sup?.send(JSON.stringify({ t: 'delegation_res', id: msg.id, result }));
 				break;
 			}
 			case 'mcp_request': {
@@ -1443,6 +1541,15 @@ async function saveFile(ref: RunRef, rawName: string, mime: string, b64: string)
 
 // Answer rounds are persisted with a run-bound inbox message. Reconnect/crash can deliver
 // that message, but it must NEVER become a new task or answer a subsequent help request.
+/** Who the run's current question is for: its owner, or whoever asked for the work. */
+export async function helpFor(taskId: number) {
+	const e = await row<{ para: string | null }>(
+		"select data->>'para' as para from run_events where run_id = $1 and kind = 'blocked' order by seq desc limit 1",
+		[taskId],
+	);
+	return e?.para === 'dueño' ? 'dueño' : 'quien_escribio';
+}
+
 export async function answerHelp(taskId: number, value: unknown) {
 	let broadcast = () => {};
 	const result = await tx(async (c) => {
@@ -1656,7 +1763,7 @@ export async function steer(taskId: number, text: string, kind: 'steer' | 'follo
 
 type Queued = {
 	id: number;
-	source: 'web' | 'hook' | 'cron' | 'whatsapp';
+	source: 'web' | 'hook' | 'cron' | 'whatsapp' | 'delegation' | 'flow';
 	sender: string | null;
 	schedule_name: string | null;
 	text: string;

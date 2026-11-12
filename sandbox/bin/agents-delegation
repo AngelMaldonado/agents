@@ -1,0 +1,5 @@
+#!/bin/sh
+# Encargos (delegation_start/status/message/cancel): the platform talks to a contact for the agent.
+# Usage: agents-delegation <start|status|message|cancel> '<json>'
+if [ -z "$1" ] || [ -z "$2" ]; then echo 'Uso: agents-delegation <start|status|message|cancel> <json>' >&2; exit 2; fi
+exec curl -sS --max-time 55 -X POST -H 'content-type: application/json' --data-binary "$2" "http://127.0.0.1:7777/delegation/$1"

@@ -210,7 +210,7 @@ function AgentCard({
 				<div className="flex shrink-0 flex-col items-end gap-1">
 					{/* Every card has a time: the last run's, or when the agent was created. */}
 					<Ticker itemKey={work}>
-						<span className="block text-muted-foreground" title={t ? 'Último trabajo' : 'Creado'}>
+						<span className="block text-muted-foreground" title={t ? 'Último turno' : 'Creado'}>
 							{ago(t ? t.created_at : agent.created_at)}
 						</span>
 					</Ticker>

@@ -35,7 +35,7 @@ class ManagedPi(unittest.TestCase):
             launch.assert_not_called()
         return code, output.getvalue(), execute
 
-    def test_self_updates_explain_management_without_executing_pi_or_npm(self):
+    def test_self_updates_explain_management_without_executing_pi_or_a_package_manager(self):
         for args in (
             ("update",),
             ("update", "self"),
@@ -51,7 +51,7 @@ class ManagedPi(unittest.TestCase):
                 self.assertEqual(code, 1)  # No update took place: do not report success to scripts.
                 self.assertIn("gestionada por Agents", message)
                 self.assertIn("imagen de la computadora", message)
-                self.assertIn("No se ejecutó npm ni se cambió la versión", message)
+                self.assertIn("No se instaló nada ni se cambió la versión", message)
                 self.assertIn("menú Computadora", message)
                 execute.assert_not_called()
 

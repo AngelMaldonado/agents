@@ -16,6 +16,23 @@ test('legacy help keeps human reason and offers no invented decision', () => {
 	const h = decodeHelp('Falta la ciudad.');
 	expect(h).toEqual({ reason: 'Falta la ciudad.', structured: false, questions: [] });
 });
+test('help says who unblocks it: its owner only when asked so; otherwise whoever asked for the work', () => {
+	const ask = (para?: string) =>
+		decodeHelp(
+			JSON.stringify({ version: 1, ...(para ? { para } : {}), reason: 'Falta decidir.', questions: [question] }),
+		);
+	expect(ask('dueño').para).toBe('dueño');
+	expect(ask('dueno').para).toBe('dueño');
+	expect(ask('quien_escribio').para).toBeUndefined();
+	expect(ask().para).toBeUndefined();
+	expect(ask('dueño').questions).toHaveLength(1);
+	expect(decodeHelp(JSON.stringify({ para: 'dueño', reason: 'Inicia sesión en HEB.' }))).toEqual({
+		reason: 'Inicia sesión en HEB.',
+		structured: false,
+		questions: [],
+		para: 'dueño',
+	});
+});
 test('structured help keeps recommendations unselected and normalizes only fresh IDs', () => {
 	const raw = JSON.stringify({ version: 1, reason: 'Elige fuentes.', questions: [{ ...question, id: 'q_1' }] });
 	expect(raw.length).toBeLessThan(2000);

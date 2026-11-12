@@ -59,7 +59,10 @@ export class DockerSandbox implements SandboxProvider {
 		};
 	}
 
-	/** Read the installed npm manifest, not pi's CLI or the supervisor. No network, state or secrets. */
+	/**
+	 * Read the installed package manifest, not pi's CLI or the supervisor. No network, state or secrets. Images
+	 * on Bun keep pi among Bun's global packages and answer `node` with Bun; older ones ran on Node and npm.
+	 */
 	async imagePiVersion(image: string): Promise<string | null> {
 		if (!/^sha256:[a-f0-9]{64}$/.test(image)) throw new Error('Se requiere el ID inmutable de la imagen.');
 		const pending = piReads.get(image);
@@ -84,7 +87,7 @@ export class DockerSandbox implements SandboxProvider {
 				Cmd: [
 					'--input-type=commonjs',
 					'-e',
-					`const p=JSON.parse(require('node:fs').readFileSync('/usr/local/lib/node_modules/@earendil-works/pi-coding-agent/package.json','utf8')); if(p.name!=='@earendil-works/pi-coding-agent')process.exit(1); process.stdout.write(String(p.version));`,
+					`const fs=require('node:fs'),f=['/usr/local/lib/bun-global/node_modules','/usr/local/lib/node_modules'].map((d)=>d+'/@earendil-works/pi-coding-agent/package.json').find((x)=>fs.existsSync(x)); if(!f)process.exit(1); const p=JSON.parse(fs.readFileSync(f,'utf8')); if(p.name!=='@earendil-works/pi-coding-agent')process.exit(1); process.stdout.write(String(p.version));`,
 				],
 				User: 'agent',
 				Tty: true,
@@ -202,6 +205,7 @@ export class DockerSandbox implements SandboxProvider {
 			'/containers/create',
 			{
 				Image: imageId,
+				// `node` is Node in older images and Bun's stand-in in newer ones: the same call probes both.
 				Entrypoint: ['node', '/opt/agents/harness-probe.mjs'],
 				Cmd: [],
 				User: 'agent',
@@ -237,6 +241,12 @@ export class DockerSandbox implements SandboxProvider {
 			} as RequestInit);
 			const logs = await response.text();
 			const marker = logs.split(/\r?\n/).find((line) => line.startsWith('AGENTS_HARNESS_PROBE '));
+			// An image older than the contract does not know its newer parts (encargos, flujos, a new tool):
+			// its own validation refuses the whole manifest. Said so, not as a stack trace.
+			if (!marker && /Harness: (campos no admitidos|elige herramientas del catálogo)/.test(logs))
+				throw new Error(
+					`La imagen de computadora con que se probó (${imageId.replace(/^sha256:/, '').slice(0, 12)}) es anterior a este contrato: no conoce algo de él (por ejemplo, encargos, flujos o una herramienta nueva). Hay que construir o publicar la imagen nueva (en dev: just sandbox build) y volver a probar.`,
+				);
 			if (!marker) throw new Error(`La imagen no confirmó la prueba del harness: ${logs.slice(-1000)}`);
 			const report = JSON.parse(marker.slice('AGENTS_HARNESS_PROBE '.length));
 			if (!report.ok) throw new Error(String(report.error ?? 'pi no cargó el harness.').slice(0, 1000));

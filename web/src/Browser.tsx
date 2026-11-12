@@ -229,7 +229,7 @@ export function Browser({
 								: live
 									? 'abriendo…'
 									: historical
-										? `Trabajo #${taskId}`
+										? `Turno #${taskId}`
 										: 'sin navegador'}
 						</span>
 					</>
@@ -282,7 +282,7 @@ export function Browser({
 							ref={image}
 							className={!live && !historical && !saved ? 'ended' : undefined}
 							src={`data:image/jpeg;base64,${jpeg}`}
-							alt={historical ? `Captura del trabajo #${taskId}` : live ? 'Pantalla del agente' : 'Última pantalla'}
+							alt={historical ? `Captura del turno #${taskId}` : live ? 'Pantalla del agente' : 'Última pantalla'}
 							draggable={false}
 						/>
 						{driving && ripple && (
@@ -304,9 +304,9 @@ export function Browser({
 						{loading
 							? 'Cargando captura…'
 							: error
-								? 'No se pudo cargar la captura del trabajo.'
+								? 'No se pudo cargar la captura del turno.'
 								: historical
-									? 'Este trabajo no tiene una captura guardada.'
+									? 'Este turno no tiene una captura guardada.'
 									: live
 										? 'Esperando la primera imagen…'
 										: 'El navegador se apaga entre tareas'}

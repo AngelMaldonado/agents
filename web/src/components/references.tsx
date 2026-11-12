@@ -47,7 +47,7 @@ export function ReferenceChip({ id, children }: { id: string; children: React.Re
 			</a>
 		</Badge>
 	) : (
-		<Badge variant="outline" className={className} title={`Trabajo #${n}`}>
+		<Badge variant="outline" className={className} title={`Turno #${n}`}>
 			{body}
 		</Badge>
 	);
@@ -111,7 +111,7 @@ export function useReferenceMentions(agentId: number | undefined) {
 			[
 				{
 					id: 'runs',
-					label: 'Trabajos',
+					label: 'Turnos',
 					items: tasks.slice(0, 30).map((t) => ({
 						id: `run:${t.id}`,
 						type: 'run',
@@ -138,7 +138,7 @@ export function useReferenceMentions(agentId: number | undefined) {
 /** The @ popover: categories first, then the items of the chosen one. */
 export function ReferencePopover({
 	mention,
-	label = 'Citar un trabajo o una conversación',
+	label = 'Citar un turno o un trabajo',
 }: {
 	mention: ReturnType<typeof unstable_useMentionAdapter>;
 	label?: string;

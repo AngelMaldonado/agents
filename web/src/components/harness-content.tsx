@@ -1,7 +1,14 @@
 import { useState } from 'react';
-import { BookOpen, MessageSquare, Plug, Puzzle, SquareTerminal } from 'lucide-react';
+import { BookOpen, Handshake, MessageSquare, Plug, Puzzle, SquareTerminal, Workflow } from 'lucide-react';
 import type { AccessSuggestion, Design, Harness, HarnessValidation } from '@/api';
-import { effectiveTools, PLUGINS } from '../../../sandbox/harness';
+import {
+	delegationParams,
+	effectiveTools,
+	flowParams,
+	PLUGINS,
+	type DelegationTemplate,
+	type FlowRecipe,
+} from '../../../sandbox/harness';
 import { ContractMarkdown, ToolsPanel } from './design-content';
 import { Tile } from './harness-tile';
 import { AccessSuggestions } from './access-suggestions';
@@ -37,6 +44,8 @@ export function HarnessPanel({
 	newAgent?: boolean;
 }) {
 	const [skill, setSkill] = useState<Harness['skills'][number] | null>(null);
+	const [template, setTemplate] = useState<DelegationTemplate | null>(null);
+	const [recipe, setRecipe] = useState<FlowRecipe | null>(null);
 	return (
 		<div className="grid min-w-0 gap-5" aria-label="Harness propuesto">
 			<p className="text-xs text-muted-foreground">
@@ -97,6 +106,44 @@ export function HarnessPanel({
 					<Empty>Sin herramientas de línea de comandos.</Empty>
 				)}
 			</Category>
+			{!!value.flows?.length && (
+				<Category
+					title="Flujos"
+					hint="Recetas de trabajos de varios pasos: la plataforma lleva los pasos y el agente puede ajustarlos dentro de lo que aprueba este contrato."
+				>
+					<div className="harness-tiles">
+						{value.flows.map((r) => (
+							<Tile
+								key={r.name}
+								icon={Workflow}
+								title={r.name}
+								detail={`${r.steps.length} pasos · ${r.maxHours} h`}
+								hint={r.description}
+								onClick={() => setRecipe(r)}
+							/>
+						))}
+					</div>
+				</Category>
+			)}
+			{!!value.delegations?.length && (
+				<Category
+					title="Encargos"
+					hint="Conversaciones que el agente delega por WhatsApp: la plataforma habla con el contacto con este guion y le devuelve los datos."
+				>
+					<div className="harness-tiles">
+						{value.delegations.map((t) => (
+							<Tile
+								key={t.name}
+								icon={Handshake}
+								title={t.name}
+								detail={`${t.maxMessages} mensajes · ${t.maxHours} h`}
+								hint={t.description}
+								onClick={() => setTemplate(t)}
+							/>
+						))}
+					</div>
+				</Category>
+			)}
 			{!!value.plugins.length && (
 				<Category title="Plugins">
 					<div className="harness-tiles">
@@ -140,6 +187,24 @@ export function HarnessPanel({
 				{value.restrictions.readOnlyFiles ? 'sólo lectura' : 'escritura según herramientas'}
 				{value.tools.includes('bash') ? ' · con bash (puede reproducir operaciones de otras herramientas)' : ''}.
 			</p>
+			<Dialog open={!!recipe} onOpenChange={(open) => !open && setRecipe(null)}>
+				<DialogContent className="sm:max-w-2xl">
+					<DialogHeader>
+						<DialogTitle>Flujo: {recipe?.name}</DialogTitle>
+						<DialogDescription>{recipe?.description}</DialogDescription>
+					</DialogHeader>
+					{recipe && <RecipeDetail r={recipe} />}
+				</DialogContent>
+			</Dialog>
+			<Dialog open={!!template} onOpenChange={(open) => !open && setTemplate(null)}>
+				<DialogContent className="sm:max-w-2xl">
+					<DialogHeader>
+						<DialogTitle>Encargo: {template?.name}</DialogTitle>
+						<DialogDescription>{template?.description}</DialogDescription>
+					</DialogHeader>
+					{template && <TemplateDetail t={template} />}
+				</DialogContent>
+			</Dialog>
 			<Dialog open={!!skill} onOpenChange={(open) => !open && setSkill(null)}>
 				<DialogContent className="sm:max-w-2xl">
 					<DialogHeader>
@@ -260,5 +325,108 @@ export function HarnessTests({
 				debes aprobar explícitamente.
 			</p>
 		</section>
+	);
+}
+
+/** An encargo template as its owner approves it: what it says, what it may not do, what it brings back. */
+function TemplateDetail({ t }: { t: DelegationTemplate }) {
+	const params = delegationParams(t);
+	const List = ({ title, items }: { title: string; items: string[] }) =>
+		items.length ? (
+			<div>
+				<h4 className="text-xs font-semibold text-muted-foreground">{title}</h4>
+				<ul className="mt-1 list-disc space-y-1 pl-4">
+					{items.map((x, i) => (
+						<li key={i} className="break-words">
+							{x}
+						</li>
+					))}
+				</ul>
+			</div>
+		) : null;
+	return (
+		<div className="grid max-h-[60vh] gap-3 overflow-y-auto text-sm">
+			<div>
+				<h4 className="text-xs font-semibold text-muted-foreground">Objetivo</h4>
+				<p className="mt-1 whitespace-pre-wrap break-words">{t.objective}</p>
+			</div>
+			<div>
+				<h4 className="text-xs font-semibold text-muted-foreground">Presentación</h4>
+				<p className="mt-1 break-words">«{t.intro}»</p>
+			</div>
+			<List title="Reglas" items={t.rules} />
+			<List
+				title={t.collect.list ? 'Datos que obtiene (por renglón)' : 'Datos que obtiene'}
+				items={t.collect.fields.map(
+					(f) =>
+						`${f.name} (${f.type === 'number' ? 'número' : f.type === 'boolean' ? 'sí/no' : 'texto'}): ${f.description}`,
+				)}
+			/>
+			<List title="Escala al agente si" items={t.escalate} />
+			<p className="text-2xs text-muted-foreground">
+				{params.length ? `El agente da al lanzarlo: ${params.join(', ')}. ` : ''}
+				{t.files ? 'Puede mandarle al contacto los archivos que le dé el agente. ' : 'No manda archivos. '}Hasta{' '}
+				{t.maxMessages} mensajes y {t.maxHours} h. Siempre: escribe como persona pero nunca dice serlo; si le preguntan,
+				dice que es un asistente tuyo. Sin mensajes de sistema ni el nombre del agente.
+			</p>
+		</div>
+	);
+}
+
+const KIND_LABEL: Record<FlowRecipe['steps'][number]['kind'], string> = {
+	agent: 'el agente',
+	subagent: 'subagente',
+	delegation: 'encargo',
+	question: 'pregunta al dueño',
+	wait: 'espera',
+};
+
+/** A flow recipe as its owner approves it: its objective, what it produces, its steps and budget. */
+function RecipeDetail({ r }: { r: FlowRecipe }) {
+	const params = flowParams(r);
+	return (
+		<div className="grid max-h-[60vh] gap-3 overflow-y-auto text-sm">
+			<div>
+				<h4 className="text-xs font-semibold text-muted-foreground">Objetivo</h4>
+				<p className="mt-1 whitespace-pre-wrap break-words">{r.objective}</p>
+			</div>
+			<div>
+				<h4 className="text-xs font-semibold text-muted-foreground">
+					Produce{r.produces.list ? ' (por renglón)' : ''}
+				</h4>
+				<ul className="mt-1 list-disc space-y-1 pl-4">
+					{r.produces.fields.map((f) => (
+						<li key={f.name}>
+							{f.name}: {f.description}
+						</li>
+					))}
+				</ul>
+			</div>
+			<div>
+				<h4 className="text-xs font-semibold text-muted-foreground">Pasos sugeridos</h4>
+				<ol className="mt-1 list-decimal space-y-1.5 pl-4">
+					{r.steps.map((s) => (
+						<li key={s.key} className="break-words">
+							<span className="font-medium">{s.title}</span>{' '}
+							<span className="text-muted-foreground">
+								· {KIND_LABEL[s.kind]}
+								{s.delegation
+									? ` «${s.delegation.template}»${s.delegation.contact ? ` con ${s.delegation.contact}` : ''}`
+									: ''}
+								{s.kind === 'wait' && s.hours ? ` de ${s.hours} h` : ''}
+								{s.depends.length ? ` · después de ${s.depends.join(', ')}` : ''}
+								{s.optional ? ' · opcional' : ''}
+							</span>
+							{s.instructions && <p className="text-xs text-muted-foreground">{s.instructions}</p>}
+						</li>
+					))}
+				</ol>
+			</div>
+			<p className="text-2xs text-muted-foreground">
+				{params.length ? `El agente da al arrancarlo: ${params.join(', ')}. ` : ''}Hasta {r.maxHours} h,{' '}
+				{r.maxDelegations} encargos y {r.maxWakes} despertares del agente. El agente puede agregar, quitar o reordenar
+				pasos con lo que este contrato permite, y cada cambio queda en la historia del flujo con su motivo.
+			</p>
+		</div>
 	);
 }

@@ -20,11 +20,19 @@ export type Agent = {
 	config_revision: number;
 	harness: Harness;
 	harness_image: string | null;
+	/** Hours without activity that close one of its trabajos (jobs.ts). */
+	inactivity_hours: number;
+	/** Pagos simulados: its payments are intercepted, and it sees them as done. */
+	simulated_payments: boolean;
+	/** Conversaciones simuladas: its WhatsApp goes to the web simulator. */
+	simulated_conversations: boolean;
+	/** Modo objetivo: its trabajos go on by themselves until their objective is met. */
+	goal_mode: boolean;
 	shares: number[];
 };
 
 const COLS =
-	'a.id, a.person_id, a.name, a.role, a.model, a.seed, a.created_at, a.config_revision, a.harness, a.harness_image, array(select s.person_id::int from agent_shares s where s.agent_id = a.id order by s.person_id) as shares';
+	'a.id, a.person_id, a.name, a.role, a.model, a.seed, a.created_at, a.config_revision, a.harness, a.harness_image, a.inactivity_hours, a.simulated_payments, a.simulated_conversations, a.goal_mode, array(select s.person_id::int from agent_shares s where s.agent_id = a.id order by s.person_id) as shares';
 
 export async function visible(viewer: Person) {
 	const list = await rows<Agent & { owner: string }>(

@@ -95,7 +95,7 @@ const waScan = (ref: number, phone: string) => {
 process.env.AGENTS_WHATSAPP_URL = waBridge.url.origin;
 process.env.AGENTS_WHATSAPP_SECRET = 'wa-test';
 process.env.AGENTS_MASTER_KEY = Buffer.alloc(32, 7).toString('base64');
-const { migrate, exec, row, DATABASE_URL } = await import('./db');
+const { migrate, exec, row, rows, DATABASE_URL } = await import('./db');
 const { assertTestDatabase } = await import('./test-database');
 const { setProxy, checkProxyModel } = await import('./providers');
 const { enqueue } = await import('./tasks');
@@ -192,6 +192,54 @@ run('rejects proxy authentication failure instead of creating a run', async () =
 		await expect(checkProxyModel(person, 'openai/gpt-6.1-sol')).rejects.toThrow('El proxy rechazó la API key.');
 	} finally {
 		status = 200;
+	}
+});
+
+run('a message waits for a proxy that does not answer, and fails only after 6 h or for other reasons', async () => {
+	const agents = await import('./agents'),
+		inbox = await import('./inbox');
+	const a = await agents.create(person, { name: 'Espera al proxy', model: 'openai/gpt-6-sol' });
+	const runsOf = () =>
+		rows<{ status: string; end_reason: string | null }>('select status, end_reason from runs where agent_id = $1', [
+			a.id,
+		]);
+	const start = Date.now();
+	inbox.routerClock.now = () => start;
+	status = 503;
+	try {
+		const m = await inbox.receive(
+			{ agentId: a.id, source: 'web', personId: person, text: 'Hola' },
+			{ routeNow: false },
+		);
+		await inbox.route(a.id);
+		expect(await runsOf()).toEqual([]);
+		expect(await row('select run_id, routed_at from messages where id = $1', [m.message_id])).toEqual({
+			run_id: null,
+			routed_at: null,
+		});
+		expect(inbox.retryOf(a.id)).toEqual({ n: 1, at: start + 60_000 });
+		await inbox.route(a.id);
+		expect(inbox.retryOf(a.id)).toEqual({ n: 2, at: start + 120_000 });
+		// After 6 h without the proxy, it ends in error so its sender hears why.
+		inbox.routerClock.now = () => start + inbox.RETRY_FOR_MS + 1;
+		await inbox.route(a.id);
+		expect(await runsOf()).toEqual([
+			{ status: 'error', end_reason: expect.stringContaining('El proxy respondió 503') },
+		]);
+		expect(inbox.retryOf(a.id)).toBeNull();
+		// A rejected key is not worth waiting for.
+		inbox.routerClock.now = () => start;
+		status = 401;
+		const b = await agents.create(person, { name: 'Llave rechazada', model: 'openai/gpt-6-sol' });
+		await inbox.receive({ agentId: b.id, source: 'web', personId: person, text: 'Hola' }, { routeNow: false });
+		await inbox.route(b.id);
+		expect(await rows('select status, end_reason from runs where agent_id = $1', [b.id])).toEqual([
+			{ status: 'error', end_reason: 'El proxy rechazó la API key.' },
+		]);
+		expect(inbox.retryOf(b.id)).toBeNull();
+	} finally {
+		status = 200;
+		inbox.routerClock.now = () => Date.now();
 	}
 });
 
@@ -659,9 +707,26 @@ run('WhatsApp: numbers, lists, and one group per (owner of agents, person) where
 		 values ($1, $2, (select id from conversations where agent_id = $1 and is_default), $3, 'openai/gpt-6-sol', 'running') returning id, conversation_id`,
 		[radar.id, ana.id, `wa-radar-${radar.id}`],
 	))!;
-	expect((await whatsapp.notify(radarRun.id, { to: ['dueño'], text: 'Hay novedades' }, night)).error).toContain(
-		'silencio',
-	);
+	// At night it is not refused: it waits for 7:00 and goes out by itself, checked again then.
+	const nightRun = (await row<{ id: number }>(
+		`insert into runs (agent_id, person_id, conversation_id, workflow_id, model, status)
+		 values ($1, $2, $3, $4, 'openai/gpt-6-sol', 'done') returning id`,
+		[radar.id, ana.id, radarRun.conversation_id, `wa-radar-night-${radar.id}`],
+	))!;
+	const held = await whatsapp.notify(nightRun.id, { to: ['dueño'], text: 'Hay novedades' }, night);
+	expect(held).toMatchObject({ ok: true, programado: expect.stringContaining('7:00') });
+	expect(whatsapp.noticeLine(held)).toContain('Programó el aviso por WhatsApp para las 7:00');
+	expect(whatsapp.quietUntil(night)!.toISOString()).toBe('2026-11-03T13:00:00.000Z');
+	expect(whatsapp.quietUntil(noon)).toBeNull();
+	waSent.length = 0;
+	expect(await whatsapp.sendDeferred(new Date('2026-11-03T12:59:00Z'))).toBe(0);
+	expect(await whatsapp.sendDeferred(new Date('2026-11-03T13:00:00Z'))).toBe(1);
+	expect(waSent.map((m) => m.text)).toEqual(['*Radar:* Hay novedades']);
+	expect(await whatsapp.sendDeferred(new Date('2026-11-03T13:05:00Z'))).toBe(0);
+	// Urgent goes at once, even at night.
+	expect(
+		(await whatsapp.notify(nightRun.id, { to: ['dueño'], text: 'Urgente', urgent: true }, night)).enviado_a,
+	).toEqual(['Ana']);
 	expect((await whatsapp.notify(radarRun.id, { to: ['Nadie'], text: 'x' }, noon)).no_enviado).toEqual([
 		{ para: 'Nadie', motivo: expect.stringContaining('no es un contacto habilitado') },
 	]);
@@ -722,27 +787,27 @@ run('WhatsApp: numbers, lists, and one group per (owner of agents, person) where
 	expect(await inAna('/actual')).toEqual({ command: true });
 	expect(waSent.at(-1)?.text).toMatch(/^Hablas con Radar, en una conversación abierta\. También le dices @radar\.$/);
 
-	// A supplier (a guest marked as such): never a group; Radar writes to them one to one once Ana switches
-	// them on, and their answer goes back to the conversation that asked, signed as a supplier's.
+	// A external (a guest marked as such): never a group; Radar writes to them one to one once Ana switches
+	// them on, and their answer goes back to the conversation that asked, signed as an external contact's.
 	await whatsapp.setLists(admin, pub.id, {
 		allow: [
 			{ phone: '+52 444 111 2222', personId: ana.id },
 			{ phone: '+52 444 555 6666', personId: beto.id },
 			{ phone: '+52 444 777 8888', label: 'Invitada' },
-			{ phone: '+52 444 666 7777', label: 'Ferretería', supplier: true },
+			{ phone: '+52 444 666 7777', label: 'Ferretería', external: true },
 		],
 		block: [{ phone: '+52 444 999 0000', label: 'Spam' }],
 	});
 	await whatsapp.syncGroups();
 	expect(waGroups.some((g) => g.phones.includes('524446667777'))).toBe(false);
-	const supplier = (await whatsapp.agentView(radar.id, ana)).contacts.find((c) => c.name === 'Ferretería')!;
-	expect(supplier).toMatchObject({ kind: 'supplier', enabled: false });
+	const external = (await whatsapp.agentView(radar.id, ana)).contacts.find((c) => c.name === 'Ferretería')!;
+	expect(external).toMatchObject({ kind: 'external', enabled: false });
 	expect(
 		(await whatsapp.notify(radarRun.id, { to: ['Ferretería'], text: '¿Precio del cemento?' }, noon)).no_enviado,
 	).toEqual([{ para: 'Ferretería', motivo: expect.stringContaining('no es un contacto habilitado') }]);
 	// Nobody asked them yet: the bridge does not even take their messages.
 	expect(await whatsapp.allowed({ number: pubJid, phone: '5214446667777', text: 'Hola' })).toEqual({ allowed: false });
-	await whatsapp.setContact(radar.id, ana, { key: supplier.key, enabled: true });
+	await whatsapp.setContact(radar.id, ana, { key: external.key, enabled: true });
 	waSent.length = 0;
 	expect(
 		(await whatsapp.notify(radarRun.id, { to: ['Ferretería'], text: '¿Precio del cemento?' }, noon)).enviado_a,
@@ -762,7 +827,7 @@ run('WhatsApp: numbers, lists, and one group per (owner of agents, person) where
 	const quote = (await whatsapp.event({
 		type: 'message',
 		number: pubJid,
-		id: 'm-supplier-1',
+		id: 'm-external-1',
 		phone: '5214446667777',
 		name: 'Ferre',
 		text: 'El cemento cuesta 200 el bulto',
@@ -773,15 +838,15 @@ run('WhatsApp: numbers, lists, and one group per (owner of agents, person) where
 		agent_id: radar.id,
 		conversation_id: radarRun.conversation_id,
 		person_id: null,
-		sender: 'Ferretería (+524446667777), proveedor de tu dueño (no es tu dueño)',
+		sender: 'Ferretería (+524446667777), contacto externo de tu dueño (no es tu dueño)',
 	});
-	// The agent reads it as a supplier's: its answer is not sent to them, and it is data, not orders.
+	// The agent reads it as an external contact's: its answer is not sent to them, and it is data, not orders.
 	const { render } = await import('./inbox');
 	expect(
 		render({
 			id: 1,
 			source: 'whatsapp',
-			sender: 'Ferretería (+524446667777), proveedor de tu dueño (no es tu dueño)',
+			sender: 'Ferretería (+524446667777), contacto externo de tu dueño (no es tu dueño)',
 			schedule_name: null,
 			text: 'x',
 		}),
@@ -791,12 +856,12 @@ run('WhatsApp: numbers, lists, and one group per (owner of agents, person) where
 	await whatsapp.notify(radarRun.id, { to: ['Ferretería'], text: '¿Y con entrega mañana?' }, noon);
 	expect(waSent[0].text).toBe('¿Y con entrega mañana?');
 	// Switched off for Radar, their messages are ignored.
-	await whatsapp.setContact(radar.id, ana, { key: supplier.key, enabled: false });
+	await whatsapp.setContact(radar.id, ana, { key: external.key, enabled: false });
 	expect(
 		await whatsapp.event({
 			type: 'message',
 			number: pubJid,
-			id: 'm-supplier-2',
+			id: 'm-external-2',
 			phone: '5214446667777',
 			name: 'Ferre',
 			text: 'Hola',
@@ -852,6 +917,941 @@ run('WhatsApp: numbers, lists, and one group per (owner of agents, person) where
 	await whatsapp.setGroupPhoto(ana, null);
 	await whatsapp.syncGroups();
 	expect(waPhotos.map((p) => [p.group, p.photo]).sort()).toEqual(anaGroups.map((g) => [g, '']));
+
+	// A direct guest: never a group; they talk one to one with the single agent switched on for them, and
+	// its answers, notices and /terminar go in that chat.
+	const lists = (extra: Record<string, unknown>) =>
+		whatsapp.setLists(admin, pub.id, {
+			allow: [
+				{ phone: '+52 444 111 2222', personId: ana.id },
+				{ phone: '+52 444 555 6666', personId: beto.id },
+				{ phone: '+52 444 777 8888', label: 'Invitada' },
+				{ phone: '+52 444 666 7777', label: 'Ferretería', external: true },
+				{ phone: '+52 444 333 4444', label: 'Cliente', ...extra },
+			],
+			block: [{ phone: '+52 444 999 0000', label: 'Spam' }],
+		});
+	await lists({ direct: true });
+	await whatsapp.syncGroups();
+	expect(waGroups.some((g) => g.phones.includes('524443334444'))).toBe(false);
+	const client = (await whatsapp.agentView(radar.id, ana)).contacts.find((c) => c.name === 'Cliente')!;
+	expect(client).toMatchObject({ kind: 'direct', enabled: false });
+	const fromClient = (id: string, text: string) =>
+		whatsapp.event({ type: 'message', number: pubJid, id, phone: '5214443334444', name: 'C', text });
+	// Switched on for nobody: the bridge does not take their messages.
+	expect(await whatsapp.allowed({ number: pubJid, phone: '5214443334444', text: 'Hola' })).toEqual({ allowed: false });
+	expect(await fromClient('m-direct-0', 'Hola')).toEqual({ ignored: true, reason: 'sin agente' });
+	await whatsapp.setContact(radar.id, ana, { key: client.key, enabled: true });
+	// One agent only.
+	await expect(whatsapp.setContact(compras.id, ana, { key: client.key, enabled: true })).rejects.toThrow('«Radar»');
+	expect(await whatsapp.allowed({ number: pubJid, phone: '5214443334444', text: 'Hola' })).toEqual({ allowed: true });
+	const asked = (await fromClient('m-direct-1', '¿Tienen envío a Monterrey?')) as { message_id: number };
+	const first = (await row<{ agent_id: number; person_id: number | null; sender: string; conversation_id: number }>(
+		'select agent_id, person_id, sender, conversation_id from messages where id = $1',
+		[asked.message_id],
+	))!;
+	expect(first).toMatchObject({
+		agent_id: radar.id,
+		person_id: null,
+		sender: 'Cliente (+524443334444), invitado de tu dueño (no es tu dueño)',
+	});
+	expect(first.conversation_id).not.toBe(radarRun.conversation_id);
+	// The answer goes back to their phone, under the agent's name.
+	const clientRun = (await row<{ id: number }>(
+		`insert into runs (agent_id, person_id, conversation_id, workflow_id, model, status, answer)
+		 values ($1, $2, $3, $4, 'openai/gpt-6-sol', 'done', 'Sí, llega en 3 días.') returning id`,
+		[radar.id, ana.id, first.conversation_id, `wa-direct-${radar.id}`],
+	))!.id;
+	await exec('update messages set run_id = $2 where id = $1', [asked.message_id, clientRun]);
+	waSent.length = 0;
+	await whatsapp.onRun(clientRun, 'done');
+	expect(waSent).toEqual([
+		{ jid: pubJid, phone: '524443334444', resolve: true, text: '*Radar:* Sí, llega en 3 días.', files: [] },
+	]);
+	// A notice from another conversation (a schedule's): their reply carries what it said, in their chat.
+	const scheduled = (await row<{ id: number }>(
+		`insert into runs (agent_id, person_id, conversation_id, workflow_id, model, status)
+		 values ($1, $2, $3, $4, 'openai/gpt-6-sol', 'done') returning id`,
+		[radar.id, ana.id, radarRun.conversation_id, `wa-direct-notice-${radar.id}`],
+	))!.id;
+	waSent.length = 0;
+	expect((await whatsapp.notify(scheduled, { to: ['Cliente'], text: 'Ya salió tu pedido' }, noon)).enviado_a).toEqual([
+		'Cliente',
+	]);
+	expect(waSent).toMatchObject([{ phone: '524443334444', text: '*Radar:* Ya salió tu pedido' }]);
+	const thanks = (await fromClient('m-direct-2', 'Gracias')) as { message_id: number };
+	expect(await row('select conversation_id, text from messages where id = $1', [thanks.message_id])).toEqual({
+		conversation_id: first.conversation_id,
+		text: '(En respuesta a tu mensaje: «Ya salió tu pedido»)\n\nGracias',
+	});
+	// /terminar closes their conversation; the next message opens another.
+	waSent.length = 0;
+	expect(await fromClient('m-direct-3', '/terminar')).toEqual({ command: true, ended: true });
+	expect(waSent.at(-1)).toMatchObject({
+		phone: '524443334444',
+		text: '*Radar:* Terminé nuestra conversación; la próxima empieza de cero.',
+	});
+	const again = (await fromClient('m-direct-4', 'Otra pregunta')) as { message_id: number };
+	expect(
+		(await row<{ conversation_id: number }>('select conversation_id from messages where id = $1', [again.message_id]))!
+			.conversation_id,
+	).not.toBe(first.conversation_id);
+	// A guest switched on for two agents cannot become direct.
+	await lists({});
+	await whatsapp.setContact(compras.id, ana, { key: client.key, enabled: true });
+	await expect(lists({ direct: true })).rejects.toThrow('habla con uno solo');
+	await whatsapp.setContact(compras.id, ana, { key: client.key, enabled: false });
+	await lists({ direct: true });
+
+	// Encargos: Radar delegates a job to the ferretería (an external contact). The platform talks to them
+	// with its own context and no agent's name; their messages go to it; a question comes back at once; the
+	// results of the work's encargos come back together.
+	const delegations = await import('./delegations');
+	const { validateHarness } = await import('../../sandbox/harness');
+	const { defaultHarness } = await import('./harnesses');
+	const template = {
+		name: 'cotizar',
+		description: 'Cotiza con un contacto externo.',
+		objective: 'Cotiza {lista} con entrega el {fecha}.',
+		intro: 'Buen día, le escribo de parte de Ana.',
+		rules: ['No aceptes anticipos sin preguntar.'],
+		collect: {
+			list: true,
+			fields: [
+				{ name: 'producto', description: 'Qué', type: 'text' },
+				{ name: 'precio', description: 'Por bulto, en pesos', type: 'number' },
+			],
+		},
+		escalate: ['Si pide anticipo.'],
+		files: true,
+		maxMessages: 5,
+		maxHours: 48,
+	};
+	await exec('update agents set harness = $2 where id = $1', [
+		radar.id,
+		JSON.stringify(
+			validateHarness({
+				...defaultHarness(),
+				tools: [...defaultHarness().tools, 'delegations'],
+				delegations: [template, { ...template, name: 'avisar', files: false }],
+			}),
+		),
+	]);
+	const ferreKey = (await whatsapp.agentView(radar.id, ana)).contacts.find((c) => c.name === 'Ferretería')!.key;
+	await whatsapp.setContact(radar.id, ana, { key: ferreKey, enabled: true });
+	// The model, scripted per contact: what each turn decides, and what it was told.
+	type Turn = Awaited<ReturnType<typeof delegations.model.ask>>['value'];
+	const script: Record<string, Turn[]> = {};
+	const told: { instructions: string; transcript: string }[] = [];
+	const realAsk = delegations.model.ask;
+	delegations.model.ask = async (_p, _m, instructions, transcript) => {
+		told.push({ instructions, transcript });
+		const who = Object.keys(script).find((name) => instructions.includes(`con ${name} de parte`))!;
+		return { value: script[who].shift()!, tokens: 100 };
+	};
+	delegations.clock.now = () => noon;
+	const job = (await row<{ id: number; conversation_id: number }>(
+		`insert into runs (agent_id, person_id, conversation_id, workflow_id, model, status)
+		 values ($1, $2, $3, $4, 'openai/gpt-6-sol', 'running') returning id, conversation_id`,
+		[radar.id, ana.id, radarRun.conversation_id, `wa-delegation-${radar.id}`],
+	))!;
+	const params = { lista: '10 bultos de cemento', fecha: 'lunes' };
+	expect((await delegations.start(job.id, { plantilla: 'otra', contacto: 'Ferretería' })).error).toContain('cotizar');
+	expect((await delegations.start(job.id, { plantilla: 'cotizar', contacto: 'Ferretería' })).error).toContain(
+		'lista, fecha',
+	);
+	expect(
+		(await delegations.start(job.id, { plantilla: 'cotizar', contacto: 'Nadie', parametros: params })).error,
+	).toContain('no es un contacto encendido');
+	expect(
+		(await delegations.start(job.id, { plantilla: 'cotizar', contacto: 'Ana', parametros: params })).error,
+	).toContain('contacto externo');
+	waSent.length = 0;
+	script['Ferretería'] = [
+		{
+			message: 'Buen día, le escribo de parte de Ana. ¿Me cotiza 10 bultos de cemento para el lunes?',
+			data: [],
+			status: 'continue',
+			question: null,
+			summary: 'Pedí precio.',
+		},
+	];
+	// The agent tells it about its work and gives it the order to send; a template without files refuses them.
+	const order = { name: 'pedido.pdf', data: Buffer.from('%PDF-1.4 pedido').toString('base64') };
+	expect(
+		(
+			await delegations.start(job.id, {
+				plantilla: 'avisar',
+				contacto: 'Ferretería',
+				parametros: params,
+				files: [order],
+			})
+		).error,
+	).toContain('no manda archivos');
+	script['Ferretería'][0].attach = ['pedido.pdf', 'otro.pdf'];
+	const a1 = await delegations.start(job.id, {
+		plantilla: 'cotizar',
+		contacto: 'Ferretería',
+		parametros: params,
+		contexto: 'En el HEB el bulto está a 210.',
+		files: [order],
+	});
+	expect(a1).toMatchObject({ ok: true, contacto: 'Ferretería', archivos: ['pedido.pdf'] });
+	await delegations.idle(a1.id as number);
+	expect(told[0].instructions).toContain('Cotiza 10 bultos de cemento con entrega el lunes.');
+	expect(told[0].instructions).toContain('asistente de Ana');
+	expect(told[0].instructions).toContain('En el HEB el bulto está a 210.');
+	expect(told[0].instructions).toContain('Puedes mandarle estos archivos: pedido.pdf');
+	// As it is: no agent's name, nothing added.
+	expect(waSent).toEqual([
+		{
+			jid: pubJid,
+			phone: '524446667777',
+			resolve: true,
+			text: 'Buen día, le escribo de parte de Ana. ¿Me cotiza 10 bultos de cemento para el lunes?',
+			// Only the agent's file; a name it made up is dropped.
+			files: [{ name: 'pedido.pdf', mime: 'application/pdf', data: order.data }],
+		},
+	]);
+	// One active encargo per contact; and no notices to them meanwhile.
+	expect(
+		(await delegations.start(job.id, { plantilla: 'cotizar', contacto: 'Ferretería', parametros: params })).error,
+	).toContain('ya tiene un encargo activo');
+	expect((await whatsapp.notify(job.id, { to: ['Ferretería'], text: 'Hola' }, noon)).no_enviado).toEqual([
+		{ para: 'Ferretería', motivo: expect.stringContaining('encargo activo') },
+	]);
+	// Anything they write is for the encargo, even with nobody having asked lately.
+	expect(await whatsapp.allowed({ number: pubJid, phone: '5214446667777', text: 'Buenas' })).toEqual({ allowed: true });
+	script['Ferretería'].push({
+		message: 'Déjeme confirmarlo y le aviso.',
+		data: [{ producto: 'cemento', precio: 200 }],
+		status: 'escalate',
+		question: 'Pide 50 % de anticipo, ¿lo acepto?',
+		summary: 'Cotizó a 200 y pide anticipo.',
+	});
+	waSent.length = 0;
+	expect(
+		await whatsapp.event({
+			type: 'message',
+			number: pubJid,
+			id: 'm-delegation-1',
+			phone: '5214446667777',
+			name: 'Ferre',
+			text: 'A 200 el bulto, con 50 % de anticipo',
+		}),
+	).toEqual({ delegation: a1.id, duplicate: false });
+	await delegations.idle(a1.id as number);
+	expect(told[1].transcript).toContain('Ferretería: A 200 el bulto, con 50 % de anticipo');
+	expect(waSent.map((m) => m.text)).toEqual(['Déjeme confirmarlo y le aviso.']);
+	// Its question reaches the conversation that started it, at once.
+	const question = await row<{ text: string; conversation_id: number }>(
+		"select text, conversation_id from messages where agent_id = $1 and source = 'delegation' order by id desc limit 1",
+		[radar.id],
+	);
+	expect(question).toMatchObject({
+		conversation_id: job.conversation_id,
+		text: expect.stringContaining('te pregunta: Pide 50 %'),
+	});
+	// A second encargo of the same work, with the direct guest: the results wait for both.
+	script['Cliente'] = [
+		{
+			message: 'Buen día, ¿le confirmo la entrega del lunes?',
+			data: [],
+			status: 'continue',
+			question: null,
+			summary: 'Pregunté.',
+		},
+	];
+	const a2 = await delegations.start(job.id, { plantilla: 'cotizar', contacto: 'Cliente', parametros: params });
+	await delegations.idle(a2.id as number);
+	// The agent answers the question; the encargo goes on with it and ends.
+	script['Ferretería'].push({
+		message: 'Sin anticipo no podemos esta vez, gracias por la cotización.',
+		data: [{ producto: 'cemento', precio: 200 }],
+		status: 'done',
+		question: null,
+		summary: 'Cotizó cemento a 200 el bulto; no aceptamos anticipo.',
+	});
+	expect(await delegations.message(job.id, { id: a1.id, texto: 'No aceptes anticipo.' })).toMatchObject({ ok: true });
+	await delegations.idle(a1.id as number);
+	expect(told.at(-1)!.transcript).toContain('[Instrucción de quien te mandó: No aceptes anticipo.]');
+	expect((await delegations.status(job.id, { id: a1.id })).encargos).toMatchObject([
+		{ estado: 'done', datos: [{ producto: 'cemento', precio: 200 }] },
+	]);
+	const results = () =>
+		rows<{ text: string }>(
+			"select text from messages where agent_id = $1 and source = 'delegation' and text like 'Encargo #%' order by id",
+			[radar.id],
+		);
+	expect(await results()).toEqual([]); // the other one is still active
+	expect(await delegations.cancel(job.id, { id: a2.id })).toMatchObject({ ok: true });
+	const [together] = await results();
+	expect(together.text).toContain(`Encargo #${a1.id} · cotizar · con Ferretería · terminado`);
+	expect(together.text).toContain('"precio":200');
+	expect(together.text).toContain(`Encargo #${a2.id} · cotizar · con Cliente · cancelado`);
+	// After it ended, what the ferretería writes is no longer the encargo's (it goes as before it).
+	expect(
+		await whatsapp.event({
+			type: 'message',
+			number: pubJid,
+			id: 'm-delegation-2',
+			phone: '5214446667777',
+			name: 'F',
+			text: '¿Entonces?',
+		}),
+	).not.toHaveProperty('delegation');
+	// At night it does not open a chat: the first message waits for the morning.
+	delegations.clock.now = () => night;
+	waSent.length = 0;
+	const late = await delegations.start(job.id, { plantilla: 'cotizar', contacto: 'Ferretería', parametros: params });
+	expect(late.aviso).toContain('7:00');
+	await delegations.idle(late.id as number);
+	expect(waSent).toEqual([]);
+	await delegations.cancel(job.id, { id: late.id });
+	// A new encargo with someone it already talked to picks up from there: no introduction again, and it knows
+	// what was said and obtained (the one that never wrote does not count).
+	delegations.clock.now = () => noon;
+	script['Ferretería'].push({
+		message: '¿El precio de 200 sigue en pie?',
+		data: null,
+		status: 'continue',
+		question: null,
+		summary: 'Preguntó.',
+		attach: [],
+	});
+	const resume = await delegations.start(job.id, { plantilla: 'cotizar', contacto: 'Ferretería', parametros: params });
+	await delegations.idle(resume.id as number);
+	const resumed = told.at(-1)!.instructions;
+	expect(resumed).toContain('Ya platicaste antes con Ferretería por este mismo chat');
+	expect(resumed).not.toContain('El primer mensaje empieza con esta presentación');
+	expect(resumed).toContain('## Lo que ya platicaron');
+	expect(resumed).toContain('"precio":200');
+	expect(resumed).toContain('Tú: Buen día, le escribo de parte de Ana. ¿Me cotiza 10 bultos de cemento para el lunes?');
+	expect(told[0].instructions).toContain('El primer mensaje empieza con esta presentación');
+	await delegations.cancel(job.id, { id: resume.id });
+
+	// Tareas from a recipe: in its own trabajo, the recipe preloads the list. The platform launches its
+	// encargo with the list's parameters, the agent does its tasks and adjusts the list (saying why), the
+	// owner is asked by their group and answers in the web, and the agent hands in the result in the
+	// recipe's shape; the saga has all of it.
+	const flows = await import('./flows');
+	const jobsMod = await import('./jobs');
+	const step = (key: string, kind: string, depends: string[], extra: Record<string, unknown> = {}) => ({
+		key,
+		title: key,
+		kind,
+		depends,
+		instructions: kind === 'delegation' ? '' : `Haz ${key}.`,
+		optional: false,
+		hours: null,
+		delegation: null,
+		...extra,
+	});
+	const recipe = {
+		name: 'carrito',
+		description: 'El carrito de la semana.',
+		objective: 'Arma el carrito de la semana {semana}.',
+		produces: {
+			list: true,
+			fields: [
+				{ name: 'producto', description: 'Qué', type: 'text' },
+				{ name: 'precio', description: 'Pesos', type: 'number' },
+			],
+		},
+		steps: [
+			step('heb', 'subagent', [], { instructions: 'Cotiza la lista en HEB.' }),
+			step('carne', 'delegation', [], {
+				delegation: {
+					template: 'cotizar',
+					contact: 'Ferretería',
+					params: [
+						{ name: 'lista', value: 'lo de la semana {semana}' },
+						{ name: 'fecha', value: 'lunes' },
+					],
+				},
+			}),
+			step('armar', 'agent', ['heb', 'carne'], { instructions: 'Combina las cotizaciones.' }),
+			step('confirmar', 'question', ['armar'], { instructions: '¿Compro el carrito?' }),
+		],
+		maxHours: 48,
+		maxDelegations: 2,
+		maxWakes: 10,
+	};
+	await exec('update agents set harness = $2 where id = $1', [
+		radar.id,
+		JSON.stringify(
+			validateHarness({
+				...defaultHarness(),
+				tools: [...defaultHarness().tools, 'delegations', 'flows', 'subagents'],
+				delegations: [template],
+				flows: [recipe],
+			}),
+		),
+	]);
+	// A trabajo of its own, and a work in it (the Principal has no list).
+	const trabajo = async (title: string) => {
+		const conv = (await row<{ id: number }>(
+			'insert into conversations (agent_id, pi_session_id, title, person_id) values ($1, gen_random_uuid()::text, $2, $3) returning id',
+			[radar.id, title, ana.id],
+		))!.id;
+		const run = (await row<{ id: number }>(
+			`insert into runs (agent_id, person_id, conversation_id, workflow_id, model, status)
+			 values ($1, $2, $3, $4, 'openai/gpt-6-sol', 'done') returning id`,
+			[radar.id, ana.id, conv, `tareas-${conv}`],
+		))!.id;
+		return { conv, run };
+	};
+	expect((await flows.plan(job.id, { receta: 'carrito', parametros: { semana: '46' } })).error).toContain('Principal');
+	const cart = await trabajo('Carrito');
+	delegations.clock.now = () => noon;
+	script['Ferretería'] = [
+		{
+			message: 'Buen día, ¿me cotiza lo de la semana 46?',
+			data: [{ producto: 'cemento', precio: 200 }],
+			status: 'done',
+			question: null,
+			summary: 'Cemento a 200.',
+			attach: [],
+		},
+	];
+	expect((await flows.plan(cart.run, { receta: 'carrito' })).error).toContain('semana');
+	const fr = await flows.plan(cart.run, {
+		receta: 'carrito',
+		parametros: { semana: '46' },
+		titulo: 'Carrito semana 46',
+	});
+	// Its own task comes back right away (it is in its work); the encargo goes on its own.
+	expect(fr).toMatchObject({ ok: true, trabajo: cart.conv, tareas_tuyas: [{ tarea: 'heb', tipo: 'subagent' }] });
+	// The recipe states the trabajo's objective.
+	expect((await jobsMod.get(cart.conv))!.goal).toBe('Arma el carrito de la semana 46.');
+	expect((await flows.plan(cart.run, { receta: 'carrito', parametros: { semana: '47' } })).error).toContain(
+		'ya tiene su lista',
+	);
+	const flowId = (await flows.tasksOf(radar.id, cart.conv)).list!.id;
+	const carne = async () =>
+		(await row<{ status: string; delegation_id: number | null; result: { datos: unknown } }>(
+			"select status, delegation_id, result from flow_steps where flow_id = $1 and key = 'carne'",
+			[flowId],
+		))!;
+	await delegations.idle((await carne()).delegation_id!);
+	await flows.idle(flowId);
+	expect(told.at(-1)!.instructions).toContain('Cotiza lo de la semana 46 con entrega el lunes.');
+	expect(await carne()).toMatchObject({ status: 'done', result: { datos: [{ producto: 'cemento', precio: 200 }] } });
+	// The agent registers its task; the next one is its.
+	const u1 = await flows.update(cart.run, { tarea: 'heb', resultado: [{ producto: 'leche', precio: 25 }] });
+	expect(u1.tareas_tuyas).toEqual([expect.objectContaining({ tarea: 'armar' })]);
+	// It may adjust the list, always saying why, never undoing what is done, only with what its contract has.
+	const extra = { key: 'revisar', titulo: 'Revisar precios', tipo: 'agent', depende: ['armar'] };
+	expect((await flows.plan(cart.run, { agregar: [extra] })).error).toContain('motivo');
+	expect((await flows.plan(cart.run, { motivo: 'x', quitar: ['heb'] })).error).toContain('terminó');
+	expect(
+		(
+			await flows.plan(cart.run, {
+				motivo: 'x',
+				agregar: [
+					{ key: 'otra', titulo: 'Otra', tipo: 'delegation', encargo: { plantilla: 'nope', contacto: 'Cliente' } },
+				],
+			})
+		).error,
+	).toContain('plantilla de encargo');
+	expect(
+		await flows.plan(cart.run, { motivo: 'Conviene revisar antes de preguntar.', agregar: [extra] }),
+	).toMatchObject({ ok: true });
+	expect(await flows.plan(cart.run, { motivo: 'Ya no hace falta.', quitar: ['revisar'] })).toMatchObject({ ok: true });
+	// Done with its task, the question is its to write: short, with the report attached; then it reaches
+	// its owner's group, as the agent wrote it (never the recipe's instructions), and waits.
+	const u2 = await flows.update(cart.run, { tarea: 'armar', resultado: 'Carrito armado: leche y cemento.' });
+	expect(u2.tareas_tuyas).toEqual([expect.objectContaining({ tarea: 'confirmar', tipo: 'question' })]);
+	expect((await flows.ask(cart.run, { tarea: 'confirmar', pregunta: 'x'.repeat(700) })).error).toContain(
+		'600 caracteres',
+	);
+	// Pagos simulados: a payment the browser stopped goes to the list's saga (for people, with what it would
+	// have cost); nothing the agent reads says it was a simulation.
+	const simulatedLine = await flows.simulated(cart.run, {
+		action: 'click @e7',
+		label: 'Completar pedido',
+		total: '$1,385.38',
+		order: '48213907',
+		how: 'click',
+	});
+	expect(simulatedLine).toBe(
+		'Pago simulado: «Completar pedido» por $1,385.38. No se cobró nada; el agente vio la confirmación del pedido #48213907 como si hubiera pagado.',
+	);
+	expect((await flows.detail(radar.id, flowId))!.events.at(-1)!.text).toBe(simulatedLine);
+	expect(await flows.activeBlock(radar.id, cart.conv)).not.toMatch(/simula/i);
+	waSent.length = 0;
+	const report = { name: 'reporte.pdf', data: Buffer.from('%PDF-1.4 reporte').toString('base64') };
+	expect(
+		await flows.ask(cart.run, {
+			tarea: 'confirmar',
+			pregunta: '¿Compro el carrito? Son leche y cemento por $225; el detalle va en el PDF.',
+			files: [report],
+		}),
+	).toMatchObject({ ok: true, tarea: 'confirmar', archivos: ['reporte.pdf'] });
+	await flows.idle(flowId);
+	const toOwner = waSent.filter((m) => m.group === anaGroup.ref);
+	expect(toOwner.map((m) => m.text)).toEqual([
+		'*Radar:* ¿Compro el carrito? Son leche y cemento por $225; el detalle va en el PDF.\n\nResponde aquí o en la web.',
+	]);
+	expect(toOwner[0].files).toEqual([{ name: 'reporte.pdf', mime: 'application/pdf', data: report.data }]);
+	// Its work in this trabajo starts with the whole list; any other, with it in short.
+	const here = await flows.activeBlock(radar.id, cart.conv);
+	expect(here).toContain('## Tus tareas');
+	expect(here).toContain(`Tareas del trabajo #${cart.conv} (receta carrito) · 3 de 4`);
+	expect(here).toContain('Espera a: tu respuesta');
+	expect(await flows.activeBlock(radar.id, radarRun.conversation_id)).toContain(
+		`- Trabajo #${cart.conv} · Carrito semana 46 (receta carrito): 3 de 4; espera a tu respuesta.`,
+	);
+	// The owner answers in the web: it becomes a fact, and the agent is woken to hand in the result.
+	await flows.answer(radar.id, flowId, 'confirmar', 'Sí, cómpralo');
+	await flows.idle(flowId);
+	const lastWake = async () =>
+		(await row<{ text: string; conversation_id: number }>(
+			"select text, conversation_id from messages where agent_id = $1 and source = 'flow' order by id desc limit 1",
+			[radar.id],
+		))!;
+	const wakeText = (await lastWake()).text;
+	expect(wakeText).toContain('entrega el resultado con task_update sin tarea');
+	expect(wakeText).toContain(
+		'¿Compro el carrito? Son leche y cemento por $225; el detalle va en el PDF. → Sí, cómpralo',
+	);
+	// The trabajo does not end with its result still to hand in.
+	expect((await jobsMod.done(cart.run, { resumen: 'Listo.' })).error).toContain('resultado de la receta');
+	// The result has the recipe's shape, or it is refused.
+	expect((await flows.update(cart.run, { resultado: [{ producto: 'leche' }] })).error).toContain('precio');
+	waSent.length = 0;
+	expect(
+		await flows.update(cart.run, {
+			resultado: [
+				{ producto: 'leche', precio: 25 },
+				{ producto: 'cemento', precio: 200 },
+			],
+			nota: 'Carrito listo.',
+		}),
+	).toMatchObject({ ok: true, terminado: true });
+	expect((await row<{ status: string }>('select status from flows where id = $1', [flowId]))!.status).toBe('done');
+	expect(
+		waSent.some((m) => m.group === anaGroup.ref && /«Carrito semana 46» \(receta carrito\) terminó/.test(m.text)),
+	).toBe(true);
+	// The saga: every task, the encargo's messages, the change with its reason, the question, the end.
+	const sagaKinds = (await flows.detail(radar.id, flowId))!.events.map((e) => e.kind);
+	for (const k of ['started', 'delegation', 'message', 'step', 'planned', 'question', 'answer', 'wake', 'ended'])
+		expect(sagaKinds).toContain(k);
+	expect((await flows.detail(radar.id, flowId))!.events.find((e) => e.kind === 'planned')!.text).toContain(
+		'Conviene revisar antes de preguntar.',
+	);
+
+	// A free list: the agent writes it for a trabajo of several steps; its tasks are its one at a time.
+	const trip = await trabajo('Viaje');
+	const free = await flows.plan(trip.run, {
+		agregar: [
+			{ key: 'vuelos', titulo: 'Cotizar vuelos' },
+			{ key: 'hotel', titulo: 'Cotizar hotel' },
+			{ key: 'visto-bueno', titulo: 'Visto bueno de Ana', tipo: 'wait', persona: 'Ana', depende: ['vuelos', 'hotel'] },
+			{ key: 'reservar', titulo: 'Reservar', depende: ['visto-bueno'] },
+		],
+	});
+	expect(free).toMatchObject({ ok: true, tareas_tuyas: [{ tarea: 'vuelos' }] });
+	expect((await flows.tasksOf(radar.id, trip.conv)).list!.recipe).toBeNull();
+	// Up to 12 tasks.
+	expect(
+		(
+			await flows.plan(trip.run, {
+				motivo: 'Muchas.',
+				agregar: Array.from({ length: 9 }, (_, i) => ({ key: `extra-${i}`, titulo: `Extra ${i}` })),
+			})
+		).error,
+	).toContain('hasta 12 tareas');
+	// Blocked, with its reason: the next one is its meanwhile.
+	expect((await flows.update(trip.run, { tarea: 'vuelos', estado: 'blocked' })).error).toContain('nota');
+	expect(
+		await flows.update(trip.run, { tarea: 'vuelos', estado: 'blocked', nota: 'La aerolínea no carga.' }),
+	).toMatchObject({ ok: true, tareas_tuyas: [{ tarea: 'hotel' }] });
+	expect(await flows.activeBlock(radar.id, trip.conv)).toContain('[bloqueada] vuelos · Cotizar vuelos');
+	// The trabajo does not end while its tasks are open.
+	expect((await jobsMod.done(trip.run, { resumen: 'Listo.' })).error).toContain('Faltan tareas: vuelos (blocked');
+	await flows.update(trip.run, { tarea: 'vuelos', resultado: 'Volaris $2,100' });
+	await flows.update(trip.run, { tarea: 'hotel', resultado: 'Hotel $1,500' });
+	await flows.idle((await flows.tasksOf(radar.id, trip.conv)).list!.id);
+	const tripList = (await flows.tasksOf(radar.id, trip.conv)).list!;
+	expect(tripList.waiting_for).toBe('Ana');
+	// Its owner edits the list from the web: the agent hears it as an instruction.
+	const edited = await flows.ownerEdit(radar.id, trip.conv, { op: 'add', titulo: 'Avisar a la oficina' });
+	// Nothing else of its going on: it is its right away.
+	expect(edited.tasks.find((t) => t.key === 'avisar-a-la-oficina')).toMatchObject({
+		status: 'working',
+		spec: { by: 'owner' },
+	});
+	await flows.idle(tripList.id);
+	const heard = await lastWake();
+	expect(heard.conversation_id).toBe(trip.conv);
+	expect(heard.text).toContain(
+		'Tu dueño cambió tus tareas: agregó la tarea «Avisar a la oficina» (avisar-a-la-oficina)',
+	);
+	await expect(flows.ownerEdit(radar.id, trip.conv, { op: 'remove', tarea: 'vuelos' })).rejects.toThrow('ya empezó');
+	// The reply the wait was for lands in this trabajo (not the group's), and closes the wait with what she said.
+	const reply = await inAna('Radar: sí, adelante con los dos');
+	expect(await row('select conversation_id from messages where id = $1', [reply.message_id])).toEqual({
+		conversation_id: trip.conv,
+	});
+	await flows.idle(tripList.id);
+	expect(
+		await row("select status, result from flow_steps where flow_id = $1 and key = 'visto-bueno'", [tripList.id]),
+	).toEqual({ status: 'done', result: { respuesta: 'sí, adelante con los dos', de: 'Ana' } });
+	// A task after one that failed waits blocked, saying why; replacing the failed one lets it go again.
+	const chain = await trabajo('Cadena');
+	await flows.plan(chain.run, {
+		agregar: [
+			{ key: 'a', titulo: 'Primero' },
+			{ key: 'b', titulo: 'Después', depende: ['a'] },
+		],
+	});
+	expect(await flows.update(chain.run, { tarea: 'a', estado: 'failed', nota: 'No cargó.' })).toMatchObject({
+		bloqueadas: ['b (depende de a)'],
+	});
+	const chainList = (await flows.tasksOf(radar.id, chain.conv)).list!;
+	expect(await row("select status, note from flow_steps where flow_id = $1 and key = 'b'", [chainList.id])).toEqual({
+		status: 'blocked',
+		note: 'depende de a, que falló',
+	});
+	expect((await flows.tasksOf(radar.id, chain.conv)).list!.waiting_for).toBe(
+		'el agente (bloqueada: depende de a, que falló)',
+	);
+	await flows.update(chain.run, { tarea: 'a', estado: 'skipped', nota: 'Lo hago por otro lado.' });
+	expect(await row("select status from flow_steps where flow_id = $1 and key = 'b'", [chainList.id])).toEqual({
+		status: 'working',
+	});
+	// The trabajo ends: its list ends with it (cancelled, since tasks were still open).
+	await jobsMod.close(trip.conv, 'closed', 'lo dio por terminado Ana');
+	expect((await row<{ status: string }>('select status from flows where id = $1', [tripList.id]))!.status).toBe(
+		'cancelled',
+	);
+	delegations.model.ask = realAsk;
+	delegations.clock.now = () => new Date();
+
+	// Conversaciones simuladas: with its switch on, what Radar says to its contacts stays in the simulator, where
+	// its owner writes as them, through the same paths, in conversations and encargos of their own. What it
+	// tells its owner stays real.
+	const waSim = await import('./whatsapp-sim');
+	await whatsapp.setContact(radar.id, ana, { key: ferreKey, enabled: true });
+	await waSim.setOn(radar.id, true);
+	waSent.length = 0;
+	const simChats = await whatsapp.simChats(radar.id, ana);
+	expect(simChats.map((c) => c.name)).not.toContain('Ana');
+	expect(simChats.find((c) => c.name === 'Ferretería')).toMatchObject({ chat: 'e:524446667777', kind: 'external' });
+	expect(simChats.find((c) => c.name === 'Cliente')).toMatchObject({ chat: 'd:524443334444', kind: 'direct' });
+	// To its owner: real, in her group.
+	const simJob = await trabajo('Simulación');
+	expect(await whatsapp.tellOwner(radar.id, '¿Sigo con el pedido?', simJob.conv)).toBe(true);
+	expect(waSent.map((m) => m.group)).toEqual([anaGroup.ref]);
+	waSent.length = 0;
+	const realGroup = await row('select last_agent_id, last_conversation_id from whatsapp_groups where id = $1', [
+		anaGroup.id,
+	]);
+	// To a contact: in the simulator; written as them, it reaches the agent in a simulated conversation.
+	expect((await whatsapp.notify(scheduled, { to: ['Cliente'], text: '¿Ya llegó su pedido?' }, noon)).enviado_a).toEqual(
+		['Cliente'],
+	);
+	expect(waSent).toEqual([]);
+	expect((await waSim.messages(radar.id, 'd:524443334444')).at(-1)).toMatchObject({
+		direction: 'out',
+		author: 'Radar',
+		text: '¿Ya llegó su pedido?',
+	});
+	const answered = await whatsapp.simulate(radar.id, ana, 'd:524443334444', { text: 'Sí, gracias' });
+	const simMessage = await row<{ conversation_id: number; context: unknown }>(
+		'select conversation_id, context from messages where id = $1',
+		[answered.message_id],
+	);
+	expect(simMessage!.context).toMatchObject({ whatsapp: { sim: 'd:524443334444' } });
+	expect(
+		await row('select title, whatsapp_key from conversations where id = $1', [simMessage!.conversation_id]),
+	).toEqual({ title: 'WhatsApp · Cliente (simulación)', whatsapp_key: 'sim:d:524443334444' });
+	expect(
+		await row('select last_agent_id, last_conversation_id from whatsapp_groups where id = $1', [anaGroup.id]),
+	).toEqual(realGroup);
+	await expect(whatsapp.simulate(radar.id, ana, 'g:owner', { text: 'x' })).rejects.toThrow('no está habilitado');
+	await expect(whatsapp.simulate(radar.id, ana, 'e:524440000000', { text: 'x' })).rejects.toThrow('no está habilitado');
+	// A simulated encargo: it talks with the simulator, and only what is written there reaches it.
+	delegations.clock.now = () => noon;
+	delegations.model.ask = async () => ({
+		value: {
+			message: 'Hola, ¿me cotiza 5 bultos?',
+			data: [],
+			status: 'continue',
+			question: null,
+			summary: 'Pedí precio.',
+		},
+		tokens: 10,
+	});
+	const simEncargo = await delegations.start(job.id, {
+		plantilla: 'cotizar',
+		contacto: 'Ferretería',
+		parametros: params,
+	});
+	expect(simEncargo.ok).toBe(true);
+	await delegations.idle(simEncargo.id as number);
+	expect(waSent).toEqual([]);
+	expect(await row('select simulated from delegations where id = $1', [simEncargo.id])).toEqual({ simulated: true });
+	expect((await waSim.messages(radar.id, 'e:524446667777')).at(-1)).toMatchObject({
+		author: 'Encargo',
+		text: 'Hola, ¿me cotiza 5 bultos?',
+		delegation_id: simEncargo.id,
+	});
+	await whatsapp.inbound({ number: pubJid, phone: '524446667777', id: 'real-to-sim', text: 'Mensaje real' });
+	delegations.model.ask = async () => ({
+		value: {
+			message: 'Gracias',
+			data: [{ producto: 'cemento', precio: 190 }],
+			status: 'done',
+			question: null,
+			summary: 'Cotizó a 190.',
+		},
+		tokens: 10,
+	});
+	await whatsapp.simulate(radar.id, ana, 'e:524446667777', { text: 'A 190 el bulto' });
+	await delegations.idle(simEncargo.id as number);
+	expect(
+		(
+			await rows<{ text: string }>(
+				"select text from delegation_messages where delegation_id = $1 and role = 'contact'",
+				[simEncargo.id],
+			)
+		).map((m) => m.text),
+	).toEqual(['A 190 el bulto']);
+	expect(waSent).toEqual([]);
+	// Written from an open trabajo, a contact's reply goes back to it (its saga), not to a conversation of its own.
+	expect(
+		(await whatsapp.notify(simJob.run, { to: ['Cliente'], text: '¿Le confirmo el lunes?' }, noon)).enviado_a,
+	).toEqual(['Cliente']);
+	const back = await whatsapp.simulate(radar.id, ana, 'd:524443334444', { text: 'Sí, el lunes' });
+	expect(
+		(await row<{ c: number }>('select conversation_id as c from messages where id = $1', [back.message_id]))!.c,
+	).toBe(simJob.conv);
+	// An actor plays Ferretería: on «auto» it answers the encargo as them, and stops once it judges it done.
+	const waActor = await import('./whatsapp-actor');
+	const realActor = waActor.actorModel.ask;
+	const actorSaw: string[] = [];
+	waActor.actorModel.ask = async (_p, _m, instructions, transcript) => {
+		actorSaw.push(`${instructions}\n---\n${transcript}`);
+		return { value: { message: 'Le queda en 185 el bulto', done: true, reason: 'ya cotizó' }, tokens: 10 };
+	};
+	delegations.model.ask = async () => ({
+		value: { message: '¿A cuánto los 5 bultos?', data: [], status: 'continue', question: null, summary: 'Pregunté.' },
+		tokens: 10,
+	});
+	const acted = await delegations.start(job.id, { plantilla: 'cotizar', contacto: 'Ferretería', parametros: params });
+	await delegations.idle(acted.id as number);
+	await waActor.set(radar.id, 'e:524446667777', { persona: 'Ferretero de El Martillo; el cemento a 185.', auto: true });
+	await Bun.sleep(300); // its first step waits for the agent to stop writing
+	delegations.model.ask = async () => ({
+		value: {
+			message: 'Gracias',
+			data: [{ producto: 'cemento', precio: 185 }],
+			status: 'done',
+			question: null,
+			summary: 'Cotizó a 185.',
+		},
+		tokens: 10,
+	});
+	await waActor.tick(radar.id, 'e:524446667777', Date.now() + 10_000);
+	await delegations.idle(acted.id as number);
+	expect(
+		(
+			await rows<{ text: string }>(
+				"select text from delegation_messages where delegation_id = $1 and role = 'contact'",
+				[acted.id],
+			)
+		).map((m) => m.text),
+	).toEqual(['Le queda en 185 el bulto']);
+	expect(actorSaw[0]).toContain('Ferretero de El Martillo');
+	expect(actorSaw[0]).toContain('te escribe por un encargo');
+	expect(actorSaw[0]).toContain('Radar: ¿A cuánto los 5 bultos?');
+	// It answered and keeps listening (the trabajo goes on); once its encargo ended, it waits without asking again.
+	expect((await waActor.list(radar.id)).find((x) => x.chat === 'e:524446667777')).toMatchObject({
+		auto: true,
+		replies: 1,
+	});
+	await waActor.tick(radar.id, 'e:524446667777', Date.now() + 20_000);
+	await waActor.tick(radar.id, 'e:524446667777', Date.now() + 30_000);
+	expect(actorSaw).toHaveLength(1);
+	expect((await waActor.list(radar.id)).find((x) => x.chat === 'e:524446667777')).toMatchObject({
+		auto: true,
+		replies: 1,
+		note: 'El encargo terminó: espera a que el agente vuelva a escribir.',
+	});
+	expect(waSent).toEqual([]);
+	// By default the AI answers: the agent writing to a chat turns its actor on, not when its owner turned it off.
+	await waSim.out(radar.id, 'e:524445556666', 'Radar', 'Hola, ¿tiene varilla?');
+	expect((await waActor.list(radar.id)).find((x) => x.chat === 'e:524445556666')).toMatchObject({ auto: true });
+	await waActor.set(radar.id, 'e:524445556666', { auto: false });
+	await waSim.out(radar.id, 'e:524445556666', 'Radar', '¿Sigue ahí?');
+	expect((await waActor.list(radar.id)).find((x) => x.chat === 'e:524445556666')).toMatchObject({
+		auto: false,
+		stopped: 'lo detuviste',
+	});
+	waActor.actorModel.ask = realActor;
+	await waSim.setOn(radar.id, false);
+	// The same for real: a direct guest's reply lands in the trabajo the agent wrote to them from.
+	waSent.length = 0;
+	await whatsapp.notify(simJob.run, { to: ['Cliente'], text: '¿Y el martes?' }, noon);
+	expect(waSent.at(-1)).toMatchObject({ phone: '524443334444' });
+	const realBack = await whatsapp.inbound({
+		number: pubJid,
+		phone: '524443334444',
+		id: 'reply-to-trabajo',
+		text: 'También',
+	});
+	expect(
+		(await row<{ c: number }>('select conversation_id as c from messages where id = $1', [realBack.message_id]))!.c,
+	).toBe(simJob.conv);
+	// Conversaciones: the real chat keeps both sides, in the trabajo; the simulated encargo chat is listed apart.
+	const waLog = await import('./whatsapp-log');
+	const direct = await waLog.messages(radar.id, 'd:524443334444');
+	expect(direct.lines.slice(-2).map((l) => [l.direction, l.text, l.conversation_id])).toEqual([
+		['out', '¿Y el martes?', simJob.conv],
+		['in', 'También', simJob.conv],
+	]);
+	expect(direct.completeSince).toBeNull();
+	const listed = await waLog.chats(radar.id, ana, simJob.conv);
+	expect(listed.find((c) => c.id === 'd:524443334444')).toMatchObject({ kind: 'direct', simulated: false });
+	expect((await waLog.chats(radar.id, ana)).find((c) => c.id === 'se:524446667777')).toMatchObject({
+		kind: 'external',
+		simulated: true,
+		name: 'Ferretería',
+		encargos: 2,
+	});
+	// A repeat of what came in is not logged twice.
+	await whatsapp
+		.inbound({ number: pubJid, phone: '524443334444', id: 'reply-to-trabajo', text: 'También' })
+		.catch(() => {}); // the inbox refuses it too (its notice was answered the first time)
+	expect((await waLog.messages(radar.id, 'd:524443334444')).lines.filter((l) => l.text === 'También')).toHaveLength(1);
+	delegations.model.ask = realAsk;
+	delegations.clock.now = () => new Date();
+
+	// A question for its owner (request_help para: dueño) in a work a guest asked for: it goes, whole, to its owner's
+	// group; the guest only hears that it is being asked.
+	const guestRun = (await row<{ id: number }>(
+		`insert into runs (agent_id, person_id, conversation_id, workflow_id, model, status)
+		 values ($1, $2, $3, $4, 'openai/gpt-6-sol', 'done') returning id`,
+		[radar.id, ana.id, simJob.conv, `para-dueno-${radar.id}`],
+	))!.id;
+	await exec(
+		`insert into messages (agent_id, conversation_id, source, text, run_id, routed_as, routed_at, context)
+		 values ($1, $2, 'whatsapp', 'Cámbialo al 19', $3, 'new_run', now(), $4)`,
+		[
+			radar.id,
+			simJob.conv,
+			guestRun,
+			JSON.stringify({ whatsapp: { number: pub.id, phone: '524443334444', direct: true } }),
+		],
+	);
+	waSent.length = 0;
+	await whatsapp.onRun(
+		guestRun,
+		'blocked',
+		JSON.stringify({ version: 1, para: 'dueño', reason: 'La entrega del 19 pasa tu límite del 13.', questions: [] }),
+	);
+	expect(waSent.find((m) => m.group === anaGroup.ref)?.text).toContain(
+		'Necesito tu ayuda: La entrega del 19 pasa tu límite del 13.',
+	);
+	expect(waSent.find((m) => m.phone === '524443334444')?.text).toContain('Esto lo tiene que decidir Ana');
+	expect(waSent.find((m) => m.phone === '524443334444')?.text).not.toContain('Necesito tu ayuda');
+
+	// A stalled list (nothing in progress, nobody waited for, its agent idle): first its agent is woken to ask for
+	// what it needs; still stalled, its owner hears by WhatsApp what is stuck; then nothing more.
+	await exec(
+		"update runs set status = 'done' where agent_id = $1 and status in ('queued', 'starting', 'running', 'blocked')",
+		[radar.id],
+	);
+	const stall = await trabajo('Detenida');
+	await flows.plan(stall.run, {
+		agregar: [
+			{ key: 'cobertura', titulo: 'Validar cobertura' },
+			{ key: 'confirmar', titulo: 'Confirmar carnes', depende: ['cobertura'] },
+		],
+	});
+	await flows.update(stall.run, {
+		tarea: 'cobertura',
+		estado: 'blocked',
+		nota: 'Falta que Ana diga si comparto el CP.',
+	});
+	const stallList = (await flows.tasksOf(radar.id, stall.conv)).list!;
+	const aged = () => exec("update flows set updated_at = now() - interval '20 minutes' where id = $1", [stallList.id]);
+	const lastEvent = () =>
+		row('select kind, data from flow_events where flow_id = $1 order by id desc limit 1', [stallList.id]);
+	await aged();
+	await flows.sweep();
+	expect(await lastEvent()).toEqual({ kind: 'idle', data: { level: 1 } });
+	expect(
+		(await row<{ text: string }>(
+			"select text from messages where conversation_id = $1 and source = 'flow' order by id desc limit 1",
+			[stall.conv],
+		))!.text,
+	).toContain('Tu lista quedó detenida');
+	waSent.length = 0;
+	await aged();
+	await flows.sweep();
+	expect(await lastEvent()).toEqual({ kind: 'idle', data: { level: 2 } });
+	expect(waSent.find((m) => m.group === anaGroup.ref)?.text).toContain(
+		'quedó detenida y no he podido moverla. Está bloqueado: Validar cobertura (Falta que Ana diga si comparto el CP.)',
+	);
+	waSent.length = 0;
+	await aged();
+	await flows.sweep();
+	expect(waSent).toEqual([]);
+
+	// Modo objetivo: after a turn, a list with a task of its own goes on right away; three autonomous turns without
+	// progress stall it (its owner hears); at its budget it stops going on by itself (its owner hears).
+	await exec('update agents set goal_mode = true where id = $1', [radar.id]);
+	const goalJob = await trabajo('Objetivo');
+	await flows.plan(goalJob.run, { agregar: [{ key: 'cotizar', titulo: 'Cotizar la ferretería' }] });
+	const turnOf = async (since: string, cost = 0.1) => {
+		const id = (await row<{ id: number }>(
+			`insert into runs (agent_id, person_id, conversation_id, workflow_id, model, status, kind, cost, started_at, ended_at)
+			 values ($1, $2, $3, $4, 'openai/gpt-6-sol', 'done', 'task', $5, now() - $6::interval, now()) returning id`,
+			[radar.id, ana.id, goalJob.conv, `goal-${crypto.randomUUID()}`, cost, since],
+		))!.id;
+		// The wake it was woken by is its message (an autonomous turn).
+		await exec(
+			"update messages set run_id = $3, routed_as = 'new_run', routed_at = now() where agent_id = $1 and conversation_id = $2 and run_id is null",
+			[radar.id, goalJob.conv, id],
+		);
+		if (!(await row('select 1 from messages where run_id = $1', [id])))
+			await exec(
+				"insert into messages (agent_id, conversation_id, source, text, run_id, routed_as, routed_at) values ($1, $2, 'flow', 'sigue', $3, 'new_run', now())",
+				[radar.id, goalJob.conv, id],
+			);
+		return id;
+	};
+	const woken = () =>
+		row<{ n: number }>(
+			"select count(*)::int as n from messages where conversation_id = $1 and source = 'flow' and run_id is null",
+			[goalJob.conv],
+		);
+	await flows.afterRun(await turnOf('1 minute')); // it planned: progress
+	expect((await woken())!.n).toBe(1);
+	expect(
+		(await row<{ text: string }>(
+			"select text from messages where conversation_id = $1 and source = 'flow' and run_id is null",
+			[goalJob.conv],
+		))!.text,
+	).toContain('Sigue con tu trabajo hasta cumplir su objetivo');
+	waSent.length = 0;
+	for (let i = 0; i < 3; i++) await flows.afterRun(await turnOf('0 seconds')); // nothing changed in its list
+	expect((await row<{ n: number }>('select idle_turns as n from conversations where id = $1', [goalJob.conv]))!.n).toBe(
+		3,
+	);
+	expect(waSent.find((m) => m.group === anaGroup.ref)?.text).toContain(
+		`La lista del trabajo #${goalJob.conv} quedó detenida`,
+	);
+	await exec('update conversations set budget_usd = 0.2, idle_turns = 0 where id = $1', [goalJob.conv]);
+	waSent.length = 0;
+	await flows.afterRun(await turnOf('0 seconds'));
+	expect(waSent.find((m) => m.group === anaGroup.ref)?.text).toContain(
+		`El trabajo #${goalJob.conv} llegó a su presupuesto`,
+	);
+	expect((await woken())!.n).toBe(0);
 
 	// WhatsApp closed the session: the number shows unlinked.
 	await whatsapp.event({ type: 'logged_out', number: jid });
@@ -1531,7 +2531,7 @@ run('provider failure preserves the previous version and releases the lease', as
 	expect((await designs.message(person, d.id, { text: 'Reintento', version: 0 })).version).toBe(1);
 });
 run(
-	'interview attachments: images reach the model as images, text files inline, nothing else is accepted',
+	'interview attachments: images reach the model as images, text files inline (PDF and .docx: documents.test), nothing else is accepted',
 	async () => {
 		const designs = await import('./designs');
 		const d = await designs.create(person, { model: 'openai/gpt-6-sol' });
@@ -1541,9 +2541,16 @@ run(
 			designs.message(person, d.id, {
 				text: 'x',
 				version: 0,
-				attachments: [{ name: 'a.pdf', mime: 'application/pdf', data: png }],
+				attachments: [{ name: 'a.zip', mime: 'application/zip', data: png }],
 			}),
 		).rejects.toThrow('imágenes');
+		await expect(
+			designs.message(person, d.id, {
+				text: 'x',
+				version: 0,
+				attachments: [{ name: 'viejo.doc', mime: 'application/msword', data: png }],
+			}),
+		).rejects.toThrow('guárdalo como .docx o PDF');
 		const before = modelRequests.length;
 		const after = await designs.message(person, d.id, {
 			text: '',
@@ -1569,6 +2576,20 @@ run(
 			),
 		).toBe(png);
 		await expect(designs.file(person + 1, d.id, sent[0].id)).rejects.toThrow();
+		// A PDF: the designer reads its text; its file stays as it came.
+		const stream = 'BT /F1 18 Tf 20 100 Td (Presupuesto semanal 2500) Tj ET';
+		const pdf = Buffer.from(
+			`%PDF-1.4\n1 0 obj<</Type/Catalog/Pages 2 0 R>>endobj\n2 0 obj<</Type/Pages/Kids[3 0 R]/Count 1>>endobj\n3 0 obj<</Type/Page/Parent 2 0 R/MediaBox[0 0 400 144]/Contents 4 0 R/Resources<</Font<</F1 5 0 R>>>>>>endobj\n4 0 obj<</Length ${stream.length}>>stream\n${stream}\nendstream endobj\n5 0 obj<</Type/Font/Subtype/Type1/BaseFont/Helvetica>>endobj\ntrailer<</Root 1 0 R>>\n%%EOF`,
+		).toString('base64');
+		const withPdf = await designs.message(person, d.id, {
+			text: 'Mis reglas',
+			version: after.version,
+			attachments: [{ name: 'reglas.pdf', mime: 'application/pdf', data: pdf }],
+		});
+		const read = modelRequests.at(-1).input.at(-1);
+		expect(read.content.map((p: any) => p.type)).toEqual(['input_text', 'input_text']);
+		expect(read.content[1].text).toContain('Presupuesto semanal 2500');
+		expect(withPdf.messages.at(-2)!.attachments).toMatchObject([{ name: 'reglas.pdf', mime: 'application/pdf' }]);
 	},
 );
 run('automejora: cited jobs reach the designer with their timeline, and only the agent own jobs', async () => {
@@ -2024,3 +3045,293 @@ run('tampering with attested contract or harness cannot authorize application', 
 	await exec('update agent_designs set harness=$2 where id=$1', [d.id, JSON.stringify(changed)]);
 	await expect(designs.approve(person, d.id, d.version)).rejects.toThrow('Prueba el harness');
 });
+
+run(
+	'trabajos: one objective per conversation; it ends, is evaluated by another agent, and the next one knows',
+	async () => {
+		const agents = await import('./agents');
+		const inbox = await import('./inbox');
+		const jobs = await import('./jobs');
+		const evaluations = await import('./evaluations');
+		const tag = crypto.randomUUID().slice(0, 8);
+		const owner = (await row<{ id: number }>(
+			"insert into people (name, key, avatar_seed) values ($1, $2, 's') returning id",
+			[`Dueña ${tag}`, `job-${tag}`],
+		))!.id;
+		const model = (await import('./settings')).settings().models[0].id;
+		const a = await agents.create(owner, { name: `Contratado ${tag}`, model });
+		// A schedule's tick is a trabajo of its own: a new conversation, not the Principal.
+		const tick = (await inbox.receive(
+			{
+				agentId: a.id,
+				source: 'cron',
+				text: 'Arma el reporte semanal.',
+				scheduleName: 'semanal',
+				job: { origin: 'cron', title: 'Reporte semanal' },
+			},
+			{ routeNow: false },
+		))!;
+		const first = (await row<{ conversation_id: number }>('select conversation_id from messages where id = $1', [
+			tick.message_id,
+		]))!.conversation_id;
+		expect(await jobs.get(first)).toMatchObject({ status: 'open', origin: 'cron', is_default: false, goal: null });
+		expect(await jobs.jobBlock(first)).toContain('Todavía no tiene objetivo declarado');
+		// /goal from its owner sets the objective (the agent still reads the message).
+		await inbox.receive(
+			{
+				agentId: a.id,
+				source: 'web',
+				personId: owner,
+				conversationId: first,
+				text: '/goal El reporte con ventas por región, en PDF',
+			},
+			{ routeNow: false },
+		);
+		expect((await jobs.get(first))!.goal).toBe('El reporte con ventas por región, en PDF');
+		// /goal also turns on Modo objetivo, and the trabajo's list starts with its objective.
+		const flowsMod = await import('./flows');
+		expect((await row<{ on: boolean }>('select goal_mode as on from agents where id = $1', [a.id]))!.on).toBe(true);
+		expect((await flowsMod.tasksOf(a.id, first)).tasks.map((t) => [t.key, t.status])).toEqual([
+			['objetivo', 'pending'],
+		]);
+		// The agent meets it in a work and closes it with its summary; another agent evaluates it.
+		const turn = (await row<{ id: number }>(
+			`insert into runs (agent_id, person_id, conversation_id, workflow_id, model, status, tokens, started_at, ended_at, answer)
+		 values ($1, $2, $3, $4, $5, 'done', 1200, now() - interval '5 minutes', now(), 'Listo: reporte.pdf') returning id`,
+			[a.id, owner, first, `job-${tag}`, model],
+		))!.id;
+		await flowsMod.update(turn, { tarea: 'objetivo', estado: 'done', resultado: 'reporte.pdf' });
+		const realAsk = evaluations.evaluator.ask;
+		let evidence = '';
+		evaluations.evaluator.ask = async (_p, _m, instructions, ev) => {
+			evidence = ev;
+			expect(instructions).toContain('no es evidencia');
+			return {
+				value: {
+					scores: [
+						{ key: 'correct', score: 4, justification: 'Entregó el PDF pedido.', evidence: [`turno #${turn}`] },
+						{
+							key: 'honesty',
+							score: 2,
+							justification: 'Dijo que incluía todas las regiones y faltó una.',
+							evidence: ['resultado'],
+						},
+						{ key: 'third_parties', score: null, justification: 'Sin contactos externos.', evidence: [] },
+					],
+					comment: 'Cumplió, con un reporte incompleto.',
+					suggestions: ['Que el contrato pida verificar las regiones antes de entregar.'],
+					summary: 'Reporte semanal entregado en PDF; faltó una región.',
+				},
+				tokens: 900,
+			};
+		};
+		expect((await jobs.done(turn, { resumen: '' })).error).toContain('resumen');
+		// An independent auditor checks job_done against its objective: «not yet» comes back as its next step.
+		const auditMod = await import('./audit');
+		const realAudit = auditMod.auditor.ask;
+		const verdicts: { verdict: 'met' | 'not_yet' | 'impossible'; reason: string }[] = [
+			{ verdict: 'not_yet', reason: 'Falta la región norte en el reporte.' },
+			{ verdict: 'met', reason: 'Entregó el reporte en PDF.' },
+		];
+		const audited: string[] = [];
+		auditMod.auditor.ask = async (_p, _m, input) => {
+			audited.push(input);
+			return { value: verdicts.shift()!, tokens: 10 };
+		};
+		expect((await jobs.done(turn, { resumen: 'Hice el reporte de ventas por región en PDF.' })).error).toContain(
+			'todavía no lo da por cumplido: Falta la región norte en el reporte.',
+		);
+		expect(audited[0]).toContain('Su afirmación al terminar (no es evidencia)');
+		expect(
+			await jobs.done(turn, {
+				resumen: 'Hice el reporte de ventas por región en PDF.',
+				resultado: { archivo: 'reporte.pdf' },
+			}),
+		).toMatchObject({
+			ok: true,
+			trabajo: first,
+		});
+		auditMod.auditor.ask = realAudit;
+		await evaluations.idle(first);
+		expect(evidence).toContain('El reporte con ventas por región');
+		expect(evidence).toContain('su versión; no es evidencia');
+		const e = (await evaluations.of(first))!;
+		expect(e).toMatchObject({ status: 'done', comment: 'Cumplió, con un reporte incompleto.' });
+		// Weighted over what it scored: correct 4 (weight 5) and honesty 2 (weight 5) → 30 of 40.
+		expect(Number(e.overall)).toBe(75);
+		expect((e.metrics as Record<string, number>).turns).toBe(1);
+		// It ended: the web takes nothing more there until its owner reopens it.
+		await expect(
+			inbox.receive(
+				{ agentId: a.id, source: 'web', personId: owner, conversationId: first, text: 'Y otra cosa' },
+				{ routeNow: false },
+			),
+		).rejects.toThrow('ya terminó');
+		expect(await jobs.reopen(first)).toBe(true);
+		expect(await evaluations.of(first)).toBeNull(); // it will have another when it ends again
+		await jobs.closeByPerson(first, 'Dueña');
+		await evaluations.idle(first);
+		expect((await jobs.get(first))!.end_reason).toBe('lo dio por terminado Dueña');
+		// The next trabajo, for the same person, starts knowing the one before.
+		const next = (await inbox.receive(
+			{ agentId: a.id, source: 'cron', text: 'Otro', scheduleName: 'semanal', job: { origin: 'cron', title: 'Otro' } },
+			{ routeNow: false },
+		))!;
+		const second = (await row<{ conversation_id: number }>('select conversation_id from messages where id = $1', [
+			next.message_id,
+		]))!.conversation_id;
+		expect(second).not.toBe(first);
+		const block = await jobs.jobBlock(second);
+		expect(block).toContain(`#${first}`);
+		expect(block).toContain('Hice el reporte de ventas por región en PDF.');
+		// The Principal is not a trabajo: it neither closes nor has an objective.
+		const principal = (await row<{ id: number }>('select id from conversations where agent_id = $1 and is_default', [
+			a.id,
+		]))!.id;
+		expect(await jobs.close(principal, 'closed', 'x')).toBe(false);
+		expect(await jobs.jobBlock(principal)).toContain('no es un trabajo');
+		// A day without activity closes it (not while something waits for someone).
+		jobs.clock.now = () => new Date(Date.now() + 25 * 3600_000);
+		expect(await jobs.sweep()).toBeGreaterThanOrEqual(1);
+		expect((await jobs.get(second))!).toMatchObject({ status: 'closed', end_reason: 'sin actividad por 24 h' });
+		jobs.clock.now = () => new Date();
+		await evaluations.idle(second);
+		evaluations.evaluator.ask = realAsk;
+	},
+);
+
+run(
+	'memoria: the agent saves, updates by topic, searches without accents, forgets; its owner corrects and pins',
+	async () => {
+		const agents = await import('./agents');
+		const memories = await import('./memories');
+		const tag = crypto.randomUUID().slice(0, 8);
+		const owner = (await row<{ id: number }>(
+			"insert into people (name, key, avatar_seed) values ($1, $2, 's') returning id",
+			[`Dueño ${tag}`, `mem-${tag}`],
+		))!.id;
+		const model = (await import('./settings')).settings().models[0].id;
+		const a = await agents.create(owner, { name: `Memorioso ${tag}`, model });
+		const conv = (await row<{ id: number }>(
+			'insert into conversations (agent_id, pi_session_id, title, person_id) values ($1, gen_random_uuid()::text, $2, $3) returning id',
+			[a.id, 'Súper', owner],
+		))!.id;
+		const runId = (await row<{ id: number }>(
+			`insert into runs (agent_id, person_id, conversation_id, workflow_id, model, status)
+		 values ($1, $2, $3, $4, $5, 'done') returning id`,
+			[a.id, owner, conv, `mem-${tag}`, model],
+		))!.id;
+		// Nothing yet: the prompt invites it to save what will serve it later.
+		expect(await memories.block(a.id)).toContain('Todavía no tienes memorias');
+		// It saves a preference under a stable topic; saving to that topic again updates it, keeping the old version.
+		const first = await memories.handle(runId, 'save', {
+			tipo: 'preferencia',
+			tema: 'Súper/Leche',
+			titulo: 'Leche',
+			contenido: 'Lala deslactosada de 1 litro, nunca la entera.',
+		});
+		expect(first).toMatchObject({ ok: true, accion: 'guardada' });
+		const again = await memories.handle(runId, 'save', {
+			tipo: 'preferencia',
+			tema: 'super/leche',
+			titulo: 'Leche',
+			contenido: 'Lala deslactosada de 1 litro; si no hay, Alpura deslactosada.',
+		});
+		expect(again).toMatchObject({ ok: true, accion: 'actualizada', id: first.id });
+		expect((await memories.history(a.id, first.id as number)).history).toEqual([
+			expect.objectContaining({ content: 'Lala deslactosada de 1 litro, nunca la entera.', changed_by: 'agent' }),
+		]);
+		expect(
+			(
+				await memories.handle(runId, 'save', {
+					id: first.id,
+					contenido: 'Lala deslactosada de 1 litro; si no hay, Alpura deslactosada.',
+				})
+			).accion,
+		).toBe('sin cambios');
+		await memories.handle(runId, 'save', {
+			tipo: 'lugar',
+			tema: 'tiendas/heb',
+			titulo: 'HEB Cumbres',
+			contenido: 'Entrega a domicilio los martes; el pedido mínimo es de $500.',
+		});
+		await memories.handle(runId, 'save', {
+			tipo: 'persona',
+			titulo: 'Cortez',
+			contenido: 'Proveedor de carne. Prefiere que le escriban en la mañana.',
+		});
+		// Secrets never go in: a card that passes Luhn, a password; a phone number is fine.
+		expect(
+			(await memories.handle(runId, 'save', { tipo: 'dato', titulo: 'Tarjeta', contenido: '4111 1111 1111 1111' }))
+				.error,
+		).toContain('secreto');
+		expect(
+			(await memories.handle(runId, 'save', { tipo: 'dato', titulo: 'HEB', contenido: 'password: hunter22' })).error,
+		).toContain('secreto');
+		expect(
+			(
+				await memories.handle(runId, 'save', {
+					tipo: 'persona',
+					titulo: 'Miguel',
+					contenido: 'Su WhatsApp es 8112345678.',
+				})
+			).ok,
+		).toBe(true);
+		expect((await memories.handle(runId, 'save', { tipo: 'nada', titulo: 'x', contenido: 'y' })).error).toContain(
+			'tipo',
+		);
+		// Search without accents, by stem, and through a typo; the hits count as used.
+		const found = async (consulta: string) =>
+			((await memories.handle(runId, 'search', { consulta })).memorias as string[]).map((l) => l.split(':')[0]);
+		expect(await found('leche deslactosáda')).toEqual([expect.stringContaining('Leche')]);
+		expect(await found('entregas a domicilio')).toEqual([expect.stringContaining('HEB Cumbres')]);
+		expect(await found('cortes')).toEqual([expect.stringContaining('Cortez')]);
+		expect((await memories.handle(runId, 'search', { consulta: 'piñata' })).resultados).toBe(0);
+		expect((await memories.handle(runId, 'search', { tipo: 'persona' })).resultados).toBe(2);
+		// Its owner corrects one (the agent then reads it as written by its owner) and pins it.
+		const fixed = await memories.ownerSave(
+			a.id,
+			{ content: 'Lala deslactosada de 1 litro. Nunca Alpura.', pinned: true },
+			first.id as number,
+		);
+		expect(fixed).toMatchObject({ source: 'owner', pinned: true, revisions: 2 });
+		const block = await memories.block(a.id);
+		expect(block.split('\n')[3]).toContain('(lo escribió tu dueño): Lala deslactosada de 1 litro. Nunca Alpura.');
+		// A pinned memory is its owner's to remove; the agent forgets the rest, saying why.
+		expect((await memories.handle(runId, 'forget', { id: first.id, motivo: 'ya no' })).error).toContain('fijó');
+		const heb = (await memories.search(a.id, 'heb'))[0];
+		expect((await memories.handle(runId, 'forget', { id: heb.id })).error).toContain('motivo');
+		expect(await memories.handle(runId, 'forget', { id: heb.id, motivo: 'Cerró esa sucursal.' })).toMatchObject({
+			ok: true,
+		});
+		expect(
+			memories.activity('forget', { ok: true, id: heb.id, titulo: 'HEB Cumbres', motivo: 'Cerró esa sucursal.' }),
+		).toBe(`Olvidó «HEB Cumbres» (#${heb.id}): Cerró esa sucursal.`);
+		expect(await found('domicilio')).toEqual([]);
+		// One more of its own, which its owner then deletes.
+		const paid = await memories.handle(runId, 'save', {
+			tipo: 'dato',
+			titulo: 'Pedido HEB',
+			contenido: 'El pedido semanal se arma el domingo.',
+		});
+		expect(paid.ok).toBe(true);
+		// The owner's own memory, and its view: total and limit.
+		await memories.ownerSave(a.id, {
+			kind: 'decision',
+			title: 'Presupuesto',
+			content: 'El súper semanal no pasa de $2,500.',
+		});
+		await expect(
+			memories.ownerSave(a.id, { kind: 'preference', topic: 'super/leche', title: 'x', content: 'y' }),
+		).rejects.toThrow('tema super/leche');
+		expect(await memories.list(a.id)).toMatchObject({ total: 5, max: memories.MAX_MEMORIES });
+		await memories.ownerDelete(a.id, paid.id as number);
+		expect((await memories.list(a.id)).total).toBe(4);
+		// Several at once, then all of them.
+		const [one, two] = (await memories.list(a.id)).memories;
+		expect(await memories.ownerDeleteMany(a.id, { ids: [one.id, two.id] })).toBe(2);
+		await expect(memories.ownerDeleteMany(a.id, { ids: [] })).rejects.toThrow('Elige de 1 a 500');
+		expect(await memories.ownerDeleteMany(a.id, { all: true })).toBe(2);
+		expect((await memories.list(a.id)).total).toBe(0);
+	},
+);

@@ -138,7 +138,8 @@ function mcpFinding(s: any): Finding | null {
 		version: clip(pkg.version, 40),
 		fields,
 		mcp: npm
-			? { transport: 'stdio', command: 'npx', args: ['-y', `${pkg.identifier}@${pkg.version}`] }
+			? // `npx` is Bun's bunx in computers on Bun, and Node's in older images: both run it.
+				{ transport: 'stdio', command: 'npx', args: ['-y', `${pkg.identifier}@${pkg.version}`] }
 			: { transport: 'stdio', command: 'uvx', args: [`${pkg.identifier}==${pkg.version}`] },
 	};
 }

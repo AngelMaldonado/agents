@@ -97,7 +97,7 @@ export function AgentHandover({ agent, onTransferred }: { agent: Agent; onTransf
 				<Button
 					variant="outline"
 					disabled={!chosen || chosen.id === agent.person_id || busy || live}
-					title={live ? 'Apaga su computadora y espera a que termine su trabajo' : undefined}
+					title={live ? 'Apaga su computadora y espera a que termine su turno' : undefined}
 					onClick={() => {
 						setConfirmation('');
 						setConfirming(true);

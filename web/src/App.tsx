@@ -1,4 +1,5 @@
 import { lazy, Suspense, useCallback, useEffect, useState } from 'react';
+import type { JobTab } from '@/components/job-hub';
 import { api, type Agent, type Person, type PublicSettings } from './api';
 import { connect, onTask, useConnected } from './live';
 import { Entry, Invite } from './Entry';
@@ -93,7 +94,7 @@ export function App() {
 
 	const designerMatch = hash.match(/^\/new(?:\/([\da-f-]+))?$/i);
 	const agentMatch = hash.match(
-		/^\/agent\/(\d+)(?:\/(improve)(?:\/([\da-f-]+))?|\/chat\/(\d+)|\/(browser|terminal|desktop))?$/i,
+		/^\/agent\/(\d+)(?:\/(improve)(?:\/([\da-f-]+))?|\/chat\/(\d+)|\/(browser|terminal|desktop)|\/job\/(\d+)(?:\/(flujo|saga|conversaciones|encargos)(?:\/(\d+|s?[gde]:\d{8,15}))?)?|\/(whatsapp)(?:\/(s?[gde]:\d{8,15}))?)?$/i,
 	);
 	const artifactMatch = hash.match(/^\/agent\/(\d+)\/artifact\/(\d+)\/([^/]+)$/i);
 	let artifact = null;
@@ -178,6 +179,12 @@ export function App() {
 							designId={agentMatch?.[3]}
 							chatId={agentMatch?.[4] ? Number(agentMatch[4]) : undefined}
 							computer={agentMatch?.[5]?.toLowerCase() as 'browser' | 'terminal' | 'desktop' | undefined}
+							jobId={agentMatch?.[6] ? Number(agentMatch[6]) : undefined}
+							jobTab={agentMatch?.[7]?.toLowerCase() as JobTab | undefined}
+							jobItem={agentMatch?.[8] && /^\d+$/.test(agentMatch[8]) ? Number(agentMatch[8]) : undefined}
+							jobChat={agentMatch?.[8] && !/^\d+$/.test(agentMatch[8]) ? agentMatch[8].toLowerCase() : undefined}
+							whatsapp={!!agentMatch?.[9]}
+							whatsappChat={agentMatch?.[10]?.toLowerCase()}
 							artifact={artifact}
 							onRoute={(suffix) => go(`/agent/${agent.id}${suffix}`)}
 							onBack={() => go('/')}
