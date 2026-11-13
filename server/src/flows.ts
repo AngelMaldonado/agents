@@ -741,11 +741,7 @@ async function sendQuestion(f: Flow, s: Step) {
 		"update flow_steps set status = 'waiting', started_at = coalesce(started_at, now()), note = null where id = $1",
 		[s.id],
 	);
-	const told = await (
-		await import('./whatsapp')
-	)
-		.tellOwner(f.agent_id, `${q}\n\nResponde aquí o en la web.`, f.conversation_id, files)
-		.catch(() => false);
+	const told = await (await import('./whatsapp')).tellOwner(f.agent_id, q, f.conversation_id, files).catch(() => false);
 	await event(
 		f.id,
 		'question',
@@ -1070,14 +1066,15 @@ async function finish(
 		null,
 		result === undefined ? undefined : { result },
 	);
-	// A recipe's end is news for its owner; a free list ends with its trabajo, which already says so.
-	if (f.recipe)
+	// A recipe that did not finish is news for its owner; one that did, its agent already tells (and a free list
+	// ends with its trabajo, which already says so).
+	if (f.recipe && how !== 'done')
 		await (
 			await import('./whatsapp')
 		)
 			.tellOwner(
 				f.agent_id,
-				`«${f.title}» (receta ${f.recipe.name}) ${label}${reason ? ` (${reason})` : ''}.${summary ? ` ${summary}` : ''} El detalle, en la web.`,
+				`La receta «${f.recipe.name}» ${label}${reason ? `: ${reason}` : ''}.${summary ? ` ${summary}` : ''}`,
 				null,
 			)
 			.catch(() => false);

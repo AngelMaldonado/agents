@@ -7,7 +7,7 @@
 // A person with their own CLIProxyAPI (Ajustes) gets their requests sent there instead, with their
 // key and the plain model id.
 import type { Context } from 'hono';
-import { byLlmToken } from './tasks';
+import { byLlmToken, llmCall } from './tasks';
 import { prefixOf, proxyCredentials } from './providers';
 
 const CLIPROXY = process.env.AGENTS_CLIPROXY_URL ?? 'http://cliproxy:8317';
@@ -47,6 +47,8 @@ export async function gateway(c: Context) {
 	}
 	headers.set('authorization', `Bearer ${key}`);
 
+	// While it lasts, its run is waiting for the model, not lost (tasks.takeUpLostTurns).
+	const end = llmCall(task.id);
 	const upstream = await fetch(`${base}${route.upstream}`, {
 		method: 'POST',
 		headers,
@@ -54,6 +56,7 @@ export async function gateway(c: Context) {
 		signal: c.req.raw.signal,
 	}).catch((err: Error) => err);
 	if (upstream instanceof Error) {
+		end();
 		return c.json(
 			{
 				error: { type: 'api_error', message: `${own ? 'your CLIProxyAPI' : 'proxy'} unreachable: ${upstream.message}` },
@@ -66,5 +69,11 @@ export async function gateway(c: Context) {
 		const v = upstream.headers.get(h);
 		if (v) out.set(h, v);
 	}
-	return new Response(upstream.body, { status: upstream.status, headers: out });
+	if (!upstream.body) {
+		end();
+		return new Response(null, { status: upstream.status, headers: out });
+	}
+	const stream = upstream.body.pipeThrough(new TransformStream({ flush: end }));
+	c.req.raw.signal.addEventListener('abort', end, { once: true });
+	return new Response(stream, { status: upstream.status, headers: out });
 }

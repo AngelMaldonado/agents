@@ -179,3 +179,34 @@ export async function messages(agentId: number, chat: string, after = 0) {
 	]);
 	return { lines, completeSince: any ? (since?.at ?? Date.now()) : null };
 }
+
+/**
+ * Whether the agent is writing to this chat now (Conversaciones shows «…»): a run of its asked from this
+ * chat, which answers there, while it thinks or writes; or its encargo, between the contact's line and its
+ * reply. Not while it browses or runs a tool: that is working, not writing.
+ */
+export async function agentTyping(agentId: number, viewChat: string) {
+	if (!VIEW_CHAT.test(viewChat)) return false;
+	const sim = viewChat.startsWith('s');
+	const chat = sim ? viewChat.slice(1) : viewChat;
+	const phone = chat.slice(2);
+	const run = await row(
+		`select 1 from runs r join messages m on m.run_id = r.id and m.routed_as = 'new_run'
+		 where r.agent_id = $1 and r.status = 'running' and r.state in ('thinking', 'writing')
+		   and (case when $2 then m.context->'whatsapp'->>'sim' = $3
+		        else m.context->'whatsapp'->>'sim' is null and m.context->'whatsapp'->>'phone' = $4 end)
+		 limit 1`,
+		[agentId, sim, chat, phone],
+	);
+	if (run) return true;
+	// Its encargo owes the contact a reply: the last line is theirs, recent, of an encargo still going.
+	const last = await row<{ direction: string; delegation_id: number | null; at: number }>(
+		sim
+			? 'select direction, delegation_id, created_at as at from whatsapp_sim_messages where agent_id = $1 and chat = $2 order by id desc limit 1'
+			: 'select direction, delegation_id, at from whatsapp_log where agent_id = $1 and chat = $2 order by at desc, id desc limit 1',
+		[agentId, chat],
+	);
+	if (!last || last.direction !== 'in' || !last.delegation_id || Date.now() - Number(last.at) > 3 * 60_000)
+		return false;
+	return !!(await row("select 1 from delegations where id = $1 and status = 'active'", [last.delegation_id]));
+}

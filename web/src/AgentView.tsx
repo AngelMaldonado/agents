@@ -69,7 +69,7 @@ import { useWorkConversations } from '@/lib/use-work-conversations';
 import { ArtifactCards, ArtifactDrawer, ArtifactMarkdown, type ArtifactTarget } from '@/components/artifacts';
 import { IconButton } from '@/components/actions';
 import { HubStage, JobGallery, RecentFiles, StreamInfo, WorkFooter } from '@/components/agent-hub';
-import { AgentMemory } from '@/components/agent-memory';
+import { AgentLessons } from '@/components/agent-lessons';
 import { JobHub, type JobTab } from '@/components/job-hub';
 import { AgentChats } from '@/components/agent-chats';
 import { Character } from '@/Character';
@@ -659,7 +659,6 @@ export function AgentView({
 				}}
 				iconOnly={iconOnly}
 				request={iconOnly ? null : settingsRequest}
-				onRoute={onRoute}
 			/>
 		);
 	const errors = actionError && (
@@ -873,7 +872,7 @@ export function AgentView({
 								{mine && (
 									<TabsTrigger value="memory">
 										<BookMarked aria-hidden="true" />
-										Memoria
+										Aprendizajes
 									</TabsTrigger>
 								)}
 							</TabsList>
@@ -904,7 +903,7 @@ export function AgentView({
 						</TabsContent>
 						{mine && (
 							<TabsContent value="memory">
-								<AgentMemory agentId={agent.id} />
+								<AgentLessons agentId={agent.id} mine={mine} />
 							</TabsContent>
 						)}
 					</Tabs>

@@ -1,4 +1,5 @@
 import { ArrowUpRight, Bot, CircleArrowUp, LoaderCircle, Plus } from 'lucide-react';
+import { ImportAgent } from '@/components/agent-bundle';
 import { imageVersion } from '@/lib/image-version';
 import { isLive, ago, type Agent, type Person, type PublicSettings } from './api';
 import { Character, STATE_LABEL, type CharState } from './Character';
@@ -66,6 +67,7 @@ export function Gallery({
 				</div>
 				<div className="flex flex-wrap items-center gap-2">
 					<ComputerUpdatesButton />
+					<ImportAgent />
 					<Button asChild>
 						<a href="#/new">
 							<Plus aria-hidden="true" />

@@ -75,6 +75,11 @@ export type Agent = {
 	simulated_conversations?: boolean;
 	/** Modo objetivo: its trabajos go on by themselves until their objective is met. */
 	goal_mode?: boolean;
+	/** Personalidad: its owner's five dials (shared/personality.ts); absent: the platform's default. */
+	personality?: Record<string, number> | null;
+	/** Estilo (shared/souls.ts): its preset (null: Cuby YOLO) and its owner's own text, if any. */
+	style?: string | null;
+	soul?: string | null;
 };
 /** GET /api/search: a match in what someone said to an agent, or what it answered. */
 export type SearchHit = {
@@ -226,6 +231,10 @@ export type Conversation = {
 	end_reason?: string | null;
 	/** Its evaluation, 0 to 100. */
 	score?: number | null;
+	/** Its evaluation's state: pending while another agent evaluates it. */
+	evaluation?: 'pending' | 'done' | 'failed' | null;
+	/** How many of its agent's lessons came from it (Aprendizajes). */
+	learned?: number;
 	/** Its list of tasks: how many, how many over, and the one going on now. */
 	tasks?: number;
 	tasks_done?: number;

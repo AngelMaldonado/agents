@@ -28,11 +28,16 @@ export type Agent = {
 	simulated_conversations: boolean;
 	/** Modo objetivo: its trabajos go on by themselves until their objective is met. */
 	goal_mode: boolean;
+	/** Personalidad: its owner's five dials (personality.ts); null: the platform's default. */
+	personality: Record<string, number> | null;
+	/** Estilo: its preset (null: Cuby YOLO) and what its owner wrote instead (shared/souls.ts). */
+	style: string | null;
+	soul: string | null;
 	shares: number[];
 };
 
 const COLS =
-	'a.id, a.person_id, a.name, a.role, a.model, a.seed, a.created_at, a.config_revision, a.harness, a.harness_image, a.inactivity_hours, a.simulated_payments, a.simulated_conversations, a.goal_mode, array(select s.person_id::int from agent_shares s where s.agent_id = a.id order by s.person_id) as shares';
+	'a.id, a.person_id, a.name, a.role, a.model, a.seed, a.created_at, a.config_revision, a.harness, a.harness_image, a.inactivity_hours, a.simulated_payments, a.simulated_conversations, a.goal_mode, a.personality, a.style, a.soul, array(select s.person_id::int from agent_shares s where s.agent_id = a.id order by s.person_id) as shares';
 
 export async function visible(viewer: Person) {
 	const list = await rows<Agent & { owner: string }>(

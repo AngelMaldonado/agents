@@ -78,7 +78,8 @@ export default function (pi: ExtensionAPI) {
 		pi.registerTool({
 			name: 'request_help',
 			label: 'Pedir ayuda',
-			description: 'Comunicar un bloqueo o decisión y esperar respuesta humana.',
+			description:
+				'Pedir ayuda humana y esperar la respuesta, sólo si no puedes resolverlo tú: un paso que sólo un humano puede hacer (iniciar sesión, segundo factor, captcha), una decisión que tu contrato reserva a tu dueño y nadie te contestó, o un bloqueo tras intentar dos vías. Una pregunta breve, con opciones y tu recomendación.',
 			parameters: Type.Object({ reason: Type.String({ minLength: 1, maxLength: 2000 }) }),
 			execute: async (_id, p, signal) => command('agents-blocked', [p.reason], signal, 60 * 60 * 1000),
 		});
@@ -122,7 +123,7 @@ export default function (pi: ExtensionAPI) {
 			name: 'whatsapp_notify',
 			label: 'Avisar por WhatsApp',
 			description:
-				'Manda un aviso por el WhatsApp de este agente a contactos que su dueño habilitó (por su nombre, p. ej. "Cortez"), sólo como dice la sección «Avisos por WhatsApp» de tu contrato. Opcional: un archivo de ~/work/out (ruta relativa a ~/work, p. ej. "out/reporte.pdf"). La plataforma limita los avisos (10 al día por persona) y de 22:00 a 7:00 los deja programados para las 7:00 salvo urgente (no los repitas). Devuelve a quién llegó y a quién no, y por qué.',
+				'Mensajes cortos (de una a tres líneas), en el tono de una persona, sólo con lo que le toca a ese contacto. Manda un aviso por el WhatsApp de este agente a contactos que su dueño habilitó, sólo como dice la sección «Avisos por WhatsApp» de tu contrato. Opcional: un archivo de ~/work/out (ruta relativa a ~/work, p. ej. "out/reporte.pdf"). Si un aviso queda programado, no lo repitas. Devuelve a quién llegó y a quién no, y por qué.',
 			parameters: Type.Object({
 				para: Type.Array(Type.String({ minLength: 1, maxLength: 80 }), { minItems: 1, maxItems: 10 }),
 				texto: Type.String({ minLength: 1, maxLength: 3500 }),
@@ -262,9 +263,7 @@ export default function (pi: ExtensionAPI) {
 		'task_update',
 		'task_ask',
 		'task_list',
-		'mem_save',
-		'mem_search',
-		'mem_forget',
+		'learn',
 	];
 	if (selfMaintenance) {
 		const job = async (op: string, p: unknown, signal?: AbortSignal) =>
@@ -361,47 +360,17 @@ export default function (pi: ExtensionAPI) {
 			}),
 			execute: async (_id, p, signal) => tasks('ask', p, signal),
 		});
-		// Memoria: what it knows from one trabajo to the next (the platform keeps it; its owner sees and corrects it).
-		// Not tied to a trabajo: it works in the owner's terminal too.
+		// Aprendizajes: what it learns for other trabajos, saved as it works (the platform keeps them; its
+		// evaluator reviews them and its owner sees and corrects them). Each trabajo brings its playbook.
 		const memory = async (op: string, p: unknown, signal?: AbortSignal) =>
 			command('agents-memory', [op, JSON.stringify(p)], signal, 35000);
-		const KINDS = ['preferencia', 'persona', 'lugar', 'procedimiento', 'dato', 'decisión'];
 		pi.registerTool({
-			name: 'mem_save',
-			label: 'Guardar en la memoria',
+			name: 'learn',
+			label: 'Aprender',
 			description:
-				'Guarda en tu memoria algo que te servirá en otros trabajos, ya comprobado: una preferencia de tu dueño, una persona, un lugar o tienda, cómo se hace algo, un dato estable o una decisión. tema: clave estable en minúsculas («super/leche», «contacto/cortez»); guardar otra vez en el mismo tema la actualiza (o pasa id). Breve y concreto. Nunca secretos (contraseñas, tarjetas, códigos, tokens).',
-			parameters: Type.Object({
-				id: Type.Optional(Type.Integer({ minimum: 1 })),
-				tipo: Type.Optional(Type.Union(KINDS.map((k) => Type.Literal(k)))),
-				tema: Type.Optional(Type.String({ maxLength: 80 })),
-				titulo: Type.Optional(Type.String({ maxLength: 120 })),
-				contenido: Type.Optional(Type.String({ maxLength: 2000 })),
-			}),
-			execute: async (_id, p, signal) => memory('save', p, signal),
-		});
-		pi.registerTool({
-			name: 'mem_search',
-			label: 'Buscar en la memoria',
-			description:
-				'Busca en tu memoria lo que ya sabes (por palabras, sin importar acentos; si no aparece, prueba con otras palabras). Úsala antes de preguntarle a tu dueño o de resolver algo desde cero. Sin consulta: las más recientes. tipo filtra.',
-			parameters: Type.Object({
-				consulta: Type.Optional(Type.String({ maxLength: 300 })),
-				tipo: Type.Optional(Type.Union(KINDS.map((k) => Type.Literal(k)))),
-				limite: Type.Optional(Type.Integer({ minimum: 1, maximum: 20 })),
-			}),
-			execute: async (_id, p, signal) => memory('search', p, signal),
-		});
-		pi.registerTool({
-			name: 'mem_forget',
-			label: 'Olvidar una memoria',
-			description:
-				'Olvida una memoria que ya no es cierta o ya no sirve (id), con el motivo. Las que fijó tu dueño no se olvidan: díselo a él.',
-			parameters: Type.Object({
-				id: Type.Integer({ minimum: 1 }),
-				motivo: Type.String({ minLength: 1, maxLength: 300 }),
-			}),
-			execute: async (_id, p, signal) => memory('forget', p, signal),
+				'Guarda un aprendizaje que te servirá en otros trabajos, ya comprobado: una respuesta de tu dueño (para no volver a preguntarla), cómo se hace algo que te costó resolver, un dato estable de una persona, tienda o sitio. Una frase concreta y accionable. Nunca secretos (contraseñas, tarjetas, códigos, tokens) ni lo que sólo vale para este trabajo.',
+			parameters: Type.Object({ aprendizaje: Type.String({ minLength: 1, maxLength: 300 }) }),
+			execute: async (_id, p, signal) => memory('learn', p, signal),
 		});
 		pi.registerTool({
 			name: 'task_list',

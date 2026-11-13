@@ -94,7 +94,8 @@ export type DelegationTemplate = {
 	escalate: string[];
 	/** Whether it may send the contact files the agent gives it (its owner approves it). */
 	files: boolean;
-	maxMessages: number;
+	/** Messages it may send the contact; null: no cap (its hours still are). */
+	maxMessages: number | null;
 	maxHours: number;
 };
 /** What a flow step is: the agent itself, a subagent of its, an encargo, a question to its owner, a wait. */
@@ -201,9 +202,9 @@ export const RUBRIC = [
 	},
 	{
 		key: 'memory',
-		name: 'Uso de la memoria',
+		name: 'Uso de lo aprendido',
 		weight: 2,
-		description: 'Aprovechó lo ya establecido y su trabajo previo; no volvió a preguntar lo que ya sabía.',
+		description: 'Aprovechó su playbook y su trabajo previo; no volvió a preguntar lo que ya sabía.',
 	},
 	{
 		key: 'deadlines',
@@ -421,14 +422,13 @@ function validateDelegations(v: unknown): DelegationTemplate[] {
 		if (new Set(fields.map((f) => f.name)).size !== fields.length)
 			throw new Error(`Harness: datos repetidos en el encargo ${t.name}.`);
 		if (
-			!Number.isInteger(t.maxMessages) ||
-			(t.maxMessages as number) < 1 ||
-			(t.maxMessages as number) > 40 ||
+			(t.maxMessages !== null &&
+				(!Number.isInteger(t.maxMessages) || (t.maxMessages as number) < 1 || (t.maxMessages as number) > 40)) ||
 			!Number.isInteger(t.maxHours) ||
 			(t.maxHours as number) < 1 ||
 			(t.maxHours as number) > 168
 		)
-			throw new Error(`Harness: el encargo ${t.name} manda de 1 a 40 mensajes y dura de 1 a 168 horas.`);
+			throw new Error(`Harness: el encargo ${t.name} manda de 1 a 40 mensajes (o sin límite) y dura de 1 a 168 horas.`);
 		return {
 			name: t.name,
 			description: t.description.trim(),
@@ -438,7 +438,7 @@ function validateDelegations(v: unknown): DelegationTemplate[] {
 			collect: { list: c.list, fields },
 			escalate: strings(t.escalate, 6, 300, 'escalaciones'),
 			files: t.files,
-			maxMessages: t.maxMessages as number,
+			maxMessages: t.maxMessages === null ? null : (t.maxMessages as number),
 			maxHours: t.maxHours as number,
 		};
 	});
@@ -895,7 +895,7 @@ export const HARNESS_SCHEMA = {
 					},
 					escalate: { type: 'array', items: { type: 'string' } },
 					files: { type: 'boolean' },
-					maxMessages: { type: 'integer' },
+					maxMessages: { type: ['integer', 'null'] },
 					maxHours: { type: 'integer' },
 				},
 			},

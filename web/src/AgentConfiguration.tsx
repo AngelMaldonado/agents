@@ -1,7 +1,5 @@
 import { useEffect, useState } from 'react';
-import { api, type Agent, type AgentTool, type PublicSettings, type Harness } from './api';
-import { ToolsPanel } from '@/components/design-content';
-import { Button } from '@/components/ui/button';
+import { api, type Agent, type AgentTool, type Harness } from './api';
 
 type Configuration = {
 	agent: Agent;
@@ -34,62 +32,4 @@ export function useAgentConfiguration(agent: Agent) {
 		};
 	}, [agent.id, agent.config_revision, reload]);
 	return { data, error, retry: () => setReload((n) => n + 1) };
-}
-
-/** Configuración → General: what the agent can use. Its definition (prompts, skills, MCP, CLI,
- * revisions) is in Avanzado → Harness. */
-export function AgentConfiguration({
-	agent,
-	settings,
-	mine,
-}: {
-	agent: Agent;
-	settings: PublicSettings;
-	mine: boolean;
-}) {
-	const { data, error, retry } = useAgentConfiguration(agent);
-	if (error)
-		return (
-			<p role="alert" className="error">
-				{error}{' '}
-				<Button variant="outline" size="sm" onClick={retry}>
-					Reintentar
-				</Button>
-			</p>
-		);
-	if (!data)
-		return (
-			<p role="status" className="muted">
-				Cargando configuración…
-			</p>
-		);
-	const current = { ...agent, ...data.agent };
-	return (
-		<section className="panel grid min-w-0 gap-3">
-			<div className="flex flex-wrap items-center justify-between gap-3">
-				<div>
-					<h2 className="text-base font-semibold">Herramientas y entorno</h2>
-					<p className="mt-1 text-xs text-muted-foreground">
-						{mine ? '' : `${settings.models.find((m) => m.id === current.model)?.label ?? current.model} · `}
-						{mine ? 'Revisión' : 'revisión'} {current.config_revision}
-					</p>
-				</div>
-				{mine && data.setupDesignId && (
-					<Button asChild variant="outline" size="sm">
-						<a href={`#/new/${data.setupDesignId}`}>Ver inicialización</a>
-					</Button>
-				)}
-			</div>
-			<ToolsPanel tools={data.tools} compact />
-			<p className="break-words text-xs text-muted-foreground">
-				Accesos concedidos: {data.credentialNames.length ? data.credentialNames.join(', ') : 'ninguno'}. Se administran
-				en Ajustes; el harness selecciona capacidades publicadas, pero no concede accesos ni instala paquetes externos.
-			</p>
-			{!mine && (
-				<p className="text-xs text-muted-foreground">
-					Vista de administración. Sólo el dueño puede modificar el contrato, conversar y aprobar mejoras.
-				</p>
-			)}
-		</section>
-	);
 }

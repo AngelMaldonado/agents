@@ -40,6 +40,7 @@ type Message = {
 	routed_as: string | null;
 	conversation_id: number;
 	person_id?: number | null;
+	context?: unknown;
 };
 
 /** Whose task a message is: someone the agent is shared with (from the web or WhatsApp), or null for the owner's lane. */
@@ -47,6 +48,23 @@ const requester = (m: Pick<Message, 'source' | 'person_id'>, ownerId: number) =>
 	(m.source === 'web' || m.source === 'whatsapp') && m.person_id != null && m.person_id !== ownerId
 		? m.person_id
 		: null;
+
+/** The WhatsApp chat a message came from: its group, its simulated chat or its phone (null: not WhatsApp). */
+const chatOf = (context: unknown) => {
+	const w = (context as { whatsapp?: { group?: unknown; sim?: unknown; phone?: unknown } } | null)?.whatsapp;
+	if (!w) return null;
+	return w.sim ? `sim:${w.sim}` : w.group != null ? `group:${w.group}` : w.phone ? `phone:${w.phone}` : null;
+};
+/** The chat a run was asked from: where its answer goes. */
+const startedFrom = async (runId: number) =>
+	chatOf(
+		(
+			await row<{ context: unknown }>(
+				"select context from messages where run_id = $1 and routed_as = 'new_run' order by id limit 1",
+				[runId],
+			)
+		)?.context,
+	);
 
 const MAX_FILES = 10;
 const MAX_FILE_BYTES = 10 * 1024 * 1024;
@@ -276,7 +294,7 @@ export async function startRouter() {
 
 const pending = (agentId: number) =>
 	rows<Message>(
-		`select id, agent_id, source, sender, schedule_name, text, run_id, routed_as, conversation_id, person_id::int
+		`select id, agent_id, source, sender, schedule_name, text, run_id, routed_as, conversation_id, person_id::int, context
 		 from messages m where agent_id = $1 and routed_at is null
 		 order by exists(select 1 from agent_repairs r where r.continuation_id=m.id) desc, id`,
 		[agentId],
@@ -337,6 +355,12 @@ async function routeOnce(agentId: number) {
 			)?.para === 'dueño';
 		const fromOwner = (m.source === 'web' || m.source === 'whatsapp') && m.person_id === live.person_id;
 		if (!(forOwner && fromOwner) && requester(m, live.person_id) !== live.requested_by) continue; // Busy with someone else's task: it waits for it to end.
+		// Someone else's WhatsApp (an invitee or a contact answering a notice) never joins a run asked from another
+		// chat: that run's answer goes to whoever asked it. It waits for its own run, in this same trabajo.
+		// (An external contact's reply does join: the agent reads that its answer is not sent to them.)
+		const external = !!(m.sender?.endsWith(EXTERNAL_ROLE) || m.sender?.endsWith(OLD_EXTERNAL_ROLE));
+		if (m.source === 'whatsapp' && !fromOwner && !external && chatOf(m.context) !== (await startedFrom(live.id)))
+			continue;
 		if (await joinQueued(m.id, live.id)) continue;
 		const status = (await row<{ status: Status }>('select status from runs where id = $1', [live.id]))!.status;
 		if (status === 'queued' || status === 'starting') continue; // joinQueued lost a race: next pass

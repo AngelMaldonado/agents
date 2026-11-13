@@ -317,6 +317,71 @@ export class DockerSandbox implements SandboxProvider {
 		}
 	}
 
+	/**
+	 * A folder of an agent's volume as a tar (.cubyagent's workspace), through a container that is created and
+	 * never started: Docker reads the volume for the archive. null: the folder does not exist.
+	 */
+	async readVolume(volume: { name: string; target: string }, image: string, path: string): Promise<Uint8Array | null> {
+		const id = await this.holder(volume, image);
+		try {
+			const res = await fetch(`${API}/containers/${id}/archive?path=${encodeURIComponent(path)}`, {
+				unix: SOCKET,
+				signal: AbortSignal.timeout(300_000),
+			} as RequestInit);
+			if (res.status === 404) return null;
+			if (!res.ok) throw new Error(`docker archive ${path}: ${res.status} ${await res.text()}`);
+			return new Uint8Array(await res.arrayBuffer());
+		} finally {
+			await this.destroy(id);
+		}
+	}
+
+	/** A tar unpacked into an agent's volume, at a path (the workspace of an imported .cubyagent). */
+	async writeVolume(
+		volume: { name: string; target: string; labels?: Record<string, string> },
+		image: string,
+		path: string,
+		tar: Uint8Array,
+	) {
+		const id = await this.holder(volume, image);
+		try {
+			const res = await fetch(`${API}/containers/${id}/archive?path=${encodeURIComponent(path)}`, {
+				method: 'PUT',
+				unix: SOCKET,
+				headers: { 'content-type': 'application/x-tar' },
+				body: tar,
+				signal: AbortSignal.timeout(300_000),
+			} as RequestInit);
+			if (!res.ok) throw new Error(`docker archive ${path}: ${res.status} ${await res.text()}`);
+		} finally {
+			await this.destroy(id);
+		}
+	}
+
+	/** A container that only holds a volume mounted, for its archive; never started. */
+	private async holder(volume: { name: string; target: string; labels?: Record<string, string> }, image: string) {
+		const created = await call('POST', '/containers/create', {
+			Image: image,
+			Entrypoint: ['true'],
+			User: 'agent',
+			Labels: { 'agents.volume-holder': 'true' },
+			NetworkDisabled: true,
+			HostConfig: {
+				NetworkMode: 'none',
+				AutoRemove: false,
+				Mounts: [
+					{
+						Type: 'volume',
+						Source: volume.name,
+						Target: volume.target,
+						VolumeOptions: { Labels: volume.labels ?? {} },
+					},
+				],
+			},
+		});
+		return created.Id as string;
+	}
+
 	async destroy(id: string) {
 		await call('DELETE', `/containers/${id}?force=true&v=true`, undefined, [404, 409]);
 	}

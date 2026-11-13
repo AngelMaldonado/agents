@@ -21,6 +21,7 @@ import * as sim from './whatsapp-sim';
 import * as log from './whatsapp-log';
 import { TZ } from './channels';
 import * as aliases from './aliases';
+import { inQuietHours, quietHours, settings } from './settings';
 import type { Person } from './people';
 
 // Read on each use: the bridge's address and secret come from the environment.
@@ -1752,7 +1753,8 @@ export async function onRun(
 			const questions = help.questions
 				.map((q, i) => `${i + 1}. ${q.title}\n${q.options.map((o) => `   - ${o.label}`).join('\n')}`)
 				.join('\n\n');
-			text = `Necesito tu ayuda: ${help.reason}${questions ? `\n\n${questions}` : ''}\n\nResponde aquí para que siga.`;
+			// In its own words: its question, and its options if it gave some.
+			text = `${help.reason}${questions ? `\n\n${questions}` : ''}`;
 			if (shot?.jpeg && shot.url && shot.url !== 'about:blank')
 				files = [{ name: 'pantalla.jpg', mime: 'image/jpeg', data: shot.jpeg }];
 		} else if (event === 'done') {
@@ -1830,8 +1832,9 @@ export async function maintenanceNotice(runId: number, text: string) {
 
 // ---------- notices the agent sends on its own (whatsapp_notify) ----------
 
-/** In the quiet hours (22:00 to 7:00, the platform's time zone), the next 7:00; otherwise null. */
+/** In the quiet hours (configured, the platform's time zone), when they end; otherwise null. */
 export function quietUntil(now: Date) {
+	const s = settings();
 	const [h, m] = new Intl.DateTimeFormat('en-GB', {
 		hour: '2-digit',
 		minute: '2-digit',
@@ -1841,13 +1844,13 @@ export function quietUntil(now: Date) {
 		.format(now)
 		.split(':')
 		.map(Number);
+	if (!inQuietHours(h, s)) return null;
 	const minutes = h * 60 + m;
-	if (minutes >= 7 * 60 && minutes < 22 * 60) return null;
-	const left = (7 * 60 - minutes + 1440) % 1440;
+	const left = (s.quietTo * 60 - minutes + 1440) % 1440;
 	return new Date(Math.floor(now.getTime() / 60_000) * 60_000 + left * 60_000);
 }
 
-/** The notices the quiet hours held: at 7:00 they go out, each checked again as if sent then. */
+/** The notices the quiet hours held: when they end they go out, each checked again as if sent then. */
 export async function sendDeferred(now = new Date()) {
 	let n = 0;
 	for (;;) {
@@ -1877,8 +1880,10 @@ export function startDeferredSweeper() {
 	deferredSweeper.unref?.();
 }
 
-// Per recipient, not per trabajo (Angel 11-nov-2026: the 3 per trabajo went; a trabajo of days needs more).
-const NOTICES_PER_DAY = 10;
+// Per recipient, not per trabajo (Angel 11-nov-2026: the 3 per trabajo went; a trabajo of days needs more),
+// as the admin configured it (settings.noticesPerDay; 0 = no cap).
+const overCap = (sentToday: number) => !!settings().noticesPerDay && sentToday >= settings().noticesPerDay;
+const capReason = () => `ya recibió ${settings().noticesPerDay} avisos en las últimas 24 h`;
 
 export type NoticeResult = {
 	ok: boolean;
@@ -1891,7 +1896,7 @@ export type NoticeResult = {
 /** One line for the run's activity: who got the notice and who did not. */
 export function noticeLine(r: NoticeResult) {
 	const missed = (r.no_enviado ?? []).map((f) => `${f.para} (${f.motivo})`).join('; ');
-	if (r.programado) return `Programó el aviso por WhatsApp para las 7:00 (${r.programado}): es horario de silencio.`;
+	if (r.programado) return `Programó el aviso por WhatsApp para el ${r.programado}: es horario de silencio.`;
 	return r.enviado_a?.length
 		? `Avisó por WhatsApp a ${r.enviado_a.join(', ')}.${missed ? ` No le llegó a: ${missed}.` : ''}`
 		: `No mandó el aviso por WhatsApp: ${r.error ?? missed}`;
@@ -1923,7 +1928,7 @@ export async function notify(
 		.trim()
 		.slice(0, 3500);
 	if (!text) return { ok: false, error: 'El aviso está vacío.' };
-	// In the quiet hours it is not refused: it waits for 7:00 and goes out by itself (unless urgent).
+	// In the quiet hours it is not refused: it waits for their end and goes out by itself (unless urgent).
 	const until = quietUntil(now);
 	if (until && input.urgent !== true) {
 		await exec('insert into whatsapp_deferred (agent_id, run_id, input, send_at) values ($1, $2, $3, $4)', [
@@ -1936,7 +1941,7 @@ export async function notify(
 		return {
 			ok: true,
 			programado: when,
-			siguiente: `Es horario de silencio (22:00 a 7:00): el aviso quedó programado y sale solo el ${when}, con las mismas reglas. No lo repitas ni lo dejes pendiente.`,
+			siguiente: `Es horario de silencio (${quietHours()?.from} a ${quietHours()?.to}): el aviso quedó programado y sale solo el ${when}, con las mismas reglas. No lo repitas ni lo dejes pendiente.`,
 		};
 	}
 	const wanted = (Array.isArray(input.to) ? input.to : [input.to])
@@ -1991,8 +1996,8 @@ export async function notify(
 				"select count(*)::int as n from whatsapp_notices where number_id = $1 and phone = $2 and at > now() - interval '1 day'",
 				[n.id, c.phone],
 			))!.n;
-			if (sentToday >= NOTICES_PER_DAY) {
-				failed.push({ para: c.name, motivo: `ya recibió ${NOTICES_PER_DAY} avisos en las últimas 24 h` });
+			if (overCap(sentToday)) {
+				failed.push({ para: c.name, motivo: capReason() });
 				continue;
 			}
 			try {
@@ -2014,8 +2019,8 @@ export async function notify(
 				"select count(*)::int as n from whatsapp_notices where number_id = $1 and phone = $2 and at > now() - interval '1 day'",
 				[n.id, c.phone],
 			))!.n;
-			if (sentToday >= NOTICES_PER_DAY) {
-				failed.push({ para: c.name, motivo: `ya recibió ${NOTICES_PER_DAY} avisos en las últimas 24 h` });
+			if (overCap(sentToday)) {
+				failed.push({ para: c.name, motivo: capReason() });
 				continue;
 			}
 			try {
@@ -2058,8 +2063,8 @@ export async function notify(
 			"select count(*)::int as n from whatsapp_notices where number_id = $1 and phone = $2 and at > now() - interval '1 day'",
 			[n.id, c.phone],
 		))!.n;
-		if (today >= NOTICES_PER_DAY) {
-			failed.push({ para: c.name, motivo: `ya recibió ${NOTICES_PER_DAY} avisos en las últimas 24 h` });
+		if (overCap(today)) {
+			failed.push({ para: c.name, motivo: capReason() });
 			continue;
 		}
 		try {

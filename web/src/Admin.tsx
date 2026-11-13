@@ -155,6 +155,26 @@ function Panel({ onChanged }: { onChanged: () => void }) {
 					</label>
 					<label className="field">
 						<span>
+							Avisos por WhatsApp al día por persona{' '}
+							<span className="muted small block font-normal">de un mismo agente; 0: sin tope</span>
+						</span>
+						{num('noticesPerDay')}
+					</label>
+					<label className="field">
+						<span>
+							Horario de silencio: desde la hora (0–23){' '}
+							<span className="muted small block font-normal">
+								avisos y encargos esperan; igual a «hasta»: sin horario de silencio
+							</span>
+						</span>
+						{num('quietFrom')}
+					</label>
+					<label className="field">
+						<span>Horario de silencio: hasta la hora (0–23)</span>
+						{num('quietTo')}
+					</label>
+					<label className="field">
+						<span>
 							Imagen del sandbox{' '}
 							<span className="muted small block font-normal">vacía o la de la release: sigue a cada release</span>
 						</span>

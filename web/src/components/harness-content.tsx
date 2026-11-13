@@ -136,7 +136,7 @@ export function HarnessPanel({
 								key={t.name}
 								icon={Handshake}
 								title={t.name}
-								detail={`${t.maxMessages} mensajes · ${t.maxHours} h`}
+								detail={`${t.maxMessages === null ? 'sin límite de mensajes' : `${t.maxMessages} mensajes`} · ${t.maxHours} h`}
 								hint={t.description}
 								onClick={() => setTemplate(t)}
 							/>
@@ -329,7 +329,7 @@ export function HarnessTests({
 }
 
 /** An encargo template as its owner approves it: what it says, what it may not do, what it brings back. */
-function TemplateDetail({ t }: { t: DelegationTemplate }) {
+export function TemplateDetail({ t }: { t: DelegationTemplate }) {
 	const params = delegationParams(t);
 	const List = ({ title, items }: { title: string; items: string[] }) =>
 		items.length ? (
@@ -365,9 +365,10 @@ function TemplateDetail({ t }: { t: DelegationTemplate }) {
 			<List title="Escala al agente si" items={t.escalate} />
 			<p className="text-2xs text-muted-foreground">
 				{params.length ? `El agente da al lanzarlo: ${params.join(', ')}. ` : ''}
-				{t.files ? 'Puede mandarle al contacto los archivos que le dé el agente. ' : 'No manda archivos. '}Hasta{' '}
-				{t.maxMessages} mensajes y {t.maxHours} h. Siempre: escribe como persona pero nunca dice serlo; si le preguntan,
-				dice que es un asistente tuyo. Sin mensajes de sistema ni el nombre del agente.
+				{t.files ? 'Puede mandarle al contacto los archivos que le dé el agente. ' : 'No manda archivos. '}
+				{t.maxMessages === null ? 'Sin límite de mensajes; hasta' : `Hasta ${t.maxMessages} mensajes y`} {t.maxHours} h.
+				Siempre: escribe como persona pero nunca dice serlo; si le preguntan, dice que es un asistente tuyo. Sin
+				mensajes de sistema ni el nombre del agente.
 			</p>
 		</div>
 	);
@@ -382,7 +383,7 @@ const KIND_LABEL: Record<FlowRecipe['steps'][number]['kind'], string> = {
 };
 
 /** A flow recipe as its owner approves it: its objective, what it produces, its steps and budget. */
-function RecipeDetail({ r }: { r: FlowRecipe }) {
+export function RecipeDetail({ r }: { r: FlowRecipe }) {
 	const params = flowParams(r);
 	return (
 		<div className="grid max-h-[60vh] gap-3 overflow-y-auto text-sm">

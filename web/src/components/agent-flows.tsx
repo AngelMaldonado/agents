@@ -14,6 +14,7 @@ import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { Textarea } from '@/components/ui/textarea';
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
+import type { FlowRecipe } from '../../../sandbox/harness';
 
 type FlowStatus = 'running' | 'done' | 'failed' | 'cancelled' | 'expired';
 type StepStatus = 'pending' | 'working' | 'waiting' | 'blocked' | 'done' | 'skipped' | 'failed' | 'removed';
@@ -208,7 +209,7 @@ export function AgentFlows({
 }
 
 /** One step as a node: its kind, title and state; it pulses while it is under way. */
-function StepNode({ data }: NodeProps<Node<{ step: Step; selected: boolean }>>) {
+function StepNode({ data }: NodeProps<Node<{ step: Step; selected: boolean; ideal?: boolean }>>) {
 	const s = data.step;
 	const K = KIND[s.kind];
 	const live = s.status === 'working' || s.status === 'waiting';
@@ -222,9 +223,12 @@ function StepNode({ data }: NodeProps<Node<{ step: Step; selected: boolean }>>) 
 				<K.icon className="size-3.5" aria-hidden="true" />
 				{K.label}
 				{s.spec.optional ? ' · opcional' : ''}
+				<code className="flow-node-key" title={`Su clave: ${s.key}`}>
+					{s.key}
+				</code>
 			</div>
 			<div className="truncate text-xs font-medium">{s.title}</div>
-			<div className="text-2xs">{STEP_STATUS[s.status]}</div>
+			{!data.ideal && <div className="text-2xs">{STEP_STATUS[s.status]}</div>}
 			<Handle type="source" position={Position.Right} isConnectable={false} />
 		</div>
 	);
@@ -232,11 +236,11 @@ function StepNode({ data }: NodeProps<Node<{ step: Step; selected: boolean }>>) 
 const nodeTypes = { step: StepNode };
 
 /** Left to right by depth (a step goes after everything it depends on), top to bottom within a column. */
-function layout(steps: Step[], selected: string | null) {
+function layout(steps: Step[], selected: string | null, ideal = false) {
 	const depth = new Map<string, number>();
 	for (const s of steps) depth.set(s.key, 1 + Math.max(-1, ...s.depends.map((d) => depth.get(d) ?? 0)));
 	const rows = new Map<number, number>();
-	const nodes: Node<{ step: Step; selected: boolean }>[] = steps.map((s) => {
+	const nodes: Node<{ step: Step; selected: boolean; ideal?: boolean }>[] = steps.map((s) => {
 		const col = depth.get(s.key)!;
 		const row = rows.get(col) ?? 0;
 		rows.set(col, row + 1);
@@ -244,7 +248,7 @@ function layout(steps: Step[], selected: string | null) {
 			id: s.key,
 			type: 'step',
 			position: { x: col * 230, y: row * 100 },
-			data: { step: s, selected: s.key === selected },
+			data: { step: s, selected: s.key === selected, ideal },
 		};
 	});
 	const byKey = new Map(steps.map((s) => [s.key, s]));
@@ -261,6 +265,95 @@ function layout(steps: Step[], selected: string | null) {
 			})),
 	);
 	return { nodes, edges };
+}
+
+/**
+ * A recipe's ideal steps on the canvas (Avanzado → its workflow): the same nodes as a running list, without a
+ * state; a step clicked shows what it does.
+ */
+export function RecipeCanvas({ recipe }: { recipe: FlowRecipe }) {
+	const [selected, setSelected] = useState<string | null>(null);
+	const steps = useMemo(
+		() =>
+			recipe.steps.map(
+				(r, i) =>
+					({
+						id: i,
+						key: r.key,
+						title: r.title,
+						kind: r.kind,
+						depends: r.depends,
+						spec: {
+							instructions: r.instructions,
+							optional: r.optional,
+							hours: r.hours,
+							encargo: r.delegation
+								? {
+										plantilla: r.delegation.template,
+										contacto: r.delegation.contact,
+										parametros: Object.fromEntries(r.delegation.params.map((p) => [p.name, p.value])),
+										contexto: '',
+									}
+								: null,
+						},
+						status: 'pending',
+						result: null,
+						note: null,
+						delegation_id: null,
+						until: null,
+						started_at: null,
+						ended_at: null,
+					}) as Step,
+			),
+		[recipe],
+	);
+	const graph = useMemo(() => layout(steps, selected, true), [steps, selected]);
+	const step = steps.find((s) => s.key === selected) ?? null;
+	const dark = typeof document !== 'undefined' && document.documentElement.classList.contains('dark');
+	return (
+		<div className="grid min-w-0 gap-3">
+			<div
+				className="flow-canvas h-[min(62vh,620px)] min-h-[360px] min-w-0 rounded-lg border"
+				aria-label="Lienzo del workflow"
+			>
+				<ReactFlow
+					nodes={graph.nodes}
+					edges={graph.edges}
+					nodeTypes={nodeTypes}
+					onNodeClick={(_, n) => setSelected((k) => (k === n.id ? null : n.id))}
+					nodesDraggable={false}
+					nodesConnectable={false}
+					fitView
+					fitViewOptions={{ padding: 0.2 }}
+					colorMode={dark ? 'dark' : 'light'}
+					proOptions={{ hideAttribution: true }}
+				>
+					<Background />
+					<Controls showInteractive={false} />
+				</ReactFlow>
+			</div>
+			{step ? (
+				<div className="rounded-lg border p-3 text-sm">
+					<p className="flex flex-wrap items-center gap-2 font-medium">
+						{step.title}
+						<Badge variant="outline">{KIND[step.kind].label}</Badge>
+						{step.spec.optional && <Badge variant="outline">Opcional</Badge>}
+						{step.spec.hours ? <Badge variant="outline">{step.spec.hours} h</Badge> : null}
+					</p>
+					{step.spec.encargo && (
+						<p className="muted small mt-1">
+							Encargo {step.spec.encargo.plantilla}
+							{step.spec.encargo.contacto ? ` con ${step.spec.encargo.contacto}` : ''}
+						</p>
+					)}
+					{step.spec.instructions && <p className="mt-2 whitespace-pre-wrap">{step.spec.instructions}</p>}
+					{!!step.depends.length && <p className="muted small mt-2">Después de: {step.depends.join(', ')}</p>}
+				</div>
+			) : (
+				<p className="muted small">Haz clic en un paso para ver qué hace.</p>
+			)}
+		</div>
+	);
 }
 
 /** One list of tasks: its canvas, the selected task's detail, what is established and its saga. */

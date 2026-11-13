@@ -17,6 +17,10 @@ export type Conversation = {
 	end_reason: string | null;
 	/** Its evaluation, 0 to 100, once it has one. */
 	score: number | null;
+	/** Its evaluation's state (pending while another agent evaluates it), null without one. */
+	evaluation: 'pending' | 'done' | 'failed' | null;
+	/** How many of its agent's lessons came from it (Aprendizajes). */
+	learned: number;
 	/** Its list of tasks (the latest): how many, how many over, and the one going on now. */
 	tasks: number;
 	tasks_done: number;
@@ -52,7 +56,7 @@ export const titleSql = `coalesce(c.title,case when c.is_default then 'Principal
 const LIST = `(select max(f.id) from flows f where f.conversation_id=c.id)`;
 const TASKS = `(select count(*)::int from flow_steps s where s.flow_id=${LIST} and s.status<>'removed') as tasks,(select count(*)::int from flow_steps s where s.flow_id=${LIST} and s.status in ('done','skipped')) as tasks_done,(select s.title from flow_steps s where s.flow_id=${LIST} and s.status in ('working','blocked','waiting') order by case s.status when 'working' then 0 when 'blocked' then 1 else 2 end,s.position limit 1) as task_now`;
 // last_at: its latest message or run, for «Recientes» (the hub's history).
-const COLUMNS = `c.id,c.agent_id,${titleSql} as title,c.origin,c.started_at,c.archived_at,c.is_default,c.goal,c.status,c.closed_at,c.end_reason,(select e.overall from job_evaluations e where e.conversation_id=c.id and e.status='done') as score,(select count(*) from runs r where r.conversation_id=c.id) as runs,greatest(c.started_at,(select max(r.created_at) from runs r where r.conversation_id=c.id),(select max(m.received_at) from messages m where m.conversation_id=c.id)) as last_at,exists(select 1 from runs r where r.conversation_id=c.id and r.status in ('queued','starting','running','blocked')) as live,${TASKS}`;
+const COLUMNS = `c.id,c.agent_id,${titleSql} as title,c.origin,c.started_at,c.archived_at,c.is_default,c.goal,c.status,c.closed_at,c.end_reason,(select e.overall from job_evaluations e where e.conversation_id=c.id and e.status='done') as score,(select e.status from job_evaluations e where e.conversation_id=c.id) as evaluation,(select count(*) from agent_lessons l where l.conversation_id=c.id)::int as learned,(select count(*) from runs r where r.conversation_id=c.id) as runs,greatest(c.started_at,(select max(r.created_at) from runs r where r.conversation_id=c.id),(select max(m.received_at) from messages m where m.conversation_id=c.id)) as last_at,exists(select 1 from runs r where r.conversation_id=c.id and r.status in ('queued','starting','running','blocked')) as live,${TASKS}`;
 export function list(agentId: number) {
 	return rows<Conversation>(
 		`select ${COLUMNS} from conversations c where c.agent_id=$1 and c.deleted_at is null order by c.is_default desc,c.id desc`,

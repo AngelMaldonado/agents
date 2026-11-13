@@ -934,7 +934,7 @@ function DesignWorkspace(
 									: agent && !props.canApply
 										? 'Para aplicarla, termina o cancela la corrida activa.'
 										: agent
-											? 'Aprueba contrato, modelo, harness y horarios. Se aplican en corridas nuevas; conservan conversación y memoria. No conceden accesos de plataforma.'
+											? 'Aprueba contrato, modelo, harness y horarios. Se aplican en corridas nuevas; conservan conversación y aprendizajes. No conceden accesos de plataforma.'
 											: 'Prueba y aprueba contrato, modelo, harness y horarios antes de inicializar. Conversar o probar no crea un agente.'}
 					</TooltipContent>
 				</Tooltip>

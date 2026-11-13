@@ -657,7 +657,7 @@ run('WhatsApp: numbers, lists, and one group per (owner of agents, person) where
 	// Stuck on a page: the picture of its browser goes too; the link to take control is only for its owner.
 	waSent.length = 0;
 	await whatsapp.onRun(runId, 'blocked', 'No carga el sitio.', { jpeg: 'AAAA', url: 'https://super.mx' });
-	expect(waSent[0].text).toContain('*Compras:* Necesito tu ayuda: No carga el sitio.');
+	expect(waSent[0].text).toContain('*Compras:* No carga el sitio.');
 	expect(waSent[0].text).not.toContain('/browser');
 	expect(waSent[0].files).toEqual([{ name: 'pantalla.jpg', mime: 'image/jpeg', data: 'AAAA' }]);
 	// While it works on his message, «escribiendo…» stays in that group.
@@ -714,8 +714,10 @@ run('WhatsApp: numbers, lists, and one group per (owner of agents, person) where
 		[radar.id, ana.id, radarRun.conversation_id, `wa-radar-night-${radar.id}`],
 	))!;
 	const held = await whatsapp.notify(nightRun.id, { to: ['dueño'], text: 'Hay novedades' }, night);
+	// Its line first: toMatchObject below swaps programado for its matcher.
+	const heldLine = whatsapp.noticeLine(held);
 	expect(held).toMatchObject({ ok: true, programado: expect.stringContaining('7:00') });
-	expect(whatsapp.noticeLine(held)).toContain('Programó el aviso por WhatsApp para las 7:00');
+	expect(heldLine).toMatch(/^Programó el aviso por WhatsApp para el .*7:00.*: es horario de silencio\.$/);
 	expect(whatsapp.quietUntil(night)!.toISOString()).toBe('2026-11-03T13:00:00.000Z');
 	expect(whatsapp.quietUntil(noon)).toBeNull();
 	waSent.length = 0;
@@ -1099,7 +1101,6 @@ run('WhatsApp: numbers, lists, and one group per (owner of agents, person) where
 	expect(a1).toMatchObject({ ok: true, contacto: 'Ferretería', archivos: ['pedido.pdf'] });
 	await delegations.idle(a1.id as number);
 	expect(told[0].instructions).toContain('Cotiza 10 bultos de cemento con entrega el lunes.');
-	expect(told[0].instructions).toContain('asistente de Ana');
 	expect(told[0].instructions).toContain('En el HEB el bulto está a 210.');
 	expect(told[0].instructions).toContain('Puedes mandarle estos archivos: pedido.pdf');
 	// As it is: no agent's name, nothing added.
@@ -1391,7 +1392,7 @@ run('WhatsApp: numbers, lists, and one group per (owner of agents, person) where
 	await flows.idle(flowId);
 	const toOwner = waSent.filter((m) => m.group === anaGroup.ref);
 	expect(toOwner.map((m) => m.text)).toEqual([
-		'*Radar:* ¿Compro el carrito? Son leche y cemento por $225; el detalle va en el PDF.\n\nResponde aquí o en la web.',
+		'*Radar:* ¿Compro el carrito? Son leche y cemento por $225; el detalle va en el PDF.',
 	]);
 	expect(toOwner[0].files).toEqual([{ name: 'reporte.pdf', mime: 'application/pdf', data: report.data }]);
 	// Its work in this trabajo starts with the whole list; any other, with it in short.
@@ -1430,9 +1431,8 @@ run('WhatsApp: numbers, lists, and one group per (owner of agents, person) where
 		}),
 	).toMatchObject({ ok: true, terminado: true });
 	expect((await row<{ status: string }>('select status from flows where id = $1', [flowId]))!.status).toBe('done');
-	expect(
-		waSent.some((m) => m.group === anaGroup.ref && /«Carrito semana 46» \(receta carrito\) terminó/.test(m.text)),
-	).toBe(true);
+	// Done, its agent tells it: the platform adds no note of its own (only when a recipe does not finish).
+	expect(waSent.some((m) => m.group === anaGroup.ref && /receta/.test(m.text))).toBe(false);
 	// The saga: every task, the encargo's messages, the change with its reason, the question, the end.
 	const sagaKinds = (await flows.detail(radar.id, flowId))!.events.map((e) => e.kind);
 	for (const k of ['started', 'delegation', 'message', 'step', 'planned', 'question', 'answer', 'wake', 'ended'])
@@ -1680,6 +1680,18 @@ run('WhatsApp: numbers, lists, and one group per (owner of agents, person) where
 		replies: 1,
 		note: 'El encargo terminó: espera a que el agente vuelva a escribir.',
 	});
+	// A chat that followed a closed trabajo does not silence a line of another trabajo (its encargo's): the
+	// line's own trabajo decides (here, open; its encargo is what ended).
+	const closedConv = (await row<{ id: number }>(
+		"insert into conversations (agent_id, pi_session_id, status) values ($1, gen_random_uuid()::text, 'closed') returning id",
+		[radar.id],
+	))!.id;
+	await waSim.follow(radar.id, 'e:524446667777', closedConv);
+	await waSim.out(radar.id, 'e:524446667777', 'Encargo', '¿Y para el lunes?', [], { delegationId: acted.id as number });
+	await waActor.tick(radar.id, 'e:524446667777', Date.now() + 40_000);
+	expect((await waActor.list(radar.id)).find((x) => x.chat === 'e:524446667777')!.note).toBe(
+		'El encargo terminó: espera a que el agente vuelva a escribir.',
+	);
 	expect(waSent).toEqual([]);
 	// By default the AI answers: the agent writing to a chat turns its actor on, not when its owner turned it off.
 	await waSim.out(radar.id, 'e:524445556666', 'Radar', 'Hola, ¿tiene varilla?');
@@ -1752,11 +1764,9 @@ run('WhatsApp: numbers, lists, and one group per (owner of agents, person) where
 		'blocked',
 		JSON.stringify({ version: 1, para: 'dueño', reason: 'La entrega del 19 pasa tu límite del 13.', questions: [] }),
 	);
-	expect(waSent.find((m) => m.group === anaGroup.ref)?.text).toContain(
-		'Necesito tu ayuda: La entrega del 19 pasa tu límite del 13.',
-	);
+	expect(waSent.find((m) => m.group === anaGroup.ref)?.text).toContain('La entrega del 19 pasa tu límite del 13.');
 	expect(waSent.find((m) => m.phone === '524443334444')?.text).toContain('Esto lo tiene que decidir Ana');
-	expect(waSent.find((m) => m.phone === '524443334444')?.text).not.toContain('Necesito tu ayuda');
+	expect(waSent.find((m) => m.phone === '524443334444')?.text).not.toContain('La entrega del 19');
 
 	// A stalled list (nothing in progress, nobody waited for, its agent idle): first its agent is woken to ask for
 	// what it needs; still stalled, its owner hears by WhatsApp what is stuck; then nothing more.
@@ -1922,6 +1932,293 @@ run('a message sent while the agent works waits in its queue and can be removed 
 	expect(await row('select 1 from messages where id=$1', [one.message_id])).toBeNull();
 	await expect(tasks.removeQueued(runId, one.message_id)).rejects.toThrow('ya no está');
 	await expect(tasks.sendQueuedNow(runId, two.message_id)).rejects.toThrow('ya no está trabajando');
+	await exec("update runs set status='done' where id=$1", [runId]);
+});
+run(
+	'lessons are curated by rule: repeats count as useful, the harmful and the excess go, the pinned stay',
+	async () => {
+		const agents = await import('./agents'),
+			lessons = await import('./lessons');
+		const a = await agents.create(person, { name: 'Aprende', model: 'openai/gpt-6-sol' });
+		await lessons.apply(a.id, null, [
+			{ op: 'add', id: null, text: 'Hay refrigerador con espacio: no lo preguntes.' },
+			{ op: 'add', id: null, text: 'Las Dos Marías reparte martes y jueves de 9 a 15 h.' },
+			{ op: 'helpful', id: 999999, text: '' }, // not its own: ignored
+		]);
+		let list = await lessons.list(a.id);
+		const [fridge, meat] = ['refrigerador', 'Dos Marías'].map((w) => list.find((l) => l.text.includes(w))!);
+		await lessons.apply(a.id, null, [
+			{ op: 'add', id: null, text: 'hay REFRIGERADOR con espacio, no lo preguntes' },
+			{ op: 'update', id: meat.id, text: 'Las Dos Marías reparte martes y jueves de 9 a 14 h.' },
+		]);
+		list = await lessons.list(a.id);
+		expect(list).toHaveLength(2);
+		expect(list.find((l) => l.id === fridge.id)!.helpful).toBe(1);
+		expect(list.find((l) => l.id === meat.id)!.text).toContain('9 a 14 h');
+		// Harmful twice over its useful marks: it goes, unless its owner pinned it.
+		await lessons.pin(a.id, meat.id, true);
+		for (let i = 0; i < 3; i++)
+			await lessons.apply(a.id, null, [
+				{ op: 'harmful', id: fridge.id, text: '' },
+				{ op: 'harmful', id: meat.id, text: '' },
+			]);
+		expect((await lessons.list(a.id)).map((l) => l.id)).toEqual([meat.id]);
+		await lessons.apply(a.id, null, [{ op: 'remove', id: meat.id, text: '' }]);
+		expect((await lessons.list(a.id)).map((l) => l.id)).toEqual([meat.id]);
+		// Past the cap of the bank, the least useful go; a playbook carries what fits.
+		for (let k = 0; k * 12 < lessons.MAX_LESSONS + 12; k++)
+			await lessons.apply(
+				a.id,
+				null,
+				Array.from({ length: 12 }, (_, i) => ({ op: 'add' as const, id: null, text: `Lección ${k}-${i} de prueba.` })),
+			);
+		list = await lessons.list(a.id);
+		expect(list).toHaveLength(lessons.MAX_LESSONS);
+		expect(list[0].id).toBe(meat.id); // pinned first
+		const picked = await lessons.assemble(a.id, '');
+		expect(picked[0]).toEqual({ id: meat.id, why: 'fijado' });
+		expect(picked.reduce((n, p) => n + list.find((l) => l.id === p.id)!.text.length + 3, 0)).toBeLessThanOrEqual(
+			lessons.PLAYBOOK_CHARS,
+		);
+		await lessons.remove(a.id, meat.id);
+		await expect(lessons.remove(a.id, meat.id)).rejects.toThrow('ya no está');
+		// Its owner teaches it something on a trabajo (Aprender): pinned, the trabajo shows it; again, only pinned.
+		const conv = (await agents.conversations(a.id))[0].id;
+		const taught = await lessons.teach(a.id, conv, '  Miguel paga las carnes en efectivo al recibirlas. ');
+		expect((await lessons.list(a.id))[0]).toMatchObject({ id: taught, pinned: true, conversation_id: conv });
+		expect((await lessons.ofTrabajo(conv)).taught).toMatchObject([
+			{ op: 'teach', text: 'Miguel paga las carnes en efectivo al recibirlas.' },
+		]);
+		expect(await lessons.teach(a.id, null, 'miguel paga las carnes en efectivo al recibirlas')).toBe(taught);
+		expect(await lessons.list(a.id)).toHaveLength(lessons.MAX_LESSONS);
+		await expect(lessons.teach(a.id, conv, '   ')).rejects.toThrow('Escribe');
+		// Its owner deletes several, or all of them.
+		const two = (await lessons.list(a.id)).slice(-2).map((l) => l.id);
+		expect(await lessons.removeMany(a.id, { ids: two })).toBe(2);
+		await expect(lessons.removeMany(a.id, { ids: [] })).rejects.toThrow('Elige');
+		expect(await lessons.removeMany(a.id, { all: true })).toBe(lessons.MAX_LESSONS - 2);
+	},
+);
+run('a turn its pi lost in a restart is taken up: not while it waits for the model, twice at most', async () => {
+	const agents = await import('./agents'),
+		tasks = await import('./tasks');
+	const a = await agents.create(person, { name: 'Turno perdido', model: 'openai/gpt-6-sol' }),
+		conv = (await agents.conversations(a.id))[0].id;
+	const runId = (await row<{ id: number }>(
+		`insert into runs(agent_id,person_id,conversation_id,workflow_id,model,status,state) values($1,$2,$3,$4,$5,'running','thinking') returning id`,
+		[a.id, person, conv, `lost-${a.id}`, a.model],
+	))!.id;
+	const sent: any[] = [];
+	const base = Date.now();
+	const l: any = {
+		ref: { id: runId, person_id: person, agent_id: a.id },
+		sup: { send: (d: string) => sent.push(JSON.parse(d).cmd), close() {} },
+		chain: Promise.resolve(),
+		kind: 'task',
+		piAt: base,
+	};
+	tasks.liveRuns.set(runId, l);
+	try {
+		const at = (min: number) => (tasks.lostTurnClock.now = () => base + min * 60_000);
+		at(1);
+		expect(await tasks.takeUpLostTurns()).toBe(0); // a minute of silence is thinking
+		const end = tasks.llmCall(runId);
+		at(10);
+		expect(await tasks.takeUpLostTurns()).toBe(0); // its call to the model is still open
+		end();
+		l.piAt = base; // that call ended long ago
+		// pi still «processes» a turn whose answer died with the old process: it is aborted first...
+		expect(await tasks.takeUpLostTurns()).toBe(1);
+		expect(sent.at(-1)).toEqual({ type: 'abort' });
+		// ...and an idle pi that never settles is told to go on at the next pass.
+		at(13);
+		expect(await tasks.takeUpLostTurns()).toBe(0);
+		expect(sent.at(-1)).toMatchObject({ type: 'prompt' });
+		expect(sent.at(-1).message).toContain('Continúa donde ibas');
+		at(16);
+		expect(await tasks.takeUpLostTurns()).toBe(1);
+		at(19);
+		await tasks.takeUpLostTurns();
+		at(22);
+		expect(await tasks.takeUpLostTurns()).toBe(0); // twice at most: then its deadline ends it
+		expect((await tasks.events(runId)).filter((e) => e.kind === 'system')).toHaveLength(2);
+	} finally {
+		tasks.lostTurnClock.now = () => Date.now();
+		tasks.liveRuns.delete(runId);
+		await exec("update runs set status='done' where id=$1", [runId]);
+	}
+});
+run('Conversaciones shows its agent writing only while a run asked from that chat thinks or writes', async () => {
+	const agents = await import('./agents'),
+		waLog = await import('./whatsapp-log');
+	const a = await agents.create(person, { name: 'Escribiendo', model: 'openai/gpt-6-sol' }),
+		conv = (await agents.conversations(a.id))[0].id;
+	const runId = (await row<{ id: number }>(
+		`insert into runs(agent_id,person_id,conversation_id,workflow_id,model,status,state) values($1,$2,$3,$4,$5,'running','thinking') returning id`,
+		[a.id, person, conv, `typing-${a.id}`, a.model],
+	))!.id;
+	await exec(
+		`insert into messages (agent_id, source, sender, text, context, run_id, routed_as, routed_at, conversation_id)
+		 values ($1, 'whatsapp', 'Miguel', 'Va', $2, $3, 'new_run', now(), $4)`,
+		[a.id, JSON.stringify({ whatsapp: { sim: 'g:524443428337', phone: '524443428337' } }), runId, conv],
+	);
+	expect(await waLog.agentTyping(a.id, 'sg:524443428337')).toBe(true);
+	expect(await waLog.agentTyping(a.id, 'g:524443428337')).toBe(false); // the real chat is another one
+	expect(await waLog.agentTyping(a.id, 'sg:524445346488')).toBe(false); // so is someone else's
+	await exec("update runs set state = 'browsing' where id = $1", [runId]);
+	expect(await waLog.agentTyping(a.id, 'sg:524443428337')).toBe(false); // working, not writing
+	await exec("update runs set status = 'done', state = 'done' where id = $1", [runId]);
+	expect(await waLog.agentTyping(a.id, 'sg:524443428337')).toBe(false);
+});
+run(
+	'an agent goes to a .cubyagent and back: its configuration, lessons, contacts and files, never its secrets',
+	async () => {
+		const agents = await import('./agents'),
+			bundle = await import('./agent-bundle'),
+			accesses = await import('./accesses'),
+			lessons = await import('./lessons'),
+			{ harnessHash, defaultHarness } = await import('./harnesses'),
+			{ runtimeToolNames } = await import('../../sandbox/harness'),
+			{ unzipSync, zipSync, strToU8 } = await import('fflate');
+		const tag = crypto.randomUUID().slice(0, 8);
+		const a = await agents.create(person, {
+			name: 'Exportable',
+			role: '# Rol\nHace el súper.',
+			model: 'openai/gpt-6-sol',
+			harness: defaultHarness(),
+			image: `sha256:${'a'.repeat(64)}`,
+		});
+		await exec(
+			"update agents set goal_mode = true, personality = $2, style = 'pirate', soul = 'Hablo así.' where id = $1",
+			[a.id, JSON.stringify({ autonomia: 5 })],
+		);
+		await lessons.teach(a.id, null, 'Miguel da el visto bueno.');
+		const keyName = `BUNDLE_${tag}`.toUpperCase().replace(/-/g, '_');
+		const key = (
+			await accesses.saveKey(person, { name: keyName, value: 'secreto-xyz', domains: 'api.example.com' })
+		).find((k) => k.name === keyName)!;
+		await accesses.grantKey(person, key.id, [a.id]);
+		const number = (await row<{ id: number }>(
+			"insert into whatsapp_numbers (owner_id, jid, status) values ($1, $2, 'linked') returning id",
+			[person, `bundle-${tag}@s.whatsapp.net`],
+		))!.id;
+		const phone = `52444${String(Date.now()).slice(-7)}`;
+		await exec(
+			"insert into whatsapp_phones (number_id, phone, list, label, external) values ($1, $2, 'allow', 'Proveedor', true)",
+			[number, phone],
+		);
+		await exec('insert into whatsapp_agent_phones (agent_id, number_id, phone, enabled) values ($1, $2, $3, true)', [
+			a.id,
+			number,
+			phone,
+		]);
+		const written: { volume: string; path: string; tar: number[] }[] = [];
+		const real = bundle.bundleEngine.docker;
+		bundle.bundleEngine.docker = {
+			readVolume: async () => new Uint8Array([1, 2, 3]),
+			writeVolume: async (v: { name: string }, _image: string, path: string, tar: Uint8Array) =>
+				void written.push({ volume: v.name, path, tar: [...tar] }),
+			imageId: async () => `sha256:${'b'.repeat(64)}`,
+			probeHarness: async (_image: string, h: any) => ({
+				digest: harnessHash(h),
+				tools: runtimeToolNames(h),
+				skills: h.skills.map((s: any) => s.name),
+				plugins: h.plugins,
+			}),
+		} as any;
+		try {
+			const file = await bundle.exportAgent((await agents.get(a.id))!, { id: person, name: 'Yo' });
+			expect(file.name).toMatch(/^exportable-r\d+\.cubyagent$/);
+			expect(Buffer.from(file.bytes).includes(Buffer.from('secreto-xyz'))).toBe(false); // never its secrets
+			// An altered file is refused.
+			const files = unzipSync(file.bytes);
+			files['CONTRACT.md'] = strToU8('Otro contrato');
+			await expect(bundle.inspect(zipSync(files), person)).rejects.toThrow('alterado');
+			await expect(bundle.inspect(strToU8('hola'), person)).rejects.toThrow('no es un .cubyagent');
+			// What importing it would do: what it needs, matched by name and by number.
+			const preview = await bundle.inspect(file.bytes, person);
+			expect(preview).toMatchObject({
+				lessons: 1,
+				harnessError: null,
+				missingModel: null,
+				workspaceBytes: 3,
+				style: 'Pirata',
+			});
+			expect(preview.accesses).toEqual([{ kind: 'key', name: keyName, have: true }]);
+			expect(preview.contacts).toMatchObject([{ phone, role: 'external', enabled: true, have: true }]);
+			// Imported: all of its configuration, its lessons, its accesses and contacts matched, its files in its volume.
+			const done = await bundle.importAgent(file.bytes, { id: person });
+			const b = done.agent!;
+			expect(b.id).not.toBe(a.id);
+			expect(b).toMatchObject({
+				name: 'Exportable',
+				role: '# Rol\nHace el súper.',
+				style: 'pirate',
+				soul: 'Hablo así.',
+				harness_image: `sha256:${'b'.repeat(64)}`,
+			});
+			expect(b.personality).toEqual({ autonomia: 5 });
+			expect((await row<{ goal_mode: boolean }>('select goal_mode from agents where id = $1', [b.id]))!.goal_mode).toBe(
+				true,
+			);
+			expect((await lessons.list(b.id)).map((l) => [l.text, l.pinned])).toEqual([['Miguel da el visto bueno.', true]]);
+			expect((await accesses.grantedTo(b.id)).keys.map((k) => k.name)).toEqual([keyName]);
+			expect(
+				await row('select enabled from whatsapp_agent_phones where agent_id = $1 and phone = $2', [b.id, phone]),
+			).toEqual({ enabled: true });
+			expect(written).toEqual([
+				{ volume: expect.stringContaining(`agent-${b.id}`), path: '/home/agent/state', tar: [1, 2, 3] },
+			]);
+			expect(done).toMatchObject({ granted: [keyName], missing: [], contacts: 1, workspace: true });
+		} finally {
+			bundle.bundleEngine.docker = real;
+		}
+	},
+);
+run("someone else's WhatsApp waits for its own run: a run's answer goes to whoever asked it", async () => {
+	const agents = await import('./agents'),
+		inbox = await import('./inbox'),
+		{ EXTERNAL_ROLE } = await import('./inbox');
+	const a = await agents.create(person, { name: 'Sin cruces', model: 'openai/gpt-6-sol' }),
+		conv = (await agents.conversations(a.id))[0].id;
+	const owner = { whatsapp: { group: 3, phone: '524445346488', number: 9 } };
+	const asked = await inbox.receive(
+		{ agentId: a.id, source: 'whatsapp', personId: person, conversationId: conv, text: 'Pídelo', context: owner },
+		{ routeNow: false },
+	);
+	const runId = (await row<{ id: number }>(
+		`insert into runs(agent_id,person_id,conversation_id,workflow_id,model,status) values($1,$2,$3,$4,$5,'running') returning id`,
+		[a.id, person, conv, `cross-${a.id}`, a.model],
+	))!.id;
+	await exec("update messages set run_id=$2,routed_as='new_run',routed_at=now() where id=$1", [
+		asked.message_id,
+		runId,
+	]);
+	const from = (sender: string, text: string, context: unknown) =>
+		inbox.receive(
+			{ agentId: a.id, source: 'whatsapp', sender, conversationId: conv, text, context },
+			{ routeNow: false },
+		);
+	// Miguel answers a notice (Chefsito, 12-nov-2026): he waits, so the owner never gets the reply meant for him.
+	const miguel = await from('Miguel (+524443428337), invitado de tu dueño (no es tu dueño)', 'Va, pásame el pedido', {
+		whatsapp: { sim: 'g:524443428337', phone: '524443428337', number: 9 },
+	});
+	const external = await from(`Cortez (+524444408882), ${EXTERNAL_ROLE}`, 'A $125 el kilo', {
+		whatsapp: { sim: 'e:524444408882', phone: '524444408882', number: 9 },
+	});
+	const mine = await inbox.receive(
+		{ agentId: a.id, source: 'whatsapp', personId: person, conversationId: conv, text: 'Y avísale', context: owner },
+		{ routeNow: false },
+	);
+	await inbox.route(a.id);
+	const state = async (id: number) =>
+		(await row<{ run_id: number | null; routed_as: string | null }>(
+			'select run_id::int,routed_as from messages where id=$1',
+			[id],
+		))!;
+	expect(await state(miguel.message_id)).toEqual({ run_id: null, routed_as: null });
+	expect(await state(external.message_id)).toEqual({ run_id: runId, routed_as: 'queued' });
+	expect(await state(mine.message_id)).toEqual({ run_id: runId, routed_as: 'queued' });
 	await exec("update runs set status='done' where id=$1", [runId]);
 });
 run(
@@ -2202,23 +2499,6 @@ run('plain chat help is durable, exact-round-bound and cannot race structured or
 	expect((await tasks.answerHelpText(r.id, round, 'Guadalajara', key)).duplicate).toBe(true);
 });
 
-/** The platform's last round (deliverable, and for a new agent the confirmation): Markdown and «Sí». */
-async function confirmed(d: Awaited<ReturnType<typeof import('./designs').get>>) {
-	const designs = await import('./designs');
-	const pending = d.interview.pending;
-	const ids = pending?.questions.map((q) => q.id) ?? [];
-	if (!ids.length || ids.some((id) => id !== 'entregable' && id !== 'confirmar')) return d;
-	const answer = { entregable: ['markdown'], confirmar: ['si'] } as const;
-	return designs.message(person, d.id, {
-		version: d.version,
-		answers: {
-			round: pending!.round,
-			values: Object.fromEntries(
-				ids.map((id) => [id, { selected: [...answer[id as keyof typeof answer]], other: '' }]),
-			),
-		},
-	});
-}
 async function proposal(agentId?: number) {
 	const designs = await import('./designs');
 	const d = await designs.create(person, { model: 'openai/gpt-6-sol', ...(agentId ? { agentId } : {}) });
@@ -2226,28 +2506,25 @@ async function proposal(agentId?: number) {
 		text: 'Quiero comparar fuentes y entregar un informe con evidencia.',
 		version: d.version,
 	});
-	const pending = asked.interview.pending!;
-	return confirmed(
-		await designs.message(person, d.id, {
-			version: asked.version,
-			answers: {
-				round: pending.round,
-				values: Object.fromEntries(
-					pending.questions.map((q) => [q.id, { selected: [q.options.at(-1)!.id], other: '' }]),
-				),
-			},
-		}),
-	);
+	const pending = asked.interview.pending;
+	if (!pending) return asked; // an improvement may be proposed straight away
+	return designs.message(person, d.id, {
+		version: asked.version,
+		answers: {
+			round: pending.round,
+			values: Object.fromEntries(pending.questions.map((q) => [q.id, { selected: [q.options.at(-1)!.id], other: '' }])),
+		},
+	});
 }
 run('interview persists a structured draft but creates no agent or run', async () => {
 	const designs = await import('./designs');
 	const before = await row('select count(*) as n from agents');
 	const d = await proposal();
 	expect(d.ready).toBe(true);
-	expect(d.version).toBe(3); // question round, confirmation, proposal
-	expect(d.messages.length).toBe(6);
-	expect(d.tokens).toBe(369);
-	expect(d.interview).toMatchObject({ phase: 'review', completed: 2, pending: null });
+	expect(d.version).toBe(2); // question round, proposal: no platform round after the owner's
+	expect(d.messages.length).toBe(4);
+	expect(d.tokens).toBe(246); // two model calls: the round and the proposal
+	expect(d.interview).toMatchObject({ phase: 'review', completed: 1, pending: null });
 	expect(d.contract).toEqual(designerReply.contract);
 	expect(await row('select count(*) as n from agents')).toEqual(before);
 	expect((await designs.get(person, d.id)).messages).toEqual(d.messages);
@@ -2255,7 +2532,7 @@ run('interview persists a structured draft but creates no agent or run', async (
 	expect(request.model).toBe('gpt-6-sol');
 	expect(request.store).toBe(false);
 	expect(request.tools.map((t: any) => t.name)).toEqual(['buscar_mcp', 'buscar_cli', 'buscar_skills']); // searches only, read only
-	expect(request.input[0].content).toContain('frontera');
+	expect(request.input[0].content).toContain('acotar');
 	expect(request.input[0].content).toContain('Canales de entrega de esta versión'); // what a deliverable can use
 	expect(request.text.format.type).toBe('json_schema');
 	expect(request.input[1].questions).toBeUndefined(); // provider messages carry only role/content, not UI metadata
@@ -2484,25 +2761,6 @@ run('an improvement declared ready without a contract is sent back: it would app
 	await designs.message(person, d.id, { text: 'Así está bien.', version: fixed.version });
 	expect(modelRequests.length).toBe(before + 3);
 	queuedReplies.length = 0;
-});
-run("a ready draft from before the platform's last round gets it instead of losing its proposal", async () => {
-	const designs = await import('./designs');
-	const d = await proposal();
-	// As drafts were before: question round, answers, contract (no deliverable, no confirmation).
-	await exec(
-		`update agent_designs set messages = jsonb_build_array(messages->0, messages->1, messages->2, messages->5), ready = true where id = $1`,
-		[d.id],
-	);
-	const opened = await designs.get(person, d.id);
-	expect(opened.version).toBe(d.version + 1);
-	expect(opened.ready).toBe(false);
-	expect(opened.contract).toEqual(designerReply.contract); // the proposal is still there
-	expect(opened.interview.pending?.questions.map((q) => q.id)).toEqual(['entregable', 'confirmar']);
-	expect(opened.messages.at(-1)?.content).toContain('Antes de aprobar esta propuesta');
-	expect((await designs.get(person, d.id)).version).toBe(opened.version); // only once
-	const ready = await confirmed(opened);
-	expect(ready.ready).toBe(true);
-	expect(ready.interview.pending).toBeNull();
 });
 run('draft ownership and GPT catalog are enforced before model calls', async () => {
 	const designs = await import('./designs');
@@ -2856,18 +3114,16 @@ run('provider structured questions override premature contract/harness and persi
 		expect(asked.interview.pending?.questions).toEqual(designerReply.questions);
 		expect((await designs.get(person, d.id)).messages[1].questions?.map((q) => q.id)).toEqual(['goal', 'sources']);
 		designerReply.questions = [];
-		const ready = await confirmed(
-			await designs.message(person, d.id, {
-				version: 1,
-				answers: {
-					round: 1,
-					values: {
-						goal: { selected: ['specified'], other: '' },
-						sources: { selected: ['clarify', 'other'], other: 'Archivos propios.' },
-					},
+		const ready = await designs.message(person, d.id, {
+			version: 1,
+			answers: {
+				round: 1,
+				values: {
+					goal: { selected: ['specified'], other: '' },
+					sources: { selected: ['clarify', 'other'], other: 'Archivos propios.' },
 				},
-			}),
-		);
+			},
+		});
 		expect(ready.ready).toBe(true);
 		expect(ready.messages.find((m) => m.answers?.round === 1)?.answers?.values.sources.selected).toEqual([
 			'clarify',
@@ -2897,15 +3153,13 @@ run(
 			expect(pending.questions.map((q) => q.id)).toEqual(['question-1', 'question-2']);
 			expect((await designs.get(person, d.id)).interview.pending).toEqual(pending);
 			designerReply.questions = [];
-			const ready = await confirmed(
-				await designs.message(person, d.id, {
-					version: asked.version,
-					answers: {
-						round: pending.round,
-						values: Object.fromEntries(pending.questions.map((q) => [q.id, { selected: ['specified'], other: '' }])),
-					},
-				}),
-			);
+			const ready = await designs.message(person, d.id, {
+				version: asked.version,
+				answers: {
+					round: pending.round,
+					values: Object.fromEntries(pending.questions.map((q) => [q.id, { selected: ['specified'], other: '' }])),
+				},
+			});
 			expect(ready.ready).toBe(true);
 			expect(ready.messages[1].questions).toEqual(pending.questions);
 		} finally {
@@ -2943,13 +3197,10 @@ run(
 				values: { scope: { selected: ['other'], other: 'Inventario es requisito; no reduzcas el objetivo.' } },
 			},
 		});
-		// A new agent: one answered round is not enough; the model's ready reply becomes a confirmation.
-		expect(first.ready).toBe(false);
-		expect(first.contract).toBeNull();
-		expect(first.interview.pending?.questions.map((q) => q.id)).toEqual(['entregable', 'confirmar']);
-		const ready = await confirmed(first);
+		// A new agent: one answered round is enough, with no platform round after it.
+		const ready = first;
 		expect(ready.ready).toBe(true);
-		expect(ready.interview.completed).toBe(2);
+		expect(ready.interview.completed).toBe(1);
 		expect(ready.messages.find((m) => m.answers?.round === pending.round)?.answers?.values.scope.other).toContain(
 			'Inventario es requisito',
 		);
@@ -2973,10 +3224,10 @@ run(
 		const a = await agents.create(person, { name: 'Restaurable', role: 'Original', model: 'openai/gpt-6-sol' });
 		const restore = await designs.create(person, { agentId: a.id, model: a.model, revision: 1 });
 		expect(restore.interview.phase).toBe('restore');
+		// Editing a restore makes it an ordinary improvement (proposed straight away when it is clear).
 		const changed = await designs.message(person, restore.id, { version: 0, text: 'Además cambia el objetivo.' });
 		expect(changed.restored_revision).toBeNull();
-		expect(changed.ready).toBe(false);
-		expect(changed.interview.pending).not.toBeNull();
+		expect(changed.interview.phase).not.toBe('restore');
 	},
 );
 run('work help answers are round-bound, idempotent, durable and never replay as another task', async () => {
@@ -3121,6 +3372,9 @@ run(
 					comment: 'Cumplió, con un reporte incompleto.',
 					suggestions: ['Que el contrato pida verificar las regiones antes de entregar.'],
 					summary: 'Reporte semanal entregado en PDF; faltó una región.',
+					lessons: [
+						{ op: 'add', id: null, text: 'Antes de entregar el reporte, comprueba que estén todas las regiones.' },
+					],
 				},
 				tokens: 900,
 			};
@@ -3160,6 +3414,16 @@ run(
 		// Weighted over what it scored: correct 4 (weight 5) and honesty 2 (weight 5) → 30 of 40.
 		expect(Number(e.overall)).toBe(75);
 		expect((e.metrics as Record<string, number>).turns).toBe(1);
+		// What it learned: a lesson of its own, in its next prompt, apart from its contract.
+		const lessonsMod = await import('./lessons');
+		expect(evidence).toContain('## Su playbook en este trabajo');
+		expect((await lessonsMod.list(a.id)).map((l) => [l.text, l.conversation_id])).toEqual([
+			['Antes de entregar el reporte, comprueba que estén todas las regiones.', first],
+		]);
+		expect((await lessonsMod.ofTrabajo(first)).taught).toMatchObject([
+			{ op: 'add', text: 'Antes de entregar el reporte, comprueba que estén todas las regiones.' },
+		]); // shown on the trabajo
+		expect(await lessonsMod.countOf(first)).toBe(1); // its card
 		// It ended: the web takes nothing more there until its owner reopens it.
 		await expect(
 			inbox.receive(
@@ -3172,6 +3436,11 @@ run(
 		await jobs.closeByPerson(first, 'Dueña');
 		await evaluations.idle(first);
 		expect((await jobs.get(first))!.end_reason).toBe('lo dio por terminado Dueña');
+		// Learned again: the evaluator saw it (with its id) and the repeat counts as useful, not as a copy.
+		expect(evidence).toMatch(/- \[\d+\] Antes de entregar el reporte/);
+		expect((await lessonsMod.list(a.id)).map((l) => l.helpful)).toEqual([1]);
+		expect(await lessonsMod.countOf(first)).toBe(1); // a repeat is not something new
+		expect((await lessonsMod.ofTrabajo(first)).taught.map((t) => t.op)).toEqual(['add', 'helpful']);
 		// The next trabajo, for the same person, starts knowing the one before.
 		const next = (await inbox.receive(
 			{ agentId: a.id, source: 'cron', text: 'Otro', scheduleName: 'semanal', job: { origin: 'cron', title: 'Otro' } },
@@ -3200,138 +3469,141 @@ run(
 	},
 );
 
+run('a trabajo gets its playbook from the bank when it starts, and again when its objective changes', async () => {
+	const agents = await import('./agents'),
+		lessons = await import('./lessons');
+	const a = await agents.create(person, { name: 'Playbook', model: 'openai/gpt-6-sol' });
+	const conv = (await row<{ id: number }>(
+		"insert into conversations (agent_id, pi_session_id, goal) values ($1, gen_random_uuid()::text, 'Cotizar las carnes de diciembre con Las Dos Marías') returning id",
+		[a.id],
+	))!.id;
+	// The agent saves while it works; its owner teaches; secrets never go in; the same again is a confirmation.
+	expect(await lessons.learn(a.id, conv, 'Las Dos Marías reparte martes y jueves de 9 a 15 h.')).toMatchObject({
+		ok: true,
+	});
+	expect(await lessons.learn(a.id, conv, 'El cliente prefiere reportes en PDF.')).toMatchObject({ ok: true });
+	expect((await lessons.learn(a.id, conv, 'La tarjeta es 4111 1111 1111 1111')).error).toContain('secreto');
+	expect((await lessons.learn(a.id, conv, 'las dos marias reparte martes y jueves de 9 a 15 h')).nota).toContain(
+		'Ya lo sabías',
+	);
+	await lessons.teach(a.id, conv, 'Miguel da el visto bueno; no pidas aprobación a Angel.');
+	expect((await lessons.ofTrabajo(conv)).taught.map((t) => t.op)).toEqual(['learn', 'learn', 'teach']);
+	// Its playbook: the pinned one, then what is about its objective, then the rest that fits.
+	const first = await lessons.playbookFor(conv);
+	expect(first.map((e) => [e.text.slice(0, 12), e.why])).toEqual([
+		['Miguel da el', 'fijado'],
+		['Las Dos Marí', 'relevante'],
+		['El cliente p', 'reciente'],
+	]);
+	expect(lessons.playbookSection(first)).toContain('## Playbook');
+	// A lesson learned later waits for the next picture; one pinned now is in it at once.
+	await lessons.learn(a.id, null, 'Costco sólo arma carrito, no paga.');
+	const pinned = await lessons.teach(a.id, null, 'Mensajes de una o dos frases.');
+	const again = await lessons.playbookFor(conv);
+	expect(again.some((e) => e.text.startsWith('Costco'))).toBe(false);
+	expect(again.find((e) => e.id === pinned)?.why).toBe('fijado');
+	// Its objective changes: it is put together again.
+	await exec("update conversations set goal = 'Armar el carrito de Costco' where id = $1", [conv]);
+	expect((await lessons.playbookFor(conv)).find((e) => e.text.startsWith('Costco'))?.why).toBe('relevante');
+	expect(await lessons.countOf(conv)).toBe(3);
+});
 run(
-	'memoria: the agent saves, updates by topic, searches without accents, forgets; its owner corrects and pins',
+	'avanzado: a harness tuned by hand is tested first; it applies if it passes and stays as it was if not',
 	async () => {
 		const agents = await import('./agents');
-		const memories = await import('./memories');
-		const tag = crypto.randomUUID().slice(0, 8);
-		const owner = (await row<{ id: number }>(
-			"insert into people (name, key, avatar_seed) values ($1, $2, 's') returning id",
-			[`Dueño ${tag}`, `mem-${tag}`],
-		))!.id;
-		const model = (await import('./settings')).settings().models[0].id;
-		const a = await agents.create(owner, { name: `Memorioso ${tag}`, model });
-		const conv = (await row<{ id: number }>(
-			'insert into conversations (agent_id, pi_session_id, title, person_id) values ($1, gen_random_uuid()::text, $2, $3) returning id',
-			[a.id, 'Súper', owner],
-		))!.id;
-		const runId = (await row<{ id: number }>(
-			`insert into runs (agent_id, person_id, conversation_id, workflow_id, model, status)
-		 values ($1, $2, $3, $4, $5, 'done') returning id`,
-			[a.id, owner, conv, `mem-${tag}`, model],
-		))!.id;
-		// Nothing yet: the prompt invites it to save what will serve it later.
-		expect(await memories.block(a.id)).toContain('Todavía no tienes memorias');
-		// It saves a preference under a stable topic; saving to that topic again updates it, keeping the old version.
-		const first = await memories.handle(runId, 'save', {
-			tipo: 'preferencia',
-			tema: 'Súper/Leche',
-			titulo: 'Leche',
-			contenido: 'Lala deslactosada de 1 litro, nunca la entera.',
+		const tune = await import('./harness-tune');
+		const { defaultHarness } = await import('./harnesses');
+		const { personalitySection } = await import('./personality');
+		const a = await agents.create(person, { name: 'Afinado a mano', model: 'openai/gpt-6-sol' });
+		await exec('update agents set harness_image = $2 where id = $1', [a.id, `sha256:${'a'.repeat(64)}`]);
+		const realDocker = tune.tuning.docker,
+			realPause = tune.tuning.pause;
+		tune.tuning.pause = async () => {};
+		const settle = async () => {
+			for (let i = 0; i < 50; i++) {
+				const t = await tune.latest(a.id);
+				if (t && ['applied', 'failed'].includes(t.status)) return t;
+				await Bun.sleep(20);
+			}
+			throw new Error('la prueba no terminó');
+		};
+		// It passes: its computer loads the harness as asked; a new revision, without the browser.
+		const { harnessHash } = await import('./harnesses');
+		const { runtimeToolNames } = await import('../../sandbox/harness');
+		tune.tuning.docker = {
+			probeHarness: async (_image: string, h: any) => ({
+				digest: harnessHash(h),
+				tools: runtimeToolNames(h),
+				skills: h.skills.map((s: any) => s.name),
+				plugins: h.plugins,
+			}),
+		} as any;
+		const before = (await agents.get(a.id))!;
+		const lean = { ...defaultHarness(), tools: defaultHarness().tools.filter((t) => t !== 'browser' && t !== 'login') };
+		await tune.request(a.id, person, { harness: lean, summary: 'Quitó Navegador' });
+		await expect(tune.request(a.id, person, { harness: lean })).rejects.toThrow('Ya hay un cambio en prueba');
+		expect(await settle()).toMatchObject({
+			status: 'applied',
+			summary: 'Quitó Navegador',
+			revision: before.config_revision + 1,
 		});
-		expect(first).toMatchObject({ ok: true, accion: 'guardada' });
-		const again = await memories.handle(runId, 'save', {
-			tipo: 'preferencia',
-			tema: 'super/leche',
-			titulo: 'Leche',
-			contenido: 'Lala deslactosada de 1 litro; si no hay, Alpura deslactosada.',
-		});
-		expect(again).toMatchObject({ ok: true, accion: 'actualizada', id: first.id });
-		expect((await memories.history(a.id, first.id as number)).history).toEqual([
-			expect.objectContaining({ content: 'Lala deslactosada de 1 litro, nunca la entera.', changed_by: 'agent' }),
-		]);
-		expect(
-			(
-				await memories.handle(runId, 'save', {
-					id: first.id,
-					contenido: 'Lala deslactosada de 1 litro; si no hay, Alpura deslactosada.',
-				})
-			).accion,
-		).toBe('sin cambios');
-		await memories.handle(runId, 'save', {
-			tipo: 'lugar',
-			tema: 'tiendas/heb',
-			titulo: 'HEB Cumbres',
-			contenido: 'Entrega a domicilio los martes; el pedido mínimo es de $500.',
-		});
-		await memories.handle(runId, 'save', {
-			tipo: 'persona',
-			titulo: 'Cortez',
-			contenido: 'Proveedor de carne. Prefiere que le escriban en la mañana.',
-		});
-		// Secrets never go in: a card that passes Luhn, a password; a phone number is fine.
-		expect(
-			(await memories.handle(runId, 'save', { tipo: 'dato', titulo: 'Tarjeta', contenido: '4111 1111 1111 1111' }))
-				.error,
-		).toContain('secreto');
-		expect(
-			(await memories.handle(runId, 'save', { tipo: 'dato', titulo: 'HEB', contenido: 'password: hunter22' })).error,
-		).toContain('secreto');
-		expect(
-			(
-				await memories.handle(runId, 'save', {
-					tipo: 'persona',
-					titulo: 'Miguel',
-					contenido: 'Su WhatsApp es 8112345678.',
-				})
-			).ok,
-		).toBe(true);
-		expect((await memories.handle(runId, 'save', { tipo: 'nada', titulo: 'x', contenido: 'y' })).error).toContain(
-			'tipo',
+		const after = (await agents.get(a.id))!;
+		expect(after.harness.tools).not.toContain('browser');
+		expect(after.config_revision).toBe(before.config_revision + 1);
+		// It fails: the agent stays as it was, and its owner sees why.
+		tune.tuning.docker = {
+			probeHarness: async () => {
+				throw new Error('El contenedor no arrancó\ndetalle con secretos');
+			},
+		} as any;
+		await tune.request(a.id, person, { harness: defaultHarness() });
+		expect(await settle()).toMatchObject({ status: 'failed', error: 'El contenedor no arrancó' });
+		expect((await agents.get(a.id))!.config_revision).toBe(after.config_revision);
+		expect((await agents.get(a.id))!.harness.tools).not.toContain('browser');
+		// One the platform would not take fails at once, without a test.
+		await expect(tune.request(a.id, person, { harness: { ...defaultHarness(), tools: ['read'] } })).rejects.toThrow();
+		await expect(tune.request(a.id, person, { harness: after.harness })).rejects.toThrow('No hay cambios');
+		tune.tuning.docker = realDocker;
+		tune.tuning.pause = realPause;
+		// Its personality: off the middle, a line each; at the middle, nothing.
+		expect(personalitySection({ rigor: 5, proactividad: 3, autonomia: 4 })).toBe(
+			'## Tu personalidad (la ajustó tu dueño)\n\n- Si tu contrato no lo dice, decide tú lo razonable y avisa después.\n- Sé meticuloso: comprueba dos veces cada dato, suma y fuente.',
 		);
-		// Search without accents, by stem, and through a typo; the hits count as used.
-		const found = async (consulta: string) =>
-			((await memories.handle(runId, 'search', { consulta })).memorias as string[]).map((l) => l.split(':')[0]);
-		expect(await found('leche deslactosáda')).toEqual([expect.stringContaining('Leche')]);
-		expect(await found('entregas a domicilio')).toEqual([expect.stringContaining('HEB Cumbres')]);
-		expect(await found('cortes')).toEqual([expect.stringContaining('Cortez')]);
-		expect((await memories.handle(runId, 'search', { consulta: 'piñata' })).resultados).toBe(0);
-		expect((await memories.handle(runId, 'search', { tipo: 'persona' })).resultados).toBe(2);
-		// Its owner corrects one (the agent then reads it as written by its owner) and pins it.
-		const fixed = await memories.ownerSave(
-			a.id,
-			{ content: 'Lala deslactosada de 1 litro. Nunca Alpura.', pinned: true },
-			first.id as number,
-		);
-		expect(fixed).toMatchObject({ source: 'owner', pinned: true, revisions: 2 });
-		const block = await memories.block(a.id);
-		expect(block.split('\n')[3]).toContain('(lo escribió tu dueño): Lala deslactosada de 1 litro. Nunca Alpura.');
-		// A pinned memory is its owner's to remove; the agent forgets the rest, saying why.
-		expect((await memories.handle(runId, 'forget', { id: first.id, motivo: 'ya no' })).error).toContain('fijó');
-		const heb = (await memories.search(a.id, 'heb'))[0];
-		expect((await memories.handle(runId, 'forget', { id: heb.id })).error).toContain('motivo');
-		expect(await memories.handle(runId, 'forget', { id: heb.id, motivo: 'Cerró esa sucursal.' })).toMatchObject({
-			ok: true,
+		expect(personalitySection({ proactividad: 3 })).toBe('');
+		// How it sounds is its style: Cuby YOLO unless its owner picked another or wrote their own.
+		const { soulOf, styleOf } = await import('../../shared/souls');
+		expect(soulOf({})).toBe(styleOf('cuby-yolo').text);
+		expect(soulOf({ style: 'pirate' })).toContain('Arrr');
+		expect(soulOf({ style: 'pirate', soul: 'Hablas como yo.' })).toBe('Hablas como yo.');
+		expect(styleOf('nada').key).toBe('cuby-yolo');
+		// Its rank: the average of its evaluated trabajos, and each criterion's average.
+		const evaluations = await import('./evaluations');
+		expect(await evaluations.rank(a.id)).toBeNull();
+		for (const [overall, score] of [
+			[80, 3],
+			[90, 4],
+		]) {
+			const conv = (await row<{ id: number }>(
+				'insert into conversations (agent_id, pi_session_id) values ($1, gen_random_uuid()::text) returning id',
+				[a.id],
+			))!.id;
+			await exec(
+				"insert into job_evaluations (conversation_id, agent_id, status, overall, scores, done_at) values ($1, $2, 'done', $3, $4, now())",
+				[
+					conv,
+					a.id,
+					overall,
+					JSON.stringify([
+						{ key: 'correct', score, justification: '', evidence: [] },
+						{ key: 'cost', score: null, justification: '', evidence: [] },
+					]),
+				],
+			);
+		}
+		expect(await evaluations.rank(a.id)).toEqual({
+			overall: 85,
+			trabajos: 2,
+			criteria: [{ key: 'correct', score: 3.5 }],
 		});
-		expect(
-			memories.activity('forget', { ok: true, id: heb.id, titulo: 'HEB Cumbres', motivo: 'Cerró esa sucursal.' }),
-		).toBe(`Olvidó «HEB Cumbres» (#${heb.id}): Cerró esa sucursal.`);
-		expect(await found('domicilio')).toEqual([]);
-		// One more of its own, which its owner then deletes.
-		const paid = await memories.handle(runId, 'save', {
-			tipo: 'dato',
-			titulo: 'Pedido HEB',
-			contenido: 'El pedido semanal se arma el domingo.',
-		});
-		expect(paid.ok).toBe(true);
-		// The owner's own memory, and its view: total and limit.
-		await memories.ownerSave(a.id, {
-			kind: 'decision',
-			title: 'Presupuesto',
-			content: 'El súper semanal no pasa de $2,500.',
-		});
-		await expect(
-			memories.ownerSave(a.id, { kind: 'preference', topic: 'super/leche', title: 'x', content: 'y' }),
-		).rejects.toThrow('tema super/leche');
-		expect(await memories.list(a.id)).toMatchObject({ total: 5, max: memories.MAX_MEMORIES });
-		await memories.ownerDelete(a.id, paid.id as number);
-		expect((await memories.list(a.id)).total).toBe(4);
-		// Several at once, then all of them.
-		const [one, two] = (await memories.list(a.id)).memories;
-		expect(await memories.ownerDeleteMany(a.id, { ids: [one.id, two.id] })).toBe(2);
-		await expect(memories.ownerDeleteMany(a.id, { ids: [] })).rejects.toThrow('Elige de 1 a 500');
-		expect(await memories.ownerDeleteMany(a.id, { all: true })).toBe(2);
-		expect((await memories.list(a.id)).total).toBe(0);
 	},
 );

@@ -321,6 +321,8 @@ function ChatThread({
 	const [lines, setLines] = useState<Line[]>([]);
 	const [loaded, setLoaded] = useState(false);
 	const [completeSince, setCompleteSince] = useState<number | null>(null);
+	// Who is writing now (the server knows: its run thinking for this chat, its encargo, the contact's AI).
+	const [typing, setTyping] = useState<'agent' | 'contact' | null>(null);
 	const [error, setError] = useState('');
 	const [whole, setWhole] = useState(!conversationId);
 	const lastId = useRef(0);
@@ -332,13 +334,14 @@ function ChatThread({
 		setLines([]);
 		setLoaded(false);
 		const load = () =>
-			api<{ lines: Line[]; completeSince: number | null }>(
+			api<{ lines: Line[]; completeSince: number | null; typing: 'agent' | 'contact' | null }>(
 				`/agents/${agentId}/chats/${encodeURIComponent(chat.id)}?after=${lastId.current}`,
 			)
 				.then((r) => {
 					if (gone) return;
 					setLoaded(true);
 					setCompleteSince(r.completeSince);
+					setTyping(r.typing ?? null);
 					if (!r.lines.length) return;
 					lastId.current = Math.max(lastId.current, ...r.lines.map((l) => l.id));
 					setLines((cur) => [...cur, ...r.lines.filter((m) => !cur.some((x) => x.id === m.id))]);
@@ -354,7 +357,7 @@ function ChatThread({
 	const visible = whole || !conversationId ? lines : lines.filter((l) => l.conversation_id === conversationId);
 	useEffect(() => {
 		thread.current?.scrollTo({ top: thread.current.scrollHeight });
-	}, [visible.length]);
+	}, [visible.length, typing]);
 	const day = (ms: number) => new Date(ms).toDateString();
 	// Where the complete history starts: before its first line not rebuilt (or at its end, if none is).
 	const boundary = completeSince === null ? -1 : visible.findIndex((l) => !l.backfilled);
@@ -471,6 +474,24 @@ function ChatThread({
 						);
 					})
 				)}
+				{loaded && typing && (
+					<div
+						className={`encargo-row ${typing === 'agent' ? 'is-ours' : 'is-theirs'}`}
+						role="status"
+						aria-label={`${typing === 'agent' ? agentName : chat.name} está escribiendo`}
+					>
+						{typing === 'contact' && (
+							<span className="encargo-avatar is-small" aria-hidden="true">
+								{initials(chat.name)}
+							</span>
+						)}
+						<div className="encargo-bubble chats-typing" aria-hidden="true">
+							<span />
+							<span />
+							<span />
+						</div>
+					</div>
+				)}
 				{loaded && completeSince !== null && boundary === -1 && visible.length > 0 && (
 					<p className="chats-backfill">{BACKFILL.replace('Antes de este punto', 'Hasta aquí')}</p>
 				)}
@@ -521,14 +542,8 @@ function SimControls({ agentId, chat }: { agentId: number; chat: ChatRow }) {
 			</label>
 			{auto && (
 				<span className="chats-sim-state" role="status">
-					{actor && !actor.stopped ? (
-						<>
-							<LoaderCircle className="animate-spin" aria-hidden="true" />
-							{actor.replies} de {actor.max_replies} respuestas
-						</>
-					) : (
-						'Contesta cuando el agente le escriba'
-					)}
+					Contesta cuando el agente le escriba
+					{actor?.replies ? ` · ${actor.replies} ${actor.replies === 1 ? 'respuesta' : 'respuestas'}` : ''}
 				</span>
 			)}
 			{!auto && actor?.stopped && <span className="chats-sim-state">Se detuvo: {actor.stopped}</span>}

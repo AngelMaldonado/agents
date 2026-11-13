@@ -5,6 +5,8 @@ import { ComputerBusy, humanDriving } from '@/components/computer-busy';
 import { useEffect, useRef, useState, type ReactNode } from 'react';
 import {
 	BrainCircuit,
+	GraduationCap,
+	BookMarked,
 	MoreHorizontal,
 	Pencil,
 	Trash2,
@@ -40,7 +42,10 @@ import {
 	DropdownMenuTrigger,
 } from '@/components/ui/dropdown-menu';
 import { ChatDialog } from '@/components/chat-dialog';
-import { JobStatusBadge, scoreClass } from '@/components/job-bar';
+import { LearnDialog } from '@/components/learn-dialog';
+import { DevBubble } from '@/components/dev-bubble';
+import { previewed, usePreview } from '@/lib/card-preview';
+import { Evaluating, JobStatusBadge, scoreClass } from '@/components/job-bar';
 import { improveWith } from '@/lib/sidebar-events';
 import { TaskMeter } from '@/components/task-meter';
 
@@ -329,10 +334,14 @@ export function JobGallery({
 	onChanged: () => void;
 }) {
 	const [edit, setEdit] = useState<{ chat: Conversation; action: 'rename' | 'delete' } | null>(null);
+	const [learning, setLearning] = useState<Conversation | null>(null);
 	const [shown, setShown] = useState(JOBS_PAGE);
+	// In development, the bubble may play states on the cards (lib/card-preview); never in production.
+	const preview = usePreview();
 	const jobs = conversations
 		.filter((c) => !c.is_default)
-		.sort((a, b) => (b.last_at ?? b.started_at) - (a.last_at ?? a.started_at));
+		.sort((a, b) => (b.last_at ?? b.started_at) - (a.last_at ?? a.started_at))
+		.map((c, i) => (import.meta.env.DEV && (i === 0 || preview.all) ? previewed(c, preview) : c));
 	// A trabajo opens its hub: its flow of tasks, its conversations and its encargos.
 	const href = (c: Conversation) => `#/agent/${agentId}/job/${c.id}`;
 	if (error)
@@ -375,6 +384,17 @@ export function JobGallery({
 											{Math.round(c.score)}/100
 										</span>
 									)}
+									{c.evaluation === 'pending' && <Evaluating />}
+									{!!c.learned && (
+										<span
+											className="job-card-mark is-learned"
+											title={`Aprendió ${c.learned} ${c.learned === 1 ? 'cosa' : 'cosas'} de este trabajo`}
+										>
+											<BookMarked aria-hidden="true" />
+											{c.learned}
+											<span className="sr-only">{c.learned === 1 ? ' aprendizaje' : ' aprendizajes'}</span>
+										</span>
+									)}
 								</span>
 								<span className="job-card-title">{c.goal || c.title || 'Sin objetivo'}</span>
 								{!!c.tasks && (
@@ -405,6 +425,7 @@ export function JobGallery({
 								onRename={() => setEdit({ chat: c, action: 'rename' })}
 								onDelete={() => setEdit({ chat: c, action: 'delete' })}
 								onImprove={mine ? () => improveWith(agentId, { id: c.id, title: c.title }) : undefined}
+								onLearn={mine ? () => setLearning(c) : undefined}
 							/>
 						</li>
 					);
@@ -416,6 +437,16 @@ export function JobGallery({
 					<ChevronDown aria-hidden="true" />
 				</Button>
 			)}
+			<DevBubble />
+			<LearnDialog
+				agentId={agentId}
+				job={learning && { id: learning.id, title: learning.goal || learning.title }}
+				onClose={() => setLearning(null)}
+				onDone={() => {
+					setLearning(null);
+					onChanged();
+				}}
+			/>
 			<ChatDialog
 				edit={edit}
 				onClose={() => setEdit(null)}
@@ -428,19 +459,22 @@ export function JobGallery({
 	);
 }
 
-/** A chat's «…»: rename, use it to improve the agent (Automejora), delete. */
+/** A chat's «…»: rename, use it to improve the agent (Automejora), teach it something (Aprender), delete. */
 function ChatRowMenu({
 	chat,
 	className,
 	onRename,
 	onDelete,
 	onImprove,
+	onLearn,
 }: {
 	chat: Conversation;
 	className?: string;
 	onRename: () => void;
 	onDelete: () => void;
 	onImprove?: () => void;
+	/** Aprender: its owner teaches the agent something from this trabajo. */
+	onLearn?: () => void;
 }) {
 	return (
 		<DropdownMenu>
@@ -464,6 +498,12 @@ function ChatRowMenu({
 					<DropdownMenuItem onSelect={onImprove}>
 						<BrainCircuit aria-hidden="true" />
 						Usar para mejorar
+					</DropdownMenuItem>
+				)}
+				{onLearn && (
+					<DropdownMenuItem onSelect={onLearn}>
+						<GraduationCap aria-hidden="true" />
+						Aprender
 					</DropdownMenuItem>
 				)}
 				<DropdownMenuSeparator />

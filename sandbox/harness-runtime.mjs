@@ -61,18 +61,7 @@ export function prepareHarness(value, dir, granted = [], selfMaintenance = true)
 	const tools = [
 		...runtimeToolNames(h),
 		...(selfMaintenance
-			? [
-					'self_maintenance',
-					'job_done',
-					'job_goal',
-					'task_plan',
-					'task_update',
-					'task_ask',
-					'task_list',
-					'mem_save',
-					'mem_search',
-					'mem_forget',
-				]
+			? ['self_maintenance', 'job_done', 'job_goal', 'task_plan', 'task_update', 'task_ask', 'task_list', 'learn']
 			: []),
 		...mcp.map((s) => `${mcpPrefix(s.name)}*`),
 	];

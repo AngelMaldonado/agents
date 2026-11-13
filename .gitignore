@@ -9,3 +9,4 @@ data/
 .tools/
 .release/
 __pycache__/
+*.tsbuildinfo

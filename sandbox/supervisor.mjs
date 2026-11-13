@@ -1087,9 +1087,9 @@ createServer((req, res) => {
 			send({ t: 'flow', id, op: flowOp[1], args });
 			return;
 		}
-		const memoryOp = req.method === 'POST' && req.url?.match(/^\/memory\/(save|search|forget)$/);
+		const memoryOp = req.method === 'POST' && req.url?.match(/^\/memory\/(learn)$/);
 		if (memoryOp) {
-			// Memoria: the server keeps what the agent knows from one trabajo to the next.
+			// Aprendizajes (learn): the server keeps what the agent learns for other trabajos.
 			let args = {};
 			try {
 				args = JSON.parse(body);
@@ -1100,7 +1100,7 @@ createServer((req, res) => {
 				res.end(
 					JSON.stringify({
 						ok: false,
-						error: 'La plataforma no respondió a tiempo; busca con mem_search antes de repetir.',
+						error: 'La plataforma no respondió a tiempo; no repitas el mismo aprendizaje.',
 					}),
 				);
 			}, 25_000);

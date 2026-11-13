@@ -7,6 +7,9 @@ export type Settings = {
 	maxMinutes: number; // a task that runs longer ends as incomplete
 	maxCostUsd: number; // per task, from the usage pi reports
 	blockedWaitMinutes: number; // how long a stuck agent waits for a steer before skipping
+	noticesPerDay: number; // whatsapp_notify: notices a person may get from one agent in 24 h; 0 = no cap
+	quietFrom: number; // quiet hours (platform's time zone): from this hour notices wait (and encargos do not open)…
+	quietTo: number; // …until this one; the same hour in both = no quiet hours
 	sandboxImage: string;
 	// openai/<model>: GPT only, no Claude. The id must exist in pi's catalog AND in CLIProxyAPI's.
 	models: { id: string; label: string }[];
@@ -17,6 +20,9 @@ const DEFAULTS: Settings = {
 	maxMinutes: 30,
 	maxCostUsd: 2,
 	blockedWaitMinutes: 10,
+	noticesPerDay: 10,
+	quietFrom: 22,
+	quietTo: 7,
 	sandboxImage: process.env.AGENTS_SANDBOX_IMAGE ?? 'agents-sandbox:dev',
 	models: [
 		{ id: 'openai/gpt-6.1-sol', label: 'GPT-6.1 Sol' },
@@ -28,6 +34,26 @@ let cached: Settings = DEFAULTS;
 
 export function settings(): Settings {
 	return cached;
+}
+
+const hour = (h: number) => `${String(h).padStart(2, '0')}:00`;
+/** The quiet hours, if any: from, to, as «22:00». */
+export function quietHours(s = settings()) {
+	return s.quietFrom === s.quietTo ? null : { from: hour(s.quietFrom), to: hour(s.quietTo) };
+}
+/** Is this hour (0–23) in the quiet hours? */
+export function inQuietHours(h: number, s = settings()) {
+	if (s.quietFrom === s.quietTo) return false;
+	return s.quietFrom < s.quietTo ? h >= s.quietFrom && h < s.quietTo : h >= s.quietFrom || h < s.quietTo;
+}
+/** The limits of whatsapp_notify as they are configured now, for the agent and the designer. */
+export function noticeRules(s = settings()) {
+	const q = quietHours(s);
+	const parts = [
+		s.noticesPerDay ? `hasta ${s.noticesPerDay} avisos al día por persona` : 'sin tope de avisos al día',
+		q ? `de ${q.from} a ${q.to} quedan programados para las ${q.to}, salvo urgentes` : 'sin horario de silencio',
+	];
+	return parts.join('; ');
 }
 
 /** What an admin changed, as stored: the rest follows the defaults (the sandbox image, the release's). */
@@ -67,6 +93,9 @@ function clean(p: Partial<Settings>): Partial<Settings> {
 	if (p.maxConcurrent !== undefined) out.maxConcurrent = int(p.maxConcurrent, 1, 60);
 	if (p.maxMinutes !== undefined) out.maxMinutes = int(p.maxMinutes, 1, 120);
 	if (p.blockedWaitMinutes !== undefined) out.blockedWaitMinutes = int(p.blockedWaitMinutes, 1, 60);
+	if (p.noticesPerDay !== undefined) out.noticesPerDay = int(p.noticesPerDay, 0, 1000);
+	if (p.quietFrom !== undefined) out.quietFrom = int(p.quietFrom, 0, 23);
+	if (p.quietTo !== undefined) out.quietTo = int(p.quietTo, 0, 23);
 	if (typeof p.maxCostUsd === 'number' && p.maxCostUsd > 0) out.maxCostUsd = Math.min(50, p.maxCostUsd);
 	if (typeof p.sandboxImage === 'string' && (p.sandboxImage === '' || /^[\w./:@-]+$/.test(p.sandboxImage)))
 		out.sandboxImage = p.sandboxImage.trim();

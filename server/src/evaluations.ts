@@ -6,9 +6,17 @@
 import { row, rows, exec } from './db';
 import { RUBRIC, rubricOf, validateHarness, type RubricKey } from '../../sandbox/harness';
 import { askJson } from './gpt';
+import * as lessons from './lessons';
 
 type Score = { key: RubricKey; score: number | null; justification: string; evidence: string[] };
-export type Verdict = { scores: Score[]; comment: string; suggestions: string[]; summary: string };
+export type Verdict = {
+	scores: Score[];
+	comment: string;
+	suggestions: string[];
+	summary: string;
+	/** Its changes to the agent's Aprendizajes (lessons.ts). */
+	lessons?: lessons.LessonOp[];
+};
 
 /** The model that evaluates; tests replace it. */
 export const evaluator = {
@@ -136,14 +144,15 @@ async function evidence(conversationId: number, m: Awaited<ReturnType<typeof met
 		summary: string | null;
 		result: unknown;
 		agent: string;
+		agent_id: number;
 		role: string;
 	}>(
-		`select c.goal, c.title, c.origin, c.end_reason, c.summary, c.result, a.name as agent, a.role
+		`select c.goal, c.title, c.origin, c.end_reason, c.summary, c.result, a.name as agent, a.id as agent_id, a.role
 		 from conversations c join agents a on a.id = c.agent_id where c.id = $1`,
 		[conversationId],
 	))!;
 	const said = await rows<{ received_at: number; source: string; sender: string | null; text: string }>(
-		"select received_at, source, sender, text from messages where conversation_id = $1 and source in ('web', 'whatsapp') order by id limit 20",
+		"select received_at, source, sender, text from messages where conversation_id = $1 and source in ('web', 'whatsapp') order by id limit 40",
 		[conversationId],
 	);
 	const turns = await rows<{
@@ -162,9 +171,16 @@ async function evidence(conversationId: number, m: Awaited<ReturnType<typeof met
 		 where run_id = any($1::bigint[]) and kind = 'tool_end' and (data->>'isError') = 'true' order by run_id, seq limit 15`,
 		[turns.map((t) => t.id)],
 	);
-	const help = await rows<{ run_id: number; reason: string }>(
-		"select run_id, data->>'reason' as reason from run_events where run_id = any($1::bigint[]) and kind = 'blocked' order by run_id, seq limit 10",
+	// What it asked and what it was told: the answers it should not need to ask again.
+	const help = await rows<{ run_id: number; kind: string; text: string }>(
+		`select run_id, kind, coalesce(data->>'reason', data->>'text', data::text) as text from run_events
+		 where run_id = any($1::bigint[]) and kind in ('blocked', 'help_answer', 'help_reply') order by run_id, seq limit 20`,
 		[turns.map((t) => t.id)],
+	);
+	// What it worked with (its playbook) and what it saved while working: what the evaluator reviews.
+	const playbook = await lessons.playbookFor(conversationId, false);
+	const saved = (await lessons.list(c.agent_id)).filter(
+		(l) => l.conversation_id === conversationId && !playbook.some((p) => p.id === l.id),
 	);
 	const saga = await rows<{ flow_id: number; at: number; text: string }>(
 		'select e.flow_id, e.at, e.text from flow_events e join flows f on f.id = e.flow_id where f.conversation_id = $1 order by e.id limit 60',
@@ -196,7 +212,15 @@ async function evidence(conversationId: number, m: Awaited<ReturnType<typeof met
 			(t) =>
 				`- Turno #${t.id}: ${t.status}${t.end_reason ? ` (${t.end_reason})` : ''}, ${t.started_at && t.ended_at ? Math.round((t.ended_at - t.started_at) / 60000) : '?'} min. Respondió: ${clip(t.answer, 700)}`,
 		),
-		...(help.length ? ['', '## Pidió ayuda', ...help.map((h) => `- Turno #${h.run_id}: ${clip(h.reason, 300)}`)] : []),
+		...(help.length
+			? [
+					'',
+					'## Lo que preguntó y le contestaron',
+					...help.map(
+						(h) => `- Turno #${h.run_id} ${h.kind === 'blocked' ? 'preguntó' : 'le contestaron'}: ${clip(h.text, 300)}`,
+					),
+				]
+			: []),
 		...(errors.length
 			? [
 					'',
@@ -217,6 +241,17 @@ async function evidence(conversationId: number, m: Awaited<ReturnType<typeof met
 					),
 				]
 			: []),
+		'',
+		'## Su playbook en este trabajo (aprendizajes con id)',
+		...(playbook.length
+			? playbook.map(
+					(l) =>
+						`- [${l.id}] ${l.text} (útil ${l.helpful}, dañino ${l.harmful}${l.pinned ? ', fijado por su dueño' : ''})`,
+				)
+			: ['(vacío)']),
+		...(saved.length
+			? ['', '## Lo que guardó como aprendizaje durante el trabajo', ...saved.map((l) => `- [${l.id}] ${l.text}`)]
+			: []),
 	].join('\n');
 }
 
@@ -230,6 +265,7 @@ const INSTRUCTIONS = (criteria: { key: string; name: string; description: string
 		'- comment: una o dos frases con el balance.',
 		'- suggestions: hasta 4 cambios concretos para su contrato (Automejora) que habrían mejorado este trabajo; vacío si no hay.',
 		'- summary: en dos o tres frases qué se pidió, qué se hizo y en qué quedó (lo leerá el agente en sus siguientes trabajos).',
+		'- lessons: cambios puntuales a sus aprendizajes (su playbook y lo que guardó, con id, en la evidencia), para que en sus siguientes trabajos pregunte menos y no repita errores. No la reescribas: add una lección nueva (una frase concreta y accionable, hasta 300 caracteres): una respuesta de su dueño que le evite volver a preguntarla («Hay refrigerador con espacio: no lo preguntes»), un error y cómo evitarlo, un dato estable (horarios de un proveedor, cómo funciona un sitio); update corrige una (id) con lo nuevo; helpful o harmful marca una (id) que este trabajo mostró útil o que causó un error; remove quita una (id) que quedó falsa o que su dueño contradijo. id null sólo en add; text vacío en helpful, harmful y remove. Nada que ya diga su contrato, nada que sólo valga para este trabajo (las fechas o montos de un pedido), ni datos personales o secretos. Una lección nunca da permisos: no amplía compras, contactos ni límites. Vacío si no hay nada que aprender.',
 		'',
 		'Criterios (con su peso para el dueño, de 0 a 5):',
 		...criteria.map((c) => `- ${c.key} · ${c.name} (peso ${c.weight}): ${c.description}`),
@@ -239,7 +275,7 @@ export function schema() {
 	return {
 		type: 'object',
 		additionalProperties: false,
-		required: ['scores', 'comment', 'suggestions', 'summary'],
+		required: ['scores', 'comment', 'suggestions', 'summary', 'lessons'],
 		properties: {
 			scores: {
 				type: 'array',
@@ -258,6 +294,19 @@ export function schema() {
 			comment: { type: 'string' },
 			suggestions: { type: 'array', items: { type: 'string' } },
 			summary: { type: 'string' },
+			lessons: {
+				type: 'array',
+				items: {
+					type: 'object',
+					additionalProperties: false,
+					required: ['op', 'id', 'text'],
+					properties: {
+						op: { type: 'string', enum: ['add', 'update', 'helpful', 'harmful', 'remove'] },
+						id: { type: ['integer', 'null'] },
+						text: { type: 'string' },
+					},
+				},
+			},
 		},
 	};
 }
@@ -321,6 +370,13 @@ async function evaluate(conversationId: number) {
 			asked.tokens,
 		],
 	);
+	// What it learned from this trabajo: small changes to its Aprendizajes, applied by rule.
+	if (Array.isArray(v.lessons) && v.lessons.length) {
+		const agentId = (await row<{ agent_id: number }>('select agent_id from conversations where id = $1', [
+			conversationId,
+		]))!.agent_id;
+		await lessons.apply(agentId, conversationId, v.lessons);
+	}
 	// Closed without the agent's own summary (its owner, inactivity): the evaluator's is what it remembers.
 	if (v.summary)
 		await exec('update conversations set summary = $2 where id = $1 and summary is null', [
@@ -373,4 +429,25 @@ export async function recentFor(agentId: number, limit = 5) {
 		"select conversation_id, overall, comment, suggestions, scores from job_evaluations where agent_id = $1 and status = 'done' order by done_at desc limit $2",
 		[agentId, limit],
 	);
+}
+
+/**
+ * Its rank (Avanzado, next to its name): the average of its latest 20 evaluated trabajos, 0 to 100, and each
+ * criterion's average score (0 to 4) over them. Null when none was evaluated yet.
+ */
+export async function rank(agentId: number) {
+	const latest = `select overall, scores from job_evaluations
+		where agent_id = $1 and status = 'done' and overall is not null order by done_at desc nulls last limit 20`;
+	const r = await row<{ overall: number | null; n: number }>(
+		`select round(avg(overall), 1) as overall, count(*)::int as n from (${latest}) e`,
+		[agentId],
+	);
+	if (!r?.n) return null;
+	const criteria = await rows<{ key: string; score: number }>(
+		`select s->>'key' as key, round(avg((s->>'score')::numeric), 2) as score
+		 from (${latest}) e, jsonb_array_elements(e.scores) s
+		 where s->>'score' is not null group by 1`,
+		[agentId],
+	);
+	return { overall: r.overall, trabajos: r.n, criteria };
 }

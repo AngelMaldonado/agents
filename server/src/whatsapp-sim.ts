@@ -12,6 +12,8 @@ export type SimMessage = {
 	text: string;
 	files: string[] | null;
 	delegation_id: number | null;
+	/** The trabajo it belongs to (the agent's, or its encargo's). */
+	conversation_id: number | null;
 	actor: boolean;
 	created_at: number;
 };
@@ -132,7 +134,7 @@ export async function followed(agentId: number, chat: string) {
 
 export async function messages(agentId: number, chat: string, after = 0) {
 	return rows<SimMessage>(
-		`select id, chat, direction, author, text, files, delegation_id, actor, created_at from whatsapp_sim_messages
+		`select id, chat, direction, author, text, files, delegation_id, conversation_id, actor, created_at from whatsapp_sim_messages
 		 where agent_id = $1 and chat = $2 and id > $3 order by id limit 500`,
 		[agentId, chat, after],
 	);
@@ -141,7 +143,7 @@ export async function messages(agentId: number, chat: string, after = 0) {
 /** Each chat's last line, for the simulator's list. */
 export async function last(agentId: number) {
 	return rows<SimMessage>(
-		`select distinct on (chat) id, chat, direction, author, text, files, delegation_id, actor, created_at
+		`select distinct on (chat) id, chat, direction, author, text, files, delegation_id, conversation_id, actor, created_at
 		 from whatsapp_sim_messages where agent_id = $1 order by chat, id desc`,
 		[agentId],
 	);

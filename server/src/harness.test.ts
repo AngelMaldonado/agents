@@ -252,6 +252,10 @@ test('encargos: templates validated and sorted, their tools named for pi, the to
 	expect(harnessInstructions(h)).toContain(
 		'- cotizar: Cotiza con un contacto externo. Parámetros: lista, fecha, dueno, tope.',
 	);
+	// Without a cap of messages (null): valid, its hours still bound it.
+	expect(
+		validateHarness({ ...base, delegations: [{ ...template, maxMessages: null }] }).delegations?.[0].maxMessages,
+	).toBeNull();
 	// Empty is omitted: an agent without encargos keeps its digest.
 	expect('delegations' in validateHarness({ ...defaultHarness(), delegations: [] })).toBe(false);
 	expect(() => validateHarness(base)).toThrow('al menos una plantilla');

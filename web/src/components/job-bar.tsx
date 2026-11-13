@@ -1,7 +1,19 @@
 // A trabajo (a conversation with an objective): what it is for, ending or reopening it, and once it ended
 // its summary, its owner's own 👍 / 👎 and how another agent evaluated it with the rubric (in a dialog).
 import { useEffect, useLayoutEffect, useRef, useState } from 'react';
-import { CircleCheck, ClipboardCheck, RotateCcw, Square, Target, ThumbsDown, ThumbsUp } from 'lucide-react';
+import {
+	CircleCheck,
+	ClipboardCheck,
+	BookMarked,
+	LoaderCircle,
+	RotateCcw,
+	Square,
+	Target,
+	ThumbsDown,
+	ThumbsUp,
+} from 'lucide-react';
+import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover';
+import { NEW_OPS, type PlaybookEntry, type Taught } from '@/components/job-playbook';
 import { api, ago, type Conversation } from '@/api';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
@@ -45,6 +57,9 @@ type Evaluation = {
 type View = {
 	job: Job;
 	evaluation: Evaluation | null;
+	/** Its playbook (what its agent worked with) and what it taught (Aprendizajes). */
+	playbook?: PlaybookEntry[];
+	taught?: Taught[];
 	canManage: boolean;
 	owner: boolean;
 	/** Pagos simulados is on for its agent. */
@@ -80,6 +95,7 @@ export type JobView = View;
 /** A trabajo's state from the server (refreshed while its evaluation arrives) and its actions. */
 export function useJob(agentId: number, conversation: Conversation, onChanged?: () => void) {
 	const [v, setV] = useState<View | null>(null);
+	const evaluating = v?.evaluation?.status === 'pending';
 	const [error, setError] = useState('');
 	const [busy, setBusy] = useState(false);
 	const base = `/agents/${agentId}/conversations/${conversation.id}/job`;
@@ -94,13 +110,13 @@ export function useJob(agentId: number, conversation: Conversation, onChanged?: 
 				.then((r) => !gone && setV(r))
 				.catch((e) => !gone && setError((e as Error).message));
 		void load();
-		// Its evaluation arrives a moment after it ends.
-		const timer = setInterval(load, 15_000);
+		// Its evaluation arrives a moment after it ends: closer while it is being evaluated.
+		const timer = setInterval(load, evaluating ? 5_000 : 15_000);
 		return () => {
 			gone = true;
 			clearInterval(timer);
 		};
-	}, [base, conversation.status]);
+	}, [base, conversation.status, evaluating]);
 	const act = async (op: string, body?: unknown) => {
 		if (!v) return false;
 		setBusy(true);
@@ -275,9 +291,7 @@ export function JobBar({
 						) : (
 							<span />
 						)}
-						{e?.status === 'pending' && (
-							<span className="text-xs text-muted-foreground">Otro agente lo está evaluando…</span>
-						)}
+						{e?.status === 'pending' && <Evaluating />}
 						{e?.status === 'failed' && (
 							<span className="text-xs text-muted-foreground" title={e.error ?? undefined}>
 								No se pudo evaluar
@@ -292,6 +306,7 @@ export function JobBar({
 								)}
 							</Button>
 						)}
+						<Learned taught={v?.taught} />
 					</footer>
 				</div>
 			)}
@@ -373,5 +388,47 @@ export function RubricDialog({
 				</ScrollArea>
 			</DialogContent>
 		</Dialog>
+	);
+}
+
+/** While another agent evaluates the trabajo (a moment after it ends). */
+export function Evaluating() {
+	return (
+		<span className="job-evaluating" role="status" title="Otro agente lo está evaluando">
+			<ClipboardCheck aria-hidden="true" />
+			<LoaderCircle className="animate-spin" aria-hidden="true" />
+			<span className="sr-only">Evaluando</span>
+		</span>
+	);
+}
+
+/** What the agent learned from this trabajo; nothing when it learned nothing. */
+export function Learned({ taught }: { taught?: Taught[] }) {
+	const lessons = [...new Set((taught ?? []).filter((t) => NEW_OPS.includes(t.op)).map((t) => t.text))];
+	if (!lessons.length) return null;
+	return (
+		<Popover>
+			<PopoverTrigger asChild>
+				<button
+					type="button"
+					className="job-learned"
+					aria-label={`Aprendió ${lessons.length} ${lessons.length === 1 ? 'cosa' : 'cosas'}`}
+				>
+					<BookMarked aria-hidden="true" />
+					Aprendió {lessons.length}
+				</button>
+			</PopoverTrigger>
+			<PopoverContent className="w-80 text-sm" align="start">
+				<p className="font-medium">Lo que aprendió de este trabajo</p>
+				<ul className="mt-2 grid list-disc gap-1.5 pl-4 text-muted-foreground">
+					{lessons.map((l) => (
+						<li key={l}>{l}</li>
+					))}
+				</ul>
+				<p className="mt-2 text-2xs text-muted-foreground">
+					Entra a sus siguientes trabajos por su playbook. Lo ves y lo borras en la pestaña Aprendizajes.
+				</p>
+			</PopoverContent>
+		</Popover>
 	);
 }

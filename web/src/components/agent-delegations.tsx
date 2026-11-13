@@ -46,7 +46,12 @@ type Field = { name: string; description: string; type: 'text' | 'number' | 'boo
 type Detail = Omit<Item, 'template'> & {
 	/** The contact's phone (its chat in the simulator, when simulated). */
 	phone: string;
-	template: { name: string; objective: string; collect: { list: boolean; fields: Field[] }; maxMessages: number };
+	template: {
+		name: string;
+		objective: string;
+		collect: { list: boolean; fields: Field[] };
+		maxMessages: number | null;
+	};
 	params: Record<string, string>;
 	context: string | null;
 	data: unknown;
@@ -275,7 +280,9 @@ export function DelegationDetail({ agentId, id, onBack }: { agentId: number; id:
 						{d.simulated && <Badge variant="warning">Simulación</Badge>}
 					</p>
 					<p className="encargo-sub">
-						Encargo #{d.id} · {d.template.name} · {d.sent} de {d.template.maxMessages} mensajes ·{' '}
+						Encargo #{d.id} · {d.template.name} ·{' '}
+						{d.template.maxMessages === null ? `${d.sent} mensajes` : `${d.sent} de ${d.template.maxMessages} mensajes`}{' '}
+						·{' '}
 						{d.status === 'active'
 							? `vence ${new Date(d.deadline).toLocaleString('es-MX', { dateStyle: 'medium', timeStyle: 'short' })}`
 							: `${d.end_reason ?? 'terminó'}${d.ended_at ? `, ${when(d.ended_at)}` : ''}`}
@@ -348,7 +355,7 @@ export function DelegationDetail({ agentId, id, onBack }: { agentId: number; id:
 										})
 									) : (
 										<p className="encargo-note">
-											Todavía no escribe{d.status === 'active' ? ' (fuera de 7:00 a 22:00 espera a la mañana)' : ''}.
+											Todavía no escribe{d.status === 'active' ? ' (en horario de silencio espera a que termine)' : ''}.
 										</p>
 									)}
 								</div>

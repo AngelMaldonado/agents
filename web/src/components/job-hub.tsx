@@ -42,11 +42,12 @@ import {
 } from '@/components/ui/dialog';
 import { OptionSelect } from '@/components/option-select';
 import { ChannelIcon } from '@/components/channel-icon';
-import { CLOSE_JOB, JobStatusBadge, RubricDialog, scoreClass, useJob } from '@/components/job-bar';
+import { CLOSE_JOB, Evaluating, JobStatusBadge, Learned, RubricDialog, scoreClass, useJob } from '@/components/job-bar';
 import { useConfirm } from '@/components/confirm-dialog';
 import { SlideStack } from '@/components/slide-stack';
 import { SmoothHeight } from '@/components/smooth-height';
 import { JobTasks } from '@/components/job-tasks';
+import { JobPlaybook } from '@/components/job-playbook';
 import { GOAL_MODE_EXPLAIN } from '@/components/goal-mode';
 import { AgentDelegations, DelegationDetail } from '@/components/agent-delegations';
 import { TaskMeter } from '@/components/task-meter';
@@ -376,7 +377,7 @@ export function JobHub({
 									<ChevronRight className="job-eval-arrow" aria-hidden="true" />
 								</button>
 							) : e?.status === 'pending' ? (
-								<span className="text-muted-foreground">Otro agente lo está evaluando…</span>
+								<Evaluating />
 							) : e?.status === 'failed' ? (
 								<span className="text-muted-foreground" title={e.error ?? undefined}>
 									No se pudo evaluar
@@ -384,6 +385,7 @@ export function JobHub({
 							) : (
 								<span className="text-muted-foreground">Sin evaluación</span>
 							)}
+							<Learned taught={v?.taught} />
 							{v?.owner && j && (
 								<span className="ml-1 inline-flex items-center">
 									<Button
@@ -478,6 +480,7 @@ export function JobHub({
 								</ul>
 							</div>
 						) : null,
+						<JobPlaybook key="playbook" playbook={v?.playbook} taught={v?.taught} />,
 					]}
 				/>
 			</div>

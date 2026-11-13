@@ -35,8 +35,9 @@ import { stateMount } from './state';
 import { createDelivery, startDelivery, notify } from './channels';
 import * as delegations from './delegations';
 import * as flows from './flows';
-import * as memories from './memories';
 import * as simCard from './simulated-card';
+import * as lessons from './lessons';
+import { personalitySection, type Personality } from './personality';
 import * as jobs from './jobs';
 import { requestRoute, startPrompt, filesFor, render, receive } from './inbox';
 import * as whatsapp from './whatsapp';
@@ -111,6 +112,9 @@ type Live = {
 	control?: boolean; // someone drives the browser; pi is stopped
 	controller?: number; // who: the owner or someone the agent is shared with
 	takeover?: boolean; // its supervisor said it can be driven (older images cannot)
+	piAt?: number; // the last word from its pi (or its (re)connection)
+	nudges?: number; // times the platform took up a turn its pi had lost
+	retaking?: boolean; // it aborted that turn: when pi settles, it goes on instead of ending
 };
 
 const SERVER_URL = process.env.AGENTS_SANDBOX_SERVER_URL ?? 'http://agents-server:8787';
@@ -747,6 +751,72 @@ export async function keepPinnedImages() {
 		console.warn('could not keep the sandbox images:', (err as Error).message);
 	}
 }
+// ---------- a turn its pi lost ----------
+// pi's calls to the model go through this server (llm.ts). When the server restarts in the middle of one
+// (a deploy, dev's --watch), pi's error and the end of its turn may reach the process that is going away:
+// pi waits for its next prompt and the run looks like it thinks until its deadline (Chefsito, 12-nov-2026).
+// A running run that «thinks» with no call to the model, no word from its pi for two minutes, is such a
+// turn: the platform tells it to go on, at most twice.
+const llmCalls = new Map<number, number>();
+/** A call to the model began for this run; the function ends it (once). */
+export function llmCall(runId: number) {
+	llmCalls.set(runId, (llmCalls.get(runId) ?? 0) + 1);
+	let ended = false;
+	return () => {
+		if (ended) return;
+		ended = true;
+		const n = (llmCalls.get(runId) ?? 1) - 1;
+		if (n > 0) llmCalls.set(runId, n);
+		else llmCalls.delete(runId);
+		const l = live.get(runId);
+		if (l) l.piAt = Date.now();
+	};
+}
+export const LOST_TURN_MS = 2 * 60_000;
+export const LOST_TURN_NUDGES = 2;
+const NUDGE =
+	'La plataforma se reinició mientras trabajabas y tu último paso se perdió. Continúa donde ibas, sin repetir lo que ya hiciste.';
+export const lostTurnClock = { now: () => Date.now() };
+/** Its live runs, for the test of a lost turn. */
+export const liveRuns = live as Map<number, unknown>;
+/**
+ * One pass: the runs whose pi lost its turn are taken up. First its stuck turn is aborted (pi may still
+ * wait for an answer that died with the old process); when pi settles it is told to go on (onPi). If pi
+ * was idle and never settles, the next pass tells it directly. Returns how many it took up.
+ */
+export async function takeUpLostTurns() {
+	let n = 0;
+	for (const [id, l] of live) {
+		if (!l.sup || l.ending || l.control || l.kind === 'browser' || llmCalls.get(id)) continue;
+		if (lostTurnClock.now() - (l.piAt ?? lostTurnClock.now()) < LOST_TURN_MS) continue;
+		const r = await row<{ status: Status; state: CharState }>('select status, state from runs where id = $1', [id]);
+		if (r?.status !== 'running' || r.state !== 'thinking') continue;
+		l.piAt = lostTurnClock.now();
+		if (l.retaking) {
+			l.retaking = false;
+			l.sup.send(JSON.stringify({ t: 'pi_cmd', cmd: { type: 'prompt', message: NUDGE } }));
+			continue;
+		}
+		if ((l.nudges ?? 0) >= LOST_TURN_NUDGES) continue;
+		l.nudges = (l.nudges ?? 0) + 1;
+		l.retaking = true;
+		l.sup.send(JSON.stringify({ t: 'pi_cmd', cmd: { type: 'abort' } }));
+		await event(l.ref, 'system', {
+			message: 'Su último paso se perdió en un reinicio de la plataforma: lo retomo.',
+		});
+		n++;
+	}
+	return n;
+}
+let lostTurns: ReturnType<typeof setInterval> | null = null;
+export function startLostTurnWatch() {
+	lostTurns ??= setInterval(
+		() => void takeUpLostTurns().catch((err) => console.error('turnos perdidos:', (err as Error).message)),
+		30_000,
+	);
+	lostTurns.unref?.();
+}
+
 let keeper: ReturnType<typeof setInterval> | null = null;
 /**
  * A minute after start (not while the server recovers its work and the first harness tests use Docker)
@@ -971,6 +1041,23 @@ export async function attach(cred: { token?: string; session?: string }, sup: Su
 								)?.on,
 								// Its assigned card, as the agent knows it (never the full number).
 								card: card ? simCard.cardLine(card) : null,
+								// Its notices' limits, as configured now (only when it can send them).
+								notices: harness.tools.includes('whatsapp_notify'),
+								// Its owner's dials, live (not frozen in its definition).
+								// Its style (how it sounds), live: its owner may change it any time.
+								...(await row<{ style: string | null; soul: string | null }>(
+									'select style, soul from agents where id = $1',
+									[t.agent_id],
+								)),
+								// Its trabajo's playbook (its Aprendizajes, chosen for this trabajo).
+								playbook: lessons.playbookSection(await lessons.playbookFor(conv.id)),
+								traits: personalitySection(
+									(
+										await row<{ p: Personality | null }>('select personality as p from agents where id = $1', [
+											t.agent_id,
+										])
+									)?.p,
+								),
 							},
 							sites,
 							granted,
@@ -980,8 +1067,6 @@ export async function attach(cred: { token?: string; session?: string }, sup: Su
 					// Its trabajo and the recent ones (what it did before, now that each one is a conversation).
 					await jobs.jobBlock(conv.id),
 					await flows.activeBlock(t.agent_id, conv.id),
-					// What it remembers from other trabajos: pinned and recent memories (the rest, by mem_search).
-					await memories.block(t.agent_id),
 				]
 					.filter(Boolean)
 					.join('\n\n'),
@@ -1028,6 +1113,7 @@ export async function attach(cred: { token?: string; session?: string }, sup: Su
 		await publishTask(t.id);
 		await event(t, 'status', { status: 'running' });
 	} else {
+		l.piAt = Date.now(); // its grace after coming back
 		sup.send(JSON.stringify({ t: 'resumed' }));
 		await event(t, 'system', { message: 'La computadora se volvió a conectar.' });
 		requestRoute(t.agent_id); // follow-ups that waited for it
@@ -1262,11 +1348,26 @@ function onSupervisor(l: Live, raw: string) {
 				break;
 			}
 			case 'memory': {
-				// mem_save/search/forget: what the agent knows from one trabajo to the next.
+				// learn: a lesson it saves while it works (Aprendizajes). Older images still send mem_save
+				// (kept as a lesson) and mem_search/mem_forget, which are gone.
 				const op = String(msg.op ?? '');
-				const result = await memories.handle(ref.id, op, (msg.args ?? {}) as Record<string, unknown>);
-				const said = memories.activity(op, result);
-				if (said) await event(ref, 'system', { message: said });
+				const args = (msg.args ?? {}) as Record<string, unknown>;
+				const run = await row<{ agent_id: number; conversation_id: number }>(
+					'select agent_id, conversation_id from runs where id = $1',
+					[ref.id],
+				);
+				const result =
+					!run || (op !== 'learn' && op !== 'save')
+						? {
+								ok: false,
+								error: 'Tu memoria ahora son tus aprendizajes: guarda con learn; tu playbook ya trae lo que sirve.',
+							}
+						: await lessons.learn(
+								run.agent_id,
+								run.conversation_id,
+								op === 'learn' ? args.aprendizaje : [args.titulo, args.contenido].filter(Boolean).join(': '),
+							);
+				if (result.ok) await event(ref, 'system', { message: 'Guardó un aprendizaje.' });
 				l.sup?.send(JSON.stringify({ t: 'memory_res', id: msg.id, result }));
 				break;
 			}
@@ -1422,6 +1523,7 @@ function textOf(result: any) {
 
 async function onPi(l: Live, ev: any) {
 	if (!ev || typeof ev.type !== 'string') return;
+	l.piAt = Date.now();
 	const ref = l.ref;
 	const steered = l.steeredUntil && l.steeredUntil > Date.now();
 	switch (ev.type) {
@@ -1492,6 +1594,13 @@ async function onPi(l: Live, ev: any) {
 			await event(ref, 'system', { message: `Reintento ${ev.attempt}/${ev.maxAttempts}: ${ev.errorMessage ?? ''}` });
 			break;
 		case 'agent_settled': {
+			// The platform aborted a turn its pi had lost (takeUpLostTurns): it goes on, it does not end.
+			if (l.retaking) {
+				l.retaking = false;
+				l.lastError = undefined;
+				l.sup?.send(JSON.stringify({ t: 'pi_cmd', cmd: { type: 'prompt', message: NUDGE } }));
+				break;
+			}
 			// A message queued while it worked starts the next turn of the same run.
 			if (
 				!l.lastError &&

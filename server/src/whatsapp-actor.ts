@@ -1,8 +1,8 @@
 // Actores del simulador (Angel 10-nov-2026): GPT plays one of the agent's contacts in its WhatsApp simulator, so
 // a flow with people can be tested without anyone writing. On «auto», each time the agent (or its encargo)
 // writes to that chat, the actor answers as that person would, through the same path as its owner typing
-// (whatsapp.simulate), until it judges the conversation done, the chat's encargo ends, it reaches its cap or
-// its owner stops it. A sweeper (not timers) moves it: it survives a restart.
+// (whatsapp.simulate), until it judges the conversation done, the chat's encargo ends or its owner stops it
+// (no cap on its replies: Angel 12-nov-2026). A sweeper (not timers) moves it: it survives a restart.
 import { row, rows, exec } from './db';
 import { askJson } from './gpt';
 import * as sim from './whatsapp-sim';
@@ -113,6 +113,9 @@ async function seen(agentId: number, chat: string, seenId: number, note: string)
 }
 
 const busy = new Set<string>();
+/** The actors whose model is writing their reply now. */
+const composing = new Set<string>();
+export const isComposing = (agentId: number, chat: string) => composing.has(`${agentId}:${chat}`);
 
 /**
  * One step of one actor: if the agent spoke last (and stopped writing), the actor answers as its person, or keeps
@@ -137,7 +140,6 @@ export async function tick(agentId: number, chat: string, now = Date.now()) {
 		if (last ? last.direction === 'in' : !a.goal) return; // its turn is the agent's
 		if (last && now - last.created_at < SETTLE_MS) return; // the agent may still be writing
 		if ((last?.id ?? -1) <= (a.seen_id ?? -2)) return; // already considered: it waits for the agent's next line
-		if (a.replies >= a.max_replies) return halt(agentId, chat, `llegó a su tope de ${a.max_replies} respuestas`);
 		// The chat's encargo (its latest): over, there is nobody left to answer.
 		const encargoId = [...lines].reverse().find((l) => l.delegation_id)?.delegation_id ?? null;
 		const encargo = encargoId
@@ -149,11 +151,13 @@ export async function tick(agentId: number, chat: string, now = Date.now()) {
 					conversation_id: number | null;
 				}>('select status, contact, template, params, conversation_id from delegations where id = $1', [encargoId])
 			: null;
-		// Its trabajo (where the chat's messages land, or its encargo's) ended: it waits for the agent's next line.
+		// Its trabajo ended: it waits for the agent's next line. The trabajo of the line it answers first (an
+		// encargo's line is its encargo's trabajo), then its encargo's, then the one the chat follows: a chat
+		// that followed a closed trabajo must not silence a new encargo of another (Angel 12-nov-2026).
 		const trabajo = await row<{ status: string }>(
 			`select c.status from conversations c where c.deleted_at is null and c.id = coalesce(
-			   (select conversation_id from whatsapp_sim_chats where agent_id = $1 and chat = $2), $3)`,
-			[agentId, chat, encargo?.conversation_id ?? null],
+			   $3::bigint, $4::bigint, (select conversation_id from whatsapp_sim_chats where agent_id = $1 and chat = $2))`,
+			[agentId, chat, last?.conversation_id ?? null, encargo?.conversation_id ?? null],
 		);
 		if (trabajo && trabajo.status !== 'open')
 			return seen(agentId, chat, last?.id ?? 0, 'El trabajo terminó: espera a que el agente vuelva a escribir.');
@@ -195,15 +199,21 @@ export async function tick(agentId: number, chat: string, now = Date.now()) {
 		const transcript = lines.length
 			? lines.map((l) => `${l.direction === 'in' ? 'Tú' : ag.name}: ${l.text}`).join('\n')
 			: '(Nadie ha escrito todavía: tú abres la conversación.)';
-		const { value } = await actorModel.ask(ag.owner_id, ag.model, instructions, transcript);
-		const text = value.message?.trim();
-		if (text) {
-			await whatsapp.simulate(agentId, owner, chat, { text }, true);
+		// While its model writes, the chat shows it typing (Conversaciones).
+		composing.add(key);
+		let text: string | undefined, value: Turn;
+		try {
+			({ value } = await actorModel.ask(ag.owner_id, ag.model, instructions, transcript));
+			text = value.message?.trim();
+			if (text) await whatsapp.simulate(agentId, owner, chat, { text }, true);
+		} finally {
+			composing.delete(key);
+		}
+		if (text)
 			await exec(
 				'update whatsapp_sim_actors set replies = replies + 1, updated_at = now() where agent_id = $1 and chat = $2',
 				[agentId, chat],
 			);
-		}
 		await seen(
 			agentId,
 			chat,

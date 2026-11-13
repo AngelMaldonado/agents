@@ -41,9 +41,13 @@ import * as waSim from './whatsapp-sim';
 import * as waActor from './whatsapp-actor';
 import * as waLog from './whatsapp-log';
 import * as simCard from './simulated-card';
+import * as harnessTune from './harness-tune';
+import * as lessons from './lessons';
+import * as bundle from './agent-bundle';
+import { cleanPersonality } from './personality';
+import { SOUL_CHARS, STYLES } from '../../shared/souls';
 import * as delegations from './delegations';
 import * as flows from './flows';
-import * as memories from './memories';
 import * as jobs from './jobs';
 import * as evaluations from './evaluations';
 import * as aliases from './aliases';
@@ -72,10 +76,12 @@ await agents.loadShares();
 }
 await tasks.recover();
 await computerUpdates.recover();
+await harnessTune.recover();
 computerUpdates.startReconciler();
 await selfMaintenance.recoverRepairs();
 selfMaintenance.startRepairReconciler();
 tasks.startImageKeeper(); // a prune must not delete the images agents were validated on
+tasks.startLostTurnWatch(); // a turn its pi lost in a restart is taken up
 await inbox.startRouter();
 whatsapp.startSleeper(); // WhatsApp groups follow lists, shares and agents; «escribiendo…» while one works
 delegations.startSweeper(); // encargos: deadlines, turns a restart left and results that did not go back
@@ -371,6 +377,41 @@ app.get('/api/agents', async (c) => {
 	});
 });
 // Your aliases for one agent you use (yours or shared with you): they replace the ones it had.
+// .cubyagent (agent-bundle.ts): its owner downloads an agent as a file and mounts it on any instance.
+app.get('/api/agents/:id/export', async (c) => {
+	const a = await ownAgent(c);
+	if (!a) return c.json({ error: 'No es tuyo.' }, 404);
+	try {
+		const file = await bundle.exportAgent(a, c.get('me'));
+		return new Response(file.bytes as unknown as BodyInit, {
+			headers: {
+				'content-type': 'application/zip',
+				'content-disposition': `attachment; filename="${file.name}"`,
+			},
+		});
+	} catch (err) {
+		return fail(c, err);
+	}
+});
+const bundleBytes = async (c: Context<Env>) => {
+	if (Number(c.req.header('content-length') ?? 0) > bundle.MAX_BYTES)
+		throw new Error('El archivo es demasiado grande.');
+	return new Uint8Array(await c.req.arrayBuffer());
+};
+app.post('/api/agents/import/inspect', async (c) => {
+	try {
+		return c.json({ preview: await bundle.inspect(await bundleBytes(c), c.get('me').id) });
+	} catch (err) {
+		return fail(c, err);
+	}
+});
+app.post('/api/agents/import', async (c) => {
+	try {
+		return c.json(await bundle.importAgent(await bundleBytes(c), c.get('me')));
+	} catch (err) {
+		return fail(c, err);
+	}
+});
 app.put('/api/agents/:id/aliases', async (c) => {
 	try {
 		const body = await c.req.json().catch(() => null);
@@ -552,6 +593,100 @@ app.put('/api/agents/:id/simulated-payments', async (c) => {
 	return c.json({ ok: true, on });
 });
 
+// Avanzado: its personality (five dials) and its harness tuned by hand (tested in the background, applied
+// only if the test passes).
+// Estilo: how it sounds (shared/souls.ts): a preset, or its owner's own text; it applies from its next turn.
+app.put('/api/agents/:id/soul', async (c) => {
+	const a = await ownAgent(c);
+	if (!a) return c.json({ error: 'No es tuyo.' }, 404);
+	const body = (await c.req.json().catch(() => ({}))) as { style?: unknown; soul?: unknown };
+	const style = typeof body.style === 'string' && STYLES.some((x) => x.key === body.style) ? body.style : null;
+	const soul = typeof body.soul === 'string' && body.soul.trim() ? body.soul.trim() : null;
+	if (soul && soul.length > SOUL_CHARS) return c.json({ error: `Hasta ${SOUL_CHARS} caracteres.` }, 400);
+	await exec('update agents set style = $2, soul = $3 where id = $1', [a.id, style, soul]);
+	return c.json({ style, soul });
+});
+app.put('/api/agents/:id/personality', async (c) => {
+	const a = await ownAgent(c);
+	if (!a) return c.json({ error: 'No es tuyo.' }, 404);
+	const personality = cleanPersonality((await c.req.json().catch(() => ({})))?.personality);
+	await exec('update agents set personality = $2 where id = $1', [a.id, JSON.stringify(personality)]);
+	return c.json({ personality });
+});
+app.get('/api/agents/:id/rank', async (c) => {
+	const a = await ownAgent(c);
+	if (!a) return c.json({ error: 'No es tuyo.' }, 404);
+	return c.json({ rank: await (await import('./evaluations')).rank(a.id) });
+});
+// Aprendizajes: what it learned by itself after each trabajo; its owner pins or deletes them.
+app.get('/api/agents/:id/lessons', async (c) => {
+	const a = await ownAgent(c);
+	if (!a) return c.json({ error: 'No es tuyo.' }, 404);
+	return c.json({ lessons: await lessons.list(a.id) });
+});
+// Aprender: its owner teaches it something, from a trabajo (pinned, shown on that trabajo).
+app.post('/api/agents/:id/lessons', async (c) => {
+	const a = await ownAgent(c);
+	if (!a) return c.json({ error: 'No es tuyo.' }, 404);
+	try {
+		const body = await c.req.json().catch(() => ({}));
+		const conversation = Number(body?.conversation) || null;
+		if (
+			conversation &&
+			!(await row('select 1 from conversations where id = $1 and agent_id = $2', [conversation, a.id]))
+		)
+			return c.json({ error: 'Ese trabajo no es de este agente.' }, 400);
+		await lessons.teach(a.id, conversation, body?.text);
+		return c.json({ lessons: await lessons.list(a.id) });
+	} catch (err) {
+		return fail(c, err);
+	}
+});
+app.post('/api/agents/:id/lessons/delete', async (c) => {
+	const a = await ownAgent(c);
+	if (!a) return c.json({ error: 'No es tuyo.' }, 404);
+	try {
+		await lessons.removeMany(a.id, await c.req.json().catch(() => ({})));
+		return c.json({ lessons: await lessons.list(a.id) });
+	} catch (err) {
+		return fail(c, err);
+	}
+});
+app.delete('/api/agents/:id/lessons/:lesson', async (c) => {
+	const a = await ownAgent(c);
+	if (!a) return c.json({ error: 'No es tuyo.' }, 404);
+	try {
+		await lessons.remove(a.id, Number(c.req.param('lesson')));
+		return c.json({ lessons: await lessons.list(a.id) });
+	} catch (err) {
+		return fail(c, err);
+	}
+});
+app.put('/api/agents/:id/lessons/:lesson/pin', async (c) => {
+	const a = await ownAgent(c);
+	if (!a) return c.json({ error: 'No es tuyo.' }, 404);
+	try {
+		await lessons.pin(a.id, Number(c.req.param('lesson')), (await c.req.json().catch(() => ({})))?.on === true);
+		return c.json({ lessons: await lessons.list(a.id) });
+	} catch (err) {
+		return fail(c, err);
+	}
+});
+app.get('/api/agents/:id/tune', async (c) => {
+	const a = await ownAgent(c);
+	if (!a) return c.json({ error: 'No es tuyo.' }, 404);
+	return c.json({ tune: await harnessTune.latest(a.id) });
+});
+app.post('/api/agents/:id/tune', async (c) => {
+	const a = await ownAgent(c);
+	if (!a) return c.json({ error: 'No es tuyo.' }, 404);
+	try {
+		return c.json({ tune: await harnessTune.request(a.id, c.get('me').id, await c.req.json().catch(() => ({}))) }, 202);
+	} catch (err) {
+		return fail(c, err);
+	}
+});
+
 // Tarjeta simulada: the card its simulated payments use (brand, last four, expiry, holder).
 app.get('/api/agents/:id/simulated-card', async (c) => {
 	const a = await ownAgent(c);
@@ -604,7 +739,13 @@ app.get('/api/agents/:id/chats/:chat', async (c) => {
 	if (!a) return c.json({ error: 'Sólo su dueño ve sus conversaciones.' }, 403);
 	const chat = c.req.param('chat');
 	if (!waLog.VIEW_CHAT.test(chat)) return c.json({ error: 'Chat inválido.' }, 400);
-	return c.json(await waLog.messages(a.id, chat, Number(c.req.query('after')) || 0));
+	// Who is writing now, if anyone: its agent («…» on its side) or the simulated contact's AI.
+	const typing = (await waLog.agentTyping(a.id, chat))
+		? 'agent'
+		: chat.startsWith('s') && waActor.isComposing(a.id, chat.slice(1))
+			? 'contact'
+			: null;
+	return c.json({ ...(await waLog.messages(a.id, chat, Number(c.req.query('after')) || 0)), typing });
 });
 app.get('/api/agents/:id/sim', async (c) => {
 	const a = await ownAgent(c);
@@ -1080,6 +1221,8 @@ app.get('/api/agents/:id/conversations/:conversation/job', async (c) => {
 	return c.json({
 		job: x.j,
 		evaluation: await evaluations.of(x.j.id),
+		// Its playbook (what its agent worked with) and what it taught (Aprendizajes).
+		...(await lessons.ofTrabajo(x.j.id)),
 		canManage: x.mine,
 		owner: x.a.person_id === c.get('me').id,
 		simulatedPayments: !!x.a.simulated_payments,
@@ -1106,7 +1249,11 @@ app.post('/api/agents/:id/conversations/:conversation/job/:op', async (c) => {
 			if (x.a.person_id !== c.get('me').id) throw new Error('Sólo su dueño califica sus trabajos.');
 			await jobs.rate(x.j.id, body?.rating, body?.note);
 		} else return c.json({ error: 'Acción desconocida.' }, 400);
-		return c.json({ job: await jobs.get(x.j.id), evaluation: await evaluations.of(x.j.id) });
+		return c.json({
+			job: await jobs.get(x.j.id),
+			evaluation: await evaluations.of(x.j.id),
+			...(await lessons.ofTrabajo(x.j.id)),
+		});
 	} catch (err) {
 		return fail(c, err);
 	}
@@ -1130,65 +1277,6 @@ app.post('/api/agents/:id/conversations/:conversation/tasks', async (c) => {
 			...(await flows.ownerEdit(x.a.id, x.j.id, await c.req.json().catch(() => ({})))),
 			canEdit: true,
 		});
-	} catch (err) {
-		return fail(c, err);
-	}
-});
-
-// Memoria: what the agent knows from one trabajo to the next. Its owner sees, searches, writes, corrects,
-// pins and deletes; the agent hears an owner's memory as written by its owner. Shared people do not see it.
-app.get('/api/agents/:id/memories', async (c) => {
-	const a = await ownAgent(c);
-	if (!a) return c.json({ error: 'Sólo su dueño ve la memoria del agente.' }, 403);
-	const kind = c.req.query('kind');
-	if (kind && !(kind in memories.KINDS)) return c.json({ error: 'Tipo desconocido.' }, 400);
-	return c.json(await memories.list(a.id, { q: c.req.query('q') ?? '', kind: kind as memories.Kind | undefined }));
-});
-app.get('/api/agents/:id/memories/:mid', async (c) => {
-	const a = await ownAgent(c);
-	if (!a) return c.json({ error: 'Sólo su dueño ve la memoria del agente.' }, 403);
-	try {
-		return c.json({ memory: await memories.history(a.id, Number(c.req.param('mid'))) });
-	} catch (err) {
-		return fail(c, err);
-	}
-});
-app.post('/api/agents/:id/memories', async (c) => {
-	const a = await ownAgent(c);
-	if (!a) return c.json({ error: 'Sólo su dueño escribe en la memoria del agente.' }, 403);
-	try {
-		return c.json({ memory: await memories.ownerSave(a.id, await c.req.json().catch(() => ({}))) });
-	} catch (err) {
-		return fail(c, err);
-	}
-});
-app.put('/api/agents/:id/memories/:mid', async (c) => {
-	const a = await ownAgent(c);
-	if (!a) return c.json({ error: 'Sólo su dueño corrige la memoria del agente.' }, 403);
-	try {
-		return c.json({
-			memory: await memories.ownerSave(a.id, await c.req.json().catch(() => ({})), Number(c.req.param('mid'))),
-		});
-	} catch (err) {
-		return fail(c, err);
-	}
-});
-// Several at once ({ ids }) or all of them ({ all: true }).
-app.post('/api/agents/:id/memories/delete', async (c) => {
-	const a = await ownAgent(c);
-	if (!a) return c.json({ error: 'Sólo su dueño borra la memoria del agente.' }, 403);
-	try {
-		return c.json({ deleted: await memories.ownerDeleteMany(a.id, await c.req.json().catch(() => ({}))) });
-	} catch (err) {
-		return fail(c, err);
-	}
-});
-app.delete('/api/agents/:id/memories/:mid', async (c) => {
-	const a = await ownAgent(c);
-	if (!a) return c.json({ error: 'Sólo su dueño borra la memoria del agente.' }, 403);
-	try {
-		await memories.ownerDelete(a.id, Number(c.req.param('mid')));
-		return c.json({ ok: true });
 	} catch (err) {
 		return fail(c, err);
 	}

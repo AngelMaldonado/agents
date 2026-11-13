@@ -217,20 +217,14 @@ export function ScheduleCalendar({ schedules, timezone, add, toggle, remove, rea
 					}
 				/>
 			</div>
-			<p className="mt-3 text-2xs text-muted-foreground" hidden={readOnly}>
-				Haz clic en una fecha/hora para crear un horario o usa Nuevo horario. Las recurrencias se ejecutan con cron de
-				DBOS; no se arrastran ni tienen excepciones por ocurrencia. Los horarios en pausa se muestran sólo como
-				referencia.
-			</p>
 			{!!preview.limited.length && (
 				<p role="status" className="callout mt-3 text-xs">
-					Vista previa limitada: hay horarios con demasiados disparos en este rango. No limita la ejecución; todos los
-					horarios siguen en la lista.
+					Vista previa limitada: hay horarios con demasiados disparos en este rango. No limita la ejecución.
 				</p>
 			)}
 			{!!preview.invalid.length && (
 				<p role="status" className="error mt-3 text-xs">
-					No se pudo proyectar {preview.invalid.length} horario(s). Sus reglas se conservan en la lista; revisa el cron.
+					No se pudo proyectar {preview.invalid.length} horario(s): ábrelos abajo y revisa su cron.
 				</p>
 			)}
 			{readOnly ? (
@@ -253,9 +247,11 @@ export function ScheduleCalendar({ schedules, timezone, add, toggle, remove, rea
 					))}
 				</ul>
 			) : (
-				<div className="mt-4 grid min-w-0 gap-2" aria-label="Horarios guardados">
-					{schedules.length ? (
-						schedules.map((schedule) => (
+				// Only those the calendar could not draw (an invalid cron): elsewhere, a click on its block opens it.
+				<div className="mt-4 grid min-w-0 gap-2" aria-label="Horarios que no se pudieron proyectar">
+					{schedules
+						.filter((schedule) => preview.invalid.includes(schedule.name))
+						.map((schedule) => (
 							<Button
 								key={schedule.name}
 								variant="outline"
@@ -269,10 +265,7 @@ export function ScheduleCalendar({ schedules, timezone, add, toggle, remove, rea
 									</span>
 								</span>
 							</Button>
-						))
-					) : (
-						<p className="muted text-xs">Todavía no hay horarios. Crea el primero en la agenda.</p>
-					)}
+						))}
 				</div>
 			)}
 			<Dialog
