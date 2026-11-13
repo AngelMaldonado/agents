@@ -14,12 +14,40 @@ Mac: calidad → push wip → PR/Required checks → merge protegido sin prompt
 
 GitHub conserva un único workflow de CI: Quality con PostgreSQL temporal y Sandbox E2E con app/pi/Chrome reales y GPT simulado. `Required checks` exige ambos exitosos; no admite skipped. Se mantiene CI sobre la PR y sobre el commit integrado. El plan GitHub no ofrece reviewers obligatorios de entorno privado; no se simulan.
 
-El repositorio es **público** (desde el 13-nov-2026, otra vez): el CI corre en los runners de GitHub (`ubuntu-24.04`) y `main` exige `Required checks` por protección de ramas. Nunca un runner propio en este repo público: una PR desde un fork ejecutaría su código en esa máquina (en reko-3, con el Docker que comparten Komodo y los sandboxes).
+El repositorio es **público** y `main` exige `Required checks` por protección de ramas. Si GitHub no ofreciera protección (un repo privado en el plan gratuito responde 403), `just release` exige los checks de `release/config.json` (`requiredChecks`) y vuelve a esperar `Required checks` del SHA integrado después del merge: nunca integra sin ellos.
 
-Si vuelve a ser privado en el plan gratuito de GitHub (sin protección de ramas; minutos y almacenamiento que detienen los workflows):
+## Runners de CI (reko-3)
 
-- `just release` exige los checks de `release/config.json` (`requiredChecks`) cuando GitHub no ofrece protección, y vuelve a esperar `Required checks` del SHA integrado después del merge. Nunca integra sin ellos.
-- El CI puede pasar a runners propios en reko-3 con Runner Fleet (`~/dev/work/runners`): registrados sólo en este repo, `linux/amd64`, con el Docker del host (`job_docker_backend: host-socket`, no DinD) y su directorio de trabajo montado en la misma ruta dentro del contenedor y en reko-3 (el E2E monta `-v "$PWD:/app"`). `scripts/ci/postgres.sh` ya funciona en ambos: en un runner contenedor se une a su red; en uno de GitHub publica el puerto.
+Quality y Sandbox E2E piden `runs-on: [self-hosted, linux, x64, agents]`; `Required checks` sólo compara sus resultados y corre en `ubuntu-24.04`. Se administran con Runner Fleet (`~/dev/work/runners`, un runner por contenedor). Lo que necesita un runner de este repo:
+
+| Qué                                                                                                  | Por qué                                                                                                                                                        |
+| ---------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Registrado en `AngelMaldonado/agents`, con el label `agents`                                         | Así lo eligen los jobs; ningún otro repo debe usarlo.                                                                                                          |
+| `linux/amd64`                                                                                        | El E2E construye imágenes `--platform linux/amd64` y `just` se descarga para x86_64.                                                                           |
+| Docker del host (`job_docker_backend: host-socket`), no DinD                                         | Quality levanta su PostgreSQL en la red del propio contenedor del runner (`scripts/ci/postgres.sh`) y el E2E monta `/var/run/docker.sock` en sus contenedores. |
+| Su directorio de trabajo montado **en la misma ruta** dentro del contenedor y en reko-3              | El E2E monta `-v "$PWD:/app"`: el daemon del host resuelve esa ruta en el host.                                                                                |
+| `curl`, `git`, `python3`, `docker` CLI (la imagen base de Runner Fleet, alineada con `ubuntu-24.04`) | Bun, Node y just los instala el propio workflow.                                                                                                               |
+| Al menos ~8 GB de disco libre para imágenes de prueba                                                | El E2E construye la imagen del sandbox (Chrome) y la de la app, y las borra al terminar.                                                                       |
+
+Un ejemplo de entrada en el `config.yaml` de Runner Fleet:
+
+```yaml
+runners:
+  container_mode: true
+  items:
+    - name: agents-1
+      target_type: repo
+      target: AngelMaldonado/agents
+      labels: [agents]
+      job_docker_backend: host-socket
+```
+
+Los runners propios ejecutan el código que corre en ellos con acceso al Docker de reko-3, y el repo es público. Por eso una PR desde un fork nunca debe llegar a ellos:
+
+- Los jobs que van al runner corren sólo para pushes a `main`, lanzamientos a mano (`workflow_dispatch`) y PRs de ramas de este mismo repo (su `if`).
+- Eso no basta solo: una PR de fork corre el workflow que trae, editado si quiere. Lo que de verdad lo cierra es GitHub: **Settings → Actions → General → «Require approval for all external contributors»** (API: `actions/permissions/fork-pr-contributor-approval` = `all_external_contributors`). Nunca apruebes el workflow de una PR de fork sin leer qué cambia en `.github/`. Comparten daemon con Komodo y con los sandboxes de prueba de dev; los contenedores de CI llevan etiquetas propias (`agents.ci`, la red del E2E) y se borran al terminar. Nunca se deben podar imágenes del host: los agentes aprobados fijan IDs inmutables.
+
+El Mac coordina mediante `gh` y la API Komodo, usando versiones de herramientas/dependencias fijadas. No construye imágenes ni recibe la clave privada de firma. No hay runner JIT, workflow de publicación ni servidor Git temporal. El proceso debe seguir abierto para completar la publicación; una desconexión no revierte ni necesariamente cancela operaciones remotas.
 
 ## Recursos Komodo
 
