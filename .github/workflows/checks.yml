@@ -11,12 +11,12 @@ permissions:
 concurrency:
   group: checks-${{ github.event.pull_request.number || github.ref }}
   cancel-in-progress: true
-# Self-hosted runners on reko-3 (Runner Fleet, label `agents`): the repository is private on GitHub's free
-# plan, whose hosted minutes and storage stop the workflows. What the runner needs: release/README.md.
+# GitHub-hosted runners: the repository is public. Never a self-hosted runner here: a fork's pull request
+# would run its code on that machine (release/README.md).
 jobs:
   quality:
     name: Quality
-    runs-on: [self-hosted, linux, x64, agents]
+    runs-on: ubuntu-24.04
     timeout-minutes: 15
     env:
       AGENTS_DATABASE_URL: postgres://agents:ci-only-password@127.0.0.1:5432/agents_test
@@ -57,7 +57,7 @@ jobs:
         run: bash scripts/ci/postgres.sh stop
   sandbox:
     name: Sandbox E2E
-    runs-on: [self-hosted, linux, x64, agents]
+    runs-on: ubuntu-24.04
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
@@ -71,7 +71,7 @@ jobs:
     name: Required checks
     if: always()
     needs: [quality, sandbox]
-    runs-on: [self-hosted, linux, x64, agents]
+    runs-on: ubuntu-24.04
     steps:
       - name: Fail closed if any required job failed or was skipped
         env:
