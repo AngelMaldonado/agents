@@ -45,7 +45,18 @@ function businessResponse(body: any) {
 		businessRequests.push(body);
 		assert.deepEqual(
 			[...new Set(tools.map((t: any) => t.name))].sort(),
-			[...runtimeToolNames(harness), 'self_maintenance'].sort(),
+			// The platform's own tools of a task's main agent (sandbox/harness-runtime.mjs), besides the harness'.
+			[
+				...runtimeToolNames(harness),
+				'self_maintenance',
+				'job_done',
+				'job_goal',
+				'task_plan',
+				'task_update',
+				'task_ask',
+				'task_list',
+				'learn',
+			].sort(),
 		);
 		assert(JSON.stringify(body.input).includes('Harness aprobado'));
 	}
@@ -335,21 +346,10 @@ try {
 	assert.deepEqual((await api(`/designs/${design.id}`)).design.interview, design.interview);
 	ready = true;
 	({ design } = await api(`/designs/${design.id}/messages`, answerBody(design)));
-	// The platform's last round before a contract (#26): the deliverable and, for a new agent, the
-	// confirmation of the shared understanding. The model saying «ready» does not skip it.
-	assert.equal(design.ready, false);
-	assert.equal(design.contract, null);
-	assert.deepEqual(
-		design.interview.pending.questions.map((q: any) => q.id),
-		['entregable', 'confirmar'],
-	);
-	({ design } = await api(`/designs/${design.id}/messages`, {
-		version: design.version,
-		answers: {
-			round: design.interview.pending.round,
-			values: { entregable: { selected: ['markdown'], other: '' }, confirmar: { selected: ['si'], other: '' } },
-		},
-	}));
+	// One answered round is enough: the designer proposes, with no platform round after the owner's (the
+	// interview narrows what the owner needs; the approval button is the confirmation).
+	assert.equal(design.interview.pending, null);
+	assert(design.contract);
 	assert.equal(design.ready, true);
 	assert.equal((await api('/agents')).agents.length, 0);
 	console.log(
@@ -612,9 +612,9 @@ try {
 			version: improvement.version,
 		})
 	).design;
-	assert.equal(improvement.ready, false);
-	assert(improvement.interview.pending);
-	improvement = (await api(`/designs/${improvement.id}/messages`, answerBody(improvement))).design;
+	// A clear improvement is proposed straight away, without a round.
+	assert.equal(improvement.ready, true);
+	assert.equal(improvement.interview.pending, null);
 	improvement = (await api(`/designs/${improvement.id}/validate`, { version: improvement.version })).design;
 	assert.equal(improvement.harness_validation.status, 'passed');
 	await api(`/designs/${improvement.id}/approve`, { version: improvement.version });
