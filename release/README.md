@@ -12,7 +12,40 @@ Mac: calidad → push wip → PR/Required checks → merge protegido sin prompt
      → tag/prerelease GitHub y manifest → registros locales
 ```
 
-GitHub conserva un único workflow de CI: Quality con PostgreSQL temporal y Sandbox E2E con app/pi/Chrome reales y GPT simulado. `Required checks` exige ambos exitosos; no admite skipped. Se mantiene CI sobre la PR y sobre el commit integrado. Se conservaron PRs obligatorias, administradores incluidos, sin force push ni bypass. El plan GitHub no ofrece reviewers obligatorios de entorno privado; no se simulan.
+GitHub conserva un único workflow de CI: Quality con PostgreSQL temporal y Sandbox E2E con app/pi/Chrome reales y GPT simulado. `Required checks` exige ambos exitosos; no admite skipped. Se mantiene CI sobre la PR y sobre el commit integrado. El plan GitHub no ofrece reviewers obligatorios de entorno privado; no se simulan.
+
+Desde el 13-nov-2026 el repositorio es privado en el plan gratuito de GitHub: no hay protección de ramas (su API responde 403) y los minutos y el almacenamiento de los runners de GitHub detienen los workflows (`startup_failure`). Por eso:
+
+- `just release` exige los checks de `release/config.json` (`requiredChecks`) cuando GitHub no ofrece protección, y vuelve a esperar `Required checks` del SHA integrado después del merge. Nunca integra sin ellos.
+- El CI corre en **runners propios en reko-3** (abajo).
+
+## Runners de CI (reko-3)
+
+Los tres jobs de `.github/workflows/checks.yml` piden `runs-on: [self-hosted, linux, x64, agents]`. Se administran con Runner Fleet (`~/dev/work/runners`, un runner por contenedor). Lo que necesita un runner de este repo:
+
+| Qué                                                                                                  | Por qué                                                                                                                                                        |
+| ---------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Registrado en `AngelMaldonado/agents`, con el label `agents`                                         | Así lo eligen los jobs; ningún otro repo debe usarlo.                                                                                                          |
+| `linux/amd64`                                                                                        | El E2E construye imágenes `--platform linux/amd64` y `just` se descarga para x86_64.                                                                           |
+| Docker del host (`job_docker_backend: host-socket`), no DinD                                         | Quality levanta su PostgreSQL en la red del propio contenedor del runner (`scripts/ci/postgres.sh`) y el E2E monta `/var/run/docker.sock` en sus contenedores. |
+| Su directorio de trabajo montado **en la misma ruta** dentro del contenedor y en reko-3              | El E2E monta `-v "$PWD:/app"`: el daemon del host resuelve esa ruta en el host.                                                                                |
+| `curl`, `git`, `python3`, `docker` CLI (la imagen base de Runner Fleet, alineada con `ubuntu-24.04`) | Bun, Node y just los instala el propio workflow.                                                                                                               |
+| Al menos ~8 GB de disco libre para imágenes de prueba                                                | El E2E construye la imagen del sandbox (Chrome) y la de la app, y las borra al terminar.                                                                       |
+
+Un ejemplo de entrada en el `config.yaml` de Runner Fleet:
+
+```yaml
+runners:
+  container_mode: true
+  items:
+    - name: agents-1
+      target_type: repo
+      target: AngelMaldonado/agents
+      labels: [agents]
+      job_docker_backend: host-socket
+```
+
+Los runners propios ejecutan código de las PR con acceso al Docker de reko-3: sólo para este repo privado, nunca para uno público. Comparten daemon con Komodo y con los sandboxes de prueba de dev; los contenedores de CI llevan etiquetas propias (`agents.ci`, la red del E2E) y se borran al terminar. Nunca se deben podar imágenes del host: los agentes aprobados fijan IDs inmutables.
 
 El Mac coordina mediante `gh` y la API Komodo, usando versiones de herramientas/dependencias fijadas. No construye imágenes ni recibe la clave privada de firma. No hay runner JIT, workflow de publicación ni servidor Git temporal. El proceso debe seguir abierto para completar la publicación; una desconexión no revierte ni necesariamente cancela operaciones remotas.
 

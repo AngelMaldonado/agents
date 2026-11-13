@@ -9,22 +9,13 @@ permissions:
 concurrency:
   group: checks-${{ github.event.pull_request.number || github.ref }}
   cancel-in-progress: true
+# Self-hosted runners on reko-3 (Runner Fleet, label `agents`): the repository is private on GitHub's free
+# plan, whose hosted minutes and storage stop the workflows. What the runner needs: release/README.md.
 jobs:
   quality:
     name: Quality
-    runs-on: ubuntu-24.04
+    runs-on: [self-hosted, linux, x64, agents]
     timeout-minutes: 15
-    services:
-      postgres:
-        image: postgres:18.6-alpine
-        env:
-          POSTGRES_USER: agents
-          POSTGRES_PASSWORD: ci-only-password
-          POSTGRES_DB: agents_test
-        ports: ['5432:5432']
-        options: >-
-          --health-cmd "pg_isready -U agents -d agents_test"
-          --health-interval 5s --health-timeout 3s --health-retries 20
     env:
       AGENTS_DATABASE_URL: postgres://agents:ci-only-password@127.0.0.1:5432/agents_test
       AGENTS_TEST_DATABASE_URL: postgres://agents:ci-only-password@127.0.0.1:5432/agents_test
@@ -46,6 +37,8 @@ jobs:
           echo '193e2b04bac8ff3568ff81cf62f8c9db08f8083e16665e28d400dd35bac47ffd  '"$RUNNER_TEMP/just.tar.gz" | sha256sum -c -
           tar -xzf "$RUNNER_TEMP/just.tar.gz" -C "$RUNNER_TEMP/just" just
           echo "$RUNNER_TEMP/just" >> "$GITHUB_PATH"
+      - name: Ephemeral PostgreSQL at 127.0.0.1:5432
+        run: bash scripts/ci/postgres.sh start
       - run: bun install --frozen-lockfile
         env:
           LEFTHOOK: '0'
@@ -57,9 +50,12 @@ jobs:
           PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
         run: bun scripts/ci/pr-title.mjs
       - run: just ci
+      - name: Remove the PostgreSQL
+        if: always()
+        run: bash scripts/ci/postgres.sh stop
   sandbox:
     name: Sandbox E2E
-    runs-on: ubuntu-24.04
+    runs-on: [self-hosted, linux, x64, agents]
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
@@ -73,7 +69,7 @@ jobs:
     name: Required checks
     if: always()
     needs: [quality, sandbox]
-    runs-on: ubuntu-24.04
+    runs-on: [self-hosted, linux, x64, agents]
     steps:
       - name: Fail closed if any required job failed or was skipped
         env:

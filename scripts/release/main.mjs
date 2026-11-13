@@ -227,20 +227,27 @@ try {
 			// Wait for the checks main requires, ourselves: `gh pr checks --watch --required` exits with «no
 			// required checks reported» while a required job does not exist yet (Required checks has
 			// `needs: [quality, sandbox]`, so GitHub registers it only when those finish).
-			const required = (
-				await command(
-					'gh',
-					[
-						'api',
-						`repos/${config.repository}/branches/${config.releaseBranch}/protection/required_status_checks`,
-						'--jq',
-						'.contexts[]',
-					],
-					true,
-				)
+			// The checks main requires: its branch protection's, or, where GitHub offers none (a private repository on
+			// the free plan answers 403), the ones release/config.json declares. Either way it never merges without
+			// them, and the integrated SHA's checks are waited for again after the merge (scripts/ci/wait-checks.mjs).
+			const required = await command(
+				'gh',
+				[
+					'api',
+					`repos/${config.repository}/branches/${config.releaseBranch}/protection/required_status_checks`,
+					'--jq',
+					'.contexts[]',
+				],
+				true,
 			)
-				.split('\n')
-				.filter(Boolean);
+				.then((out) => out.split('\n').filter(Boolean))
+				.catch((error) => {
+					if (!/HTTP 403|Upgrade to GitHub Pro/.test(String(error.message))) throw error;
+					emit(
+						`${config.releaseBranch} no tiene protección en GitHub (repo privado, plan gratuito): se exigen los checks de release/config.json.\n`,
+					);
+					return (config.requiredChecks ?? []).filter((name) => typeof name === 'string' && name);
+				});
 			if (!required.length) throw new Error(`${config.releaseBranch} no exige checks; no se integra sin ellos.`);
 			const deadline = Date.now() + 60 * 60_000;
 			let last = '';
