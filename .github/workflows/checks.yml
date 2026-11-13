@@ -4,16 +4,21 @@ on:
     branches: [main]
   push:
     branches: [main]
+  # By hand, from Actions (or `gh workflow run checks.yml --ref main`): a SHA whose checks never started.
+  workflow_dispatch:
 permissions:
   contents: read
 concurrency:
   group: checks-${{ github.event.pull_request.number || github.ref }}
   cancel-in-progress: true
-# Self-hosted runners on reko-3 (Runner Fleet, label `agents`): the repository is private on GitHub's free
-# plan, whose hosted minutes and storage stop the workflows. What the runner needs: release/README.md.
+# Self-hosted runners on reko-3 (Runner Fleet, label `agents`), by choice, in a public repository: a fork's pull
+# request never reaches them (the jobs' `if`, and GitHub asks for approval of every outside contributor's
+# workflows). What the runner needs: release/README.md.
 jobs:
   quality:
     name: Quality
+    # Never a fork's pull request on the self-hosted runner: pushes, by hand, or this repository's own branches.
+    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
     runs-on: [self-hosted, linux, x64, agents]
     timeout-minutes: 15
     env:
@@ -55,12 +60,22 @@ jobs:
         run: bash scripts/ci/postgres.sh stop
   sandbox:
     name: Sandbox E2E
+    # Never a fork's pull request on the self-hosted runner: pushes, by hand, or this repository's own branches.
+    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
     runs-on: [self-hosted, linux, x64, agents]
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
         with:
           persist-credentials: false
+      - name: Install buildx (BuildKit) where the runner lacks it
+        run: |
+          if docker buildx version >/dev/null 2>&1; then docker buildx version; exit 0; fi
+          mkdir -p "$HOME/.docker/cli-plugins"
+          curl -fsSL --retry 3 "https://github.com/docker/buildx/releases/download/v0.38.1/buildx-v0.38.1.linux-amd64" -o "$HOME/.docker/cli-plugins/docker-buildx"
+          echo 'e25d5cd675092bb5d1d03632fdc46cdf3fede7b514dc5f023a105e00d3ce5ad4  '"$HOME/.docker/cli-plugins/docker-buildx" | sha256sum -c -
+          chmod +x "$HOME/.docker/cli-plugins/docker-buildx"
+          docker buildx version
       - name: Real sandbox and application candidates, ephemeral PostgreSQL, fake GPT
         run: bash scripts/ci/e2e.sh
         env:
@@ -69,6 +84,8 @@ jobs:
     name: Required checks
     if: always()
     needs: [quality, sandbox]
+    # It only compares two results. On the self-hosted runner too: GitHub's own do not start while the account
+    # is locked by billing («The job was not started because your account is locked due to a billing issue»).
     runs-on: [self-hosted, linux, x64, agents]
     steps:
       - name: Fail closed if any required job failed or was skipped

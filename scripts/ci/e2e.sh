@@ -3,6 +3,8 @@
 set -euo pipefail
 cd "$(dirname "$0")/../.."
 ctx="${DOCKER_CONTEXT:-default}"
+# The sandbox's Dockerfile needs BuildKit (COPY --chmod): buildx, which the workflow installs where it is missing.
+export DOCKER_BUILDKIT=1
 id="agents-ci-${GITHUB_RUN_ID:-$(date +%s)}-${GITHUB_RUN_ATTEMPT:-1}"
 network="$id"
 postgres="$id-postgres"
@@ -50,13 +52,18 @@ if [ "$healthy" != 1 ]; then docker --context "$ctx" logs "$ready"; exit 1; fi
 docker --context "$ctx" rm -f "$ready" >/dev/null
 echo 'PASS actual app image boots with production-only dependencies and /healthz is ready'
 # The test runner is trusted merged/PR code on a disposable CI machine, NEVER the production host.
-docker --context "$ctx" run -d --name "$api" --network "$network" --network-alias agents-ci-api \
-  -v "$PWD:/app" -v /var/run/docker.sock:/var/run/docker.sock -w /app \
+docker --context "$ctx" create --name "$api" --network "$network" --network-alias agents-ci-api \
+  -v /var/run/docker.sock:/var/run/docker.sock -w /app \
   -e LEFTHOOK=0 \
   -e AGENTS_TEST_DATABASE_URL=postgres://agents:ci-only-password@postgres:5432/agents_test \
   -e AGENTS_TEST_INSTANCE_PREFIX="$id" -e AGENTS_SANDBOX_NETWORK="$network" -e AGENTS_SANDBOX_SERVER_URL=http://agents-ci-api:8787 \
   -e AGENTS_SANDBOX_IMAGE="$sandbox_image" oven/bun:1.4.2 \
   sh -ec 'bun install --frozen-lockfile; bun scripts/design-smoke.ts; bun scripts/sharing-smoke.ts' >/dev/null
+# The repository goes in by copy, not mounted: the daemon may not see this machine's paths (a Docker in Docker
+# self-hosted runner). Its dependencies are installed inside.
+tar -C . --exclude=./node_modules --exclude=./server/node_modules --exclude=./web/node_modules \
+  --transform 's,^\.,app,' -cf - . | docker --context "$ctx" cp - "$api":/
+docker --context "$ctx" start "$api" >/dev/null
 result="$(docker --context "$ctx" wait "$api")"
 docker --context "$ctx" logs "$api"
 test "$result" = 0
