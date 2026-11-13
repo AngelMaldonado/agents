@@ -4,6 +4,8 @@ on:
     branches: [main]
   push:
     branches: [main]
+  # By hand, from Actions (or `gh workflow run checks.yml --ref main`): a SHA whose checks never started.
+  workflow_dispatch:
 permissions:
   contents: read
 concurrency:
