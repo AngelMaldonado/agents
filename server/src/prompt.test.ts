@@ -12,7 +12,7 @@ test('bash permits reusable scripts and local dependencies without changing the 
 	const prompt = withHarnessPrompt(systemPrompt(agent, []), h);
 	for (const text of [
 		'crear, ejecutar y conservar scripts propios',
-		'dependencias locales con uv o npm dentro de ~/work',
+		'dependencias locales con uv o bun (la computadora corre con Bun; no hay Node.js ni npm) dentro de ~/work',
 		'sin una aprobación adicional por cada script o paquete',
 		'~/work/tools/',
 		'versiones',
@@ -68,7 +68,16 @@ test('global policy distinguishes visible browsing from authorized APIs and depe
 	expect(prompt).toContain('no pidas permiso para cada detalle de implementación');
 	expect(prompt).toContain('no supongas que puedes ejecutar comandos');
 	// WhatsApp is part of the product (#18): a message from there gets a short, plain answer.
-	expect(prompt).toContain('Si un mensaje llegó por WhatsApp, responde breve y en texto simple');
+	expect(prompt).toContain('Si un mensaje llegó por WhatsApp, responde en texto simple');
+	// Autonomy: it decides what its contract does not reserve, and asks only in three cases.
+	expect(prompt).toContain('**Decide tú** todo lo que tu contrato no le reserva expresamente a tu dueño');
+	expect(prompt).toContain('**Pide ayuda sólo en tres casos:**');
+	expect(prompt).toContain('Nunca pidas que te confirmen lo que ya te dijeron o aprobaron');
+	// Its messages: short, without its own bookkeeping.
+	expect(prompt).toContain('**Corto, directo y concreto**');
+	expect(prompt).toContain('No le cuentes tu bitácora');
+	expect(prompt).toContain('de una a tres líneas');
+	expect(prompt).not.toContain('como máximo un reintento');
 	expect(prompt).not.toContain('Nunca uses `curl`, `wget`, scripts ni APIs');
 });
 
@@ -89,31 +98,14 @@ test('autonomy retains purchase authorization, human takeover and secret-handlin
 	expect(authorized).toContain('Si el sitio pide CVV');
 });
 
-test('the designer distinguishes provisioning, harness approval and implementation details', () => {
+test('the designer narrows what the owner needs and leaves the rest open', () => {
 	const skill = readFileSync(new URL('../skills/grill-me.md', import.meta.url), 'utf8');
-	expect(skill).toContain('Creación y Automejora configuran el contrato y el harness de pi');
-	expect(skill).toContain('Sin bash no prometas ejecución ni instalaciones autónomas');
-	expect(skill).toContain('no requieren pasar por Automejora ni pedir permiso para cada script o paquete');
-	expect(skill).toContain('no son una lista exhaustiva de las librerías que un script puede usar');
-	expect(skill).toContain('no de los scripts y dependencias locales que puede usar bash');
-	expect(skill).toContain('ni garantiza que una integración o una dependencia externa funcione');
-	expect(skill).not.toContain('No prometas código generado de plugins, instalaciones externas');
-});
-
-test('the designer chooses the agent memory by the kind of data', () => {
-	const skill = readFileSync(new URL('../skills/grill-me.md', import.meta.url), 'utf8');
-	expect(skill).toContain('## Memoria del agente');
-	expect(skill).toContain('**La conversación no es memoria confiable.**');
-	for (const option of ['**Sin memoria**', '**Sólo Markdown**', '**Sólo SQLite**', '**Ambos**'])
-		expect(skill).toContain(option);
-	expect(skill).toContain('**Requiere bash.**');
-	expect(skill).toContain('la imagen no trae la CLI `sqlite3`');
-	expect(skill).toContain('`VACUUM INTO`');
-	expect(skill).toContain('encabezado exacto `## Memoria`');
-	expect(skill).toContain('sin respaldo externo');
-	// Automejora: the memory already holds the owner's data.
-	expect(skill).toContain('En mejora (Automejora), la memoria ya existe y tiene datos');
-	expect(skill).toContain('**Migrar sin perder datos.**');
-	expect(skill).toContain('Nunca indiques borrar archivos o tablas con datos del dueño');
-	expect(skill).toContain('**No puedes ver `~/work`**');
+	expect(skill.length).toBeLessThan(8000); // little to keep and to read
+	expect(skill).toContain('Sirve para acotar lo que el dueño necesita, no para ampliarlo.');
+	expect(skill).toContain('No pidas confirmación ni hagas rondas de cortesía.');
+	expect(skill).toContain('Cambia lo mínimo');
+	// The two sections the platform acts on, only when asked.
+	expect(skill).toContain('`## Compras autorizadas`');
+	expect(skill).toContain('`## Avisos por WhatsApp`');
+	expect(skill).toContain('Nunca pidas un secreto por chat');
 });

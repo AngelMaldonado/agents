@@ -33,6 +33,12 @@ import { grantedNames, resolveCredential } from './vault';
 import { quotaOf } from './people';
 import { stateMount } from './state';
 import { createDelivery, startDelivery, notify } from './channels';
+import * as delegations from './delegations';
+import * as flows from './flows';
+import * as simCard from './simulated-card';
+import * as lessons from './lessons';
+import { personalitySection, type Personality } from './personality';
+import * as jobs from './jobs';
 import { requestRoute, startPrompt, filesFor, render, receive } from './inbox';
 import * as whatsapp from './whatsapp';
 import * as secrets from './secrets';
@@ -106,6 +112,9 @@ type Live = {
 	control?: boolean; // someone drives the browser; pi is stopped
 	controller?: number; // who: the owner or someone the agent is shared with
 	takeover?: boolean; // its supervisor said it can be driven (older images cannot)
+	piAt?: number; // the last word from its pi (or its (re)connection)
+	nudges?: number; // times the platform took up a turn its pi had lost
+	retaking?: boolean; // it aborted that turn: when pi settles, it goes on instead of ending
 };
 
 const SERVER_URL = process.env.AGENTS_SANDBOX_SERVER_URL ?? 'http://agents-server:8787';
@@ -622,6 +631,8 @@ async function sandboxRunFn(runId: number) {
 	if (delivery) await startDelivery(delivery);
 	// After the existing steps, so replaying an older workflow keeps its order.
 	if (status) await DBOS.runStep(() => whatsapp.onRun(runId, status as 'done'), { name: 'whatsapp' });
+	// Modo objetivo: a trabajo with a list goes on by itself (or sleeps on what will wake it, or stalls).
+	if (status) await DBOS.runStep(() => flows.afterRun(runId), { name: 'goal' });
 }
 const sandboxRun = DBOS.registerWorkflow(sandboxRunFn, { name: 'sandboxRun' });
 
@@ -740,6 +751,72 @@ export async function keepPinnedImages() {
 		console.warn('could not keep the sandbox images:', (err as Error).message);
 	}
 }
+// ---------- a turn its pi lost ----------
+// pi's calls to the model go through this server (llm.ts). When the server restarts in the middle of one
+// (a deploy, dev's --watch), pi's error and the end of its turn may reach the process that is going away:
+// pi waits for its next prompt and the run looks like it thinks until its deadline (Chefsito, 12-nov-2026).
+// A running run that «thinks» with no call to the model, no word from its pi for two minutes, is such a
+// turn: the platform tells it to go on, at most twice.
+const llmCalls = new Map<number, number>();
+/** A call to the model began for this run; the function ends it (once). */
+export function llmCall(runId: number) {
+	llmCalls.set(runId, (llmCalls.get(runId) ?? 0) + 1);
+	let ended = false;
+	return () => {
+		if (ended) return;
+		ended = true;
+		const n = (llmCalls.get(runId) ?? 1) - 1;
+		if (n > 0) llmCalls.set(runId, n);
+		else llmCalls.delete(runId);
+		const l = live.get(runId);
+		if (l) l.piAt = Date.now();
+	};
+}
+export const LOST_TURN_MS = 2 * 60_000;
+export const LOST_TURN_NUDGES = 2;
+const NUDGE =
+	'La plataforma se reinició mientras trabajabas y tu último paso se perdió. Continúa donde ibas, sin repetir lo que ya hiciste.';
+export const lostTurnClock = { now: () => Date.now() };
+/** Its live runs, for the test of a lost turn. */
+export const liveRuns = live as Map<number, unknown>;
+/**
+ * One pass: the runs whose pi lost its turn are taken up. First its stuck turn is aborted (pi may still
+ * wait for an answer that died with the old process); when pi settles it is told to go on (onPi). If pi
+ * was idle and never settles, the next pass tells it directly. Returns how many it took up.
+ */
+export async function takeUpLostTurns() {
+	let n = 0;
+	for (const [id, l] of live) {
+		if (!l.sup || l.ending || l.control || l.kind === 'browser' || llmCalls.get(id)) continue;
+		if (lostTurnClock.now() - (l.piAt ?? lostTurnClock.now()) < LOST_TURN_MS) continue;
+		const r = await row<{ status: Status; state: CharState }>('select status, state from runs where id = $1', [id]);
+		if (r?.status !== 'running' || r.state !== 'thinking') continue;
+		l.piAt = lostTurnClock.now();
+		if (l.retaking) {
+			l.retaking = false;
+			l.sup.send(JSON.stringify({ t: 'pi_cmd', cmd: { type: 'prompt', message: NUDGE } }));
+			continue;
+		}
+		if ((l.nudges ?? 0) >= LOST_TURN_NUDGES) continue;
+		l.nudges = (l.nudges ?? 0) + 1;
+		l.retaking = true;
+		l.sup.send(JSON.stringify({ t: 'pi_cmd', cmd: { type: 'abort' } }));
+		await event(l.ref, 'system', {
+			message: 'Su último paso se perdió en un reinicio de la plataforma: lo retomo.',
+		});
+		n++;
+	}
+	return n;
+}
+let lostTurns: ReturnType<typeof setInterval> | null = null;
+export function startLostTurnWatch() {
+	lostTurns ??= setInterval(
+		() => void takeUpLostTurns().catch((err) => console.error('turnos perdidos:', (err as Error).message)),
+		30_000,
+	);
+	lostTurns.unref?.();
+}
+
 let keeper: ReturnType<typeof setInterval> | null = null;
 /**
  * A minute after start (not while the server recovers its work and the first harness tests use Docker)
@@ -907,8 +984,8 @@ export async function attach(cred: { token?: string; session?: string }, sup: Su
 			run.definition ??
 			(await row<{ name: string; role: string }>('select name, role from agents where id = $1', [t.agent_id]))!;
 		const harness = run.definition?.harness ?? defaultHarness();
-		const conv = (await row<{ pi_session_id: string }>(
-			'select c.pi_session_id from runs r join conversations c on c.id = r.conversation_id where r.id = $1',
+		const conv = (await row<{ pi_session_id: string; id: number }>(
+			'select c.pi_session_id, c.id from runs r join conversations c on c.id = r.conversation_id where r.id = $1',
 			[t.id],
 		))!;
 		const s = settings();
@@ -934,6 +1011,12 @@ export async function attach(cred: { token?: string; session?: string }, sup: Su
 		// A harness server with that name keeps its session: only the granted one went away.
 		const kept = logouts.filter((l) => ownMcp.has(l.server)).map((l) => l.id);
 		if (kept.length) await accesses.logoutsDone(t.agent_id, kept);
+		// Pagos simulados (the agent's switch), live: its browser intercepts clicks to pay and blocks payment
+		// requests, shows a confirmation as if it had paid, and its simulated card as saved. The agent is not told.
+		const simulating = !!(
+			await row<{ on: boolean }>('select simulated_payments as on from agents where id = $1', [t.agent_id])
+		)?.on;
+		const card = simulating ? await simCard.fullCard(t.agent_id) : null;
 		sup.send(
 			JSON.stringify({
 				t: 'start',
@@ -944,7 +1027,49 @@ export async function attach(cred: { token?: string; session?: string }, sup: Su
 				harnessDigest: run.definition?.harnessDigest,
 				prompt,
 				files,
-				system: withHarnessPrompt(systemPrompt(agent, sites, granted), harness),
+				simulation: simulating,
+				// Its assigned card, whole, only inside its computer (the wrapper fills {{tarjeta.*}} with it).
+				...(card ? { card } : {}),
+				system: [
+					withHarnessPrompt(
+						systemPrompt(
+							{
+								...agent,
+								// The switch is live (not frozen in its definition): its owner may turn it on any time.
+								goal_mode: !!(
+									await row<{ on: boolean }>('select goal_mode as on from agents where id = $1', [t.agent_id])
+								)?.on,
+								// Its assigned card, as the agent knows it (never the full number).
+								card: card ? simCard.cardLine(card) : null,
+								// Its notices' limits, as configured now (only when it can send them).
+								notices: harness.tools.includes('whatsapp_notify'),
+								// Its owner's dials, live (not frozen in its definition).
+								// Its style (how it sounds), live: its owner may change it any time.
+								...(await row<{ style: string | null; soul: string | null }>(
+									'select style, soul from agents where id = $1',
+									[t.agent_id],
+								)),
+								// Its trabajo's playbook (its Aprendizajes, chosen for this trabajo).
+								playbook: lessons.playbookSection(await lessons.playbookFor(conv.id)),
+								traits: personalitySection(
+									(
+										await row<{ p: Personality | null }>('select personality as p from agents where id = $1', [
+											t.agent_id,
+										])
+									)?.p,
+								),
+							},
+							sites,
+							granted,
+						),
+						harness,
+					),
+					// Its trabajo and the recent ones (what it did before, now that each one is a conversation).
+					await jobs.jobBlock(conv.id),
+					await flows.activeBlock(t.agent_id, conv.id),
+				]
+					.filter(Boolean)
+					.join('\n\n'),
 				// What the web has for this run, readable on the computer (~/config, #27): names, never values.
 				config: {
 					name: agent.name,
@@ -988,6 +1113,7 @@ export async function attach(cred: { token?: string; session?: string }, sup: Su
 		await publishTask(t.id);
 		await event(t, 'status', { status: 'running' });
 	} else {
+		l.piAt = Date.now(); // its grace after coming back
 		sup.send(JSON.stringify({ t: 'resumed' }));
 		await event(t, 'system', { message: 'La computadora se volvió a conectar.' });
 		requestRoute(t.agent_id); // follow-ups that waited for it
@@ -1187,6 +1313,79 @@ function onSupervisor(l: Live, raw: string) {
 				l.sup?.send(JSON.stringify({ t: 'notify_res', id: msg.id, ...reply }));
 				break;
 			}
+			case 'simulated': {
+				// Pagos simulados: the browser stopped a payment and showed the agent it was done. People see it
+				// in the turn's activity and the list's saga; the agent does not (its context never has these).
+				await event(ref, 'system', { message: await flows.simulated(ref.id, msg) });
+				break;
+			}
+			case 'job': {
+				// job_done / job_goal: the trabajo it works on (its conversation).
+				const op = String(msg.op ?? '');
+				const result = await jobs.handle(ref.id, op, (msg.args ?? {}) as Record<string, unknown>);
+				await event(ref, 'system', {
+					message: result.ok
+						? op === 'done'
+							? `Dio por terminado el trabajo #${result.trabajo}.`
+							: `Fijó el objetivo del trabajo #${result.trabajo}.`
+						: `Trabajo (${op}) no se pudo: ${result.error}`,
+				});
+				l.sup?.send(JSON.stringify({ t: 'job_res', id: msg.id, result }));
+				break;
+			}
+			case 'flow': {
+				// task_plan/update/ask/list: the server checks and keeps the trabajo's list.
+				const op = String(msg.op ?? '');
+				const result = await flows.handle(ref.id, op, (msg.args ?? {}) as Record<string, unknown>);
+				// Reading the list is not activity; writing it is.
+				if (op !== 'list')
+					await event(ref, 'system', {
+						message: result.ok
+							? `Tareas del trabajo #${result.trabajo}: ${{ plan: 'cambió la lista', update: 'registró una tarea', ask: 'preguntó al dueño' }[op] ?? op}.`
+							: `Tareas (${op}) no se pudo: ${result.error}`,
+					});
+				l.sup?.send(JSON.stringify({ t: 'flow_res', id: msg.id, result }));
+				break;
+			}
+			case 'memory': {
+				// learn: a lesson it saves while it works (Aprendizajes). Older images still send mem_save
+				// (kept as a lesson) and mem_search/mem_forget, which are gone.
+				const op = String(msg.op ?? '');
+				const args = (msg.args ?? {}) as Record<string, unknown>;
+				const run = await row<{ agent_id: number; conversation_id: number }>(
+					'select agent_id, conversation_id from runs where id = $1',
+					[ref.id],
+				);
+				const result =
+					!run || (op !== 'learn' && op !== 'save')
+						? {
+								ok: false,
+								error: 'Tu memoria ahora son tus aprendizajes: guarda con learn; tu playbook ya trae lo que sirve.',
+							}
+						: await lessons.learn(
+								run.agent_id,
+								run.conversation_id,
+								op === 'learn' ? args.aprendizaje : [args.titulo, args.contenido].filter(Boolean).join(': '),
+							);
+				if (result.ok) await event(ref, 'system', { message: 'Guardó un aprendizaje.' });
+				l.sup?.send(JSON.stringify({ t: 'memory_res', id: msg.id, result }));
+				break;
+			}
+			case 'delegation': {
+				// delegation_start/status/message/cancel: the server checks and runs the encargo.
+				const op = String(msg.op ?? '');
+				const result = await delegations.handle(ref.id, op, (msg.args ?? {}) as Record<string, unknown>);
+				if (op !== 'status')
+					await event(ref, 'system', {
+						message: result.ok
+							? op === 'start'
+								? `Lanzó el encargo #${result.id} con ${result.contacto}.`
+								: `Encargo #${result.id}: ${op === 'cancel' ? 'cancelado' : 'instrucción enviada'}.`
+							: `Encargo (${op}) no se pudo: ${result.error}`,
+					});
+				l.sup?.send(JSON.stringify({ t: 'delegation_res', id: msg.id, result }));
+				break;
+			}
 			case 'mcp_request': {
 				// agents-mcp add: kept as an event the owner confirms in the web; nothing is registered yet.
 				const name = String(msg.name ?? '').trim(),
@@ -1324,6 +1523,7 @@ function textOf(result: any) {
 
 async function onPi(l: Live, ev: any) {
 	if (!ev || typeof ev.type !== 'string') return;
+	l.piAt = Date.now();
 	const ref = l.ref;
 	const steered = l.steeredUntil && l.steeredUntil > Date.now();
 	switch (ev.type) {
@@ -1394,6 +1594,13 @@ async function onPi(l: Live, ev: any) {
 			await event(ref, 'system', { message: `Reintento ${ev.attempt}/${ev.maxAttempts}: ${ev.errorMessage ?? ''}` });
 			break;
 		case 'agent_settled': {
+			// The platform aborted a turn its pi had lost (takeUpLostTurns): it goes on, it does not end.
+			if (l.retaking) {
+				l.retaking = false;
+				l.lastError = undefined;
+				l.sup?.send(JSON.stringify({ t: 'pi_cmd', cmd: { type: 'prompt', message: NUDGE } }));
+				break;
+			}
 			// A message queued while it worked starts the next turn of the same run.
 			if (
 				!l.lastError &&
@@ -1443,6 +1650,15 @@ async function saveFile(ref: RunRef, rawName: string, mime: string, b64: string)
 
 // Answer rounds are persisted with a run-bound inbox message. Reconnect/crash can deliver
 // that message, but it must NEVER become a new task or answer a subsequent help request.
+/** Who the run's current question is for: its owner, or whoever asked for the work. */
+export async function helpFor(taskId: number) {
+	const e = await row<{ para: string | null }>(
+		"select data->>'para' as para from run_events where run_id = $1 and kind = 'blocked' order by seq desc limit 1",
+		[taskId],
+	);
+	return e?.para === 'dueño' ? 'dueño' : 'quien_escribio';
+}
+
 export async function answerHelp(taskId: number, value: unknown) {
 	let broadcast = () => {};
 	const result = await tx(async (c) => {
@@ -1656,7 +1872,7 @@ export async function steer(taskId: number, text: string, kind: 'steer' | 'follo
 
 type Queued = {
 	id: number;
-	source: 'web' | 'hook' | 'cron' | 'whatsapp';
+	source: 'web' | 'hook' | 'cron' | 'whatsapp' | 'delegation' | 'flow';
 	sender: string | null;
 	schedule_name: string | null;
 	text: string;

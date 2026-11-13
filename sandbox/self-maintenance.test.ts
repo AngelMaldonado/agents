@@ -25,7 +25,7 @@ test('the main process advertises maintenance explicitly to pi even without bash
 	expect(selected(child.args)).not.toContain('self_maintenance');
 	expect(main.digest).toBe(child.digest);
 });
-test('managed npm installation is local, has no lifecycle scripts/secrets, verifies version, and replays its marker', async () => {
+test('managed npm-registry installation (with Bun) is local, has no lifecycle scripts/secrets, verifies version, and replays its marker', async () => {
 	const work = await root(),
 		calls: { bin: string; args: string[]; options: any }[] = [];
 	const run = async (bin: string, args: string[], options: any) => {
@@ -46,9 +46,14 @@ test('managed npm installation is local, has no lifecycle scripts/secrets, verif
 	});
 	expect(result.ok).toBe(true);
 	expect(calls).toHaveLength(1);
-	expect(calls[0].bin).toBe('npm');
+	expect(calls[0].bin).toBe('bun');
+	expect(calls[0].args.slice(0, 1)).toEqual(['add']);
 	expect(calls[0].args).toContain('--ignore-scripts');
-	expect(calls[0].options.env.npm_config_userconfig).not.toBe(calls[0].options.env.npm_config_globalconfig);
+	expect(calls[0].args).toContain('--exact');
+	// Its own empty home: the agent's ~/.npmrc or ~/.bunfig.toml never reach the installer.
+	expect(calls[0].options.env.HOME).not.toBe(work);
+	expect(calls[0].options.env.HOME.startsWith(work)).toBe(true);
+	expect(calls[0].options.env.BUN_INSTALL_CACHE_DIR.startsWith(calls[0].options.env.HOME)).toBe(true);
 	expect(calls[0].options.env.GITHUB_TOKEN).toBeUndefined();
 	expect(calls[0].options.env.OPENAI_API_KEY).toBeUndefined();
 	expect(calls[0].options.cwd.startsWith(work)).toBe(true);

@@ -23,6 +23,8 @@ export type DesignReply = {
 	contract: Contract | null;
 	harness: Harness | null;
 	schedules: ScheduleProposal[] | null;
+	/** Modo objetivo: true or false to propose it; null keeps the agent's (off for a new one). */
+	goalMode: boolean | null;
 	ready: boolean;
 	questions: Question[];
 };
@@ -90,7 +92,7 @@ export const TOOL_CATALOG = TOOLS;
 export const INIT_STEPS = [
 	{ id: 'contract', label: 'Guardar el contrato aprobado' },
 	{ id: 'computer', label: 'Obtener turno y arrancar la computadora' },
-	{ id: 'workspace', label: 'Preparar memoria y espacio de trabajo' },
+	{ id: 'workspace', label: 'Preparar espacio de trabajo' },
 	{ id: 'tools', label: 'Comprobar las herramientas' },
 	{ id: 'browser', label: 'Abrir y comprobar Chrome' },
 	{ id: 'ready', label: 'Cerrar la comprobación y dejarlo listo' },
@@ -108,6 +110,7 @@ export const REPLY_FORMAT = {
 			'contract',
 			'harness',
 			'schedules',
+			'goalMode',
 			'ready',
 			'questions',
 			'accesses',
@@ -149,6 +152,7 @@ export const REPLY_FORMAT = {
 			},
 			harness: { anyOf: [{ type: 'null' }, HARNESS_SCHEMA] },
 			schedules: SCHEDULES_SCHEMA,
+			goalMode: { type: ['boolean', 'null'] },
 			message: { type: 'string' },
 			ready: { type: 'boolean' },
 			contract: {
@@ -238,8 +242,12 @@ export function parseDesignReply(response: any, proposed = false): DesignReply {
 		contract,
 		harness: r.harness == null ? null : validateHarness(repairSkills(r.harness)),
 		schedules: validateSchedules(r.schedules ?? null),
+		goalMode: typeof r.goalMode === 'boolean' ? r.goalMode : null,
 		ready: r.ready,
-		questions: validateQuestions(r.questions ?? [], DESIGN_QUESTIONS),
+		questions: validateQuestions(
+			Array.isArray(r.questions) ? r.questions.slice(0, DESIGN_QUESTIONS) : (r.questions ?? []),
+			DESIGN_QUESTIONS,
+		),
 		pensamiento: typeof r.pensamiento === 'string' ? r.pensamiento.trim().slice(0, 800) : '',
 		hallazgos: (Array.isArray(r.hallazgos) ? r.hallazgos : [])
 			.filter((x: unknown): x is string => typeof x === 'string')

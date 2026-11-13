@@ -1,15 +1,18 @@
 import { useEffect, useRef, useState, type ReactNode } from 'react';
 import { AgentHandover } from '@/components/agent-handover';
+import { ExportAgent } from '@/components/agent-bundle';
 import { CalendarDays, Globe, KeyRound, Settings2, SlidersHorizontal, Trash2 } from 'lucide-react';
 import { SaveButton, useSaving } from '@/components/actions';
+import { BehaviorSection, ExperimentalSection } from '@/components/agent-behavior';
 import { api, isLive, type Agent, type PublicSettings } from './api';
-import { AgentConfiguration } from './AgentConfiguration';
 import { Channels } from './Channels';
 import { AgentSchedules } from './AgentSchedules';
+// The canvas library is heavy: loaded when the tab opens.
 import { AgentAccesses } from './AgentTools';
 import { ShareAgent } from './ShareAgent';
-import { AgentHarness } from '@/components/agent-harness';
+import { AgentBrain } from '@/components/agent-brain';
 import { AgentFace } from '@/components/agent-face';
+import { keepOpenForVim } from '@/lib/vim-escape';
 import { Button } from '@/components/ui/button';
 import {
 	Dialog,
@@ -91,7 +94,6 @@ export function AgentSettings({
 	}, [wanted]);
 	const [tab, setTab] = useState('general');
 	const [visited, setVisited] = useState(new Set(['general']));
-	const [editingDoc, setEditingDoc] = useState(false);
 	const changeTab = (value: string) => {
 		setTab(value);
 		setVisited((tabs) => new Set([...tabs, value]));
@@ -119,10 +121,7 @@ export function AgentSettings({
 				</Button>
 			</DialogTrigger>
 			<DialogContent
-				onEscapeKeyDown={(event) => {
-					if ((event.target as Element)?.closest('.role-editor[data-vim-enabled="true"] .cm-editor'))
-						event.preventDefault();
-				}}
+				onEscapeKeyDown={keepOpenForVim}
 				className="agent-settings-dialog app-settings flex h-[min(46rem,calc(100svh-2rem))] w-[calc(100vw-2rem)] max-w-5xl flex-col gap-0 overflow-hidden p-0 sm:max-w-5xl"
 			>
 				<DialogHeader className="shrink-0 flex-row items-center gap-3 border-b px-5 py-4 pr-12 text-left">
@@ -179,8 +178,8 @@ export function AgentSettings({
 								<EditAgent key={agent.config_revision} agent={agent} settings={settings} onSaved={onChanged} />
 							</section>
 						)}
+						{mine && <BehaviorSection agent={agent} onChanged={onChanged} />}
 						{mine && <ShareAgent agent={agent} onChanged={onChanged} />}
-						<AgentConfiguration agent={agent} settings={settings} mine={mine} />
 					</SettingsPanel>
 					{mine && visited.has('accesses') && (
 						<SettingsPanel value="accesses" active={tab}>
@@ -205,15 +204,12 @@ export function AgentSettings({
 					)}
 					{visited.has('advanced') && (
 						<SettingsPanel value="advanced" active={tab}>
-							<div className="panel">
-								<AgentHarness agent={agent} mine={mine} onChanged={onChanged} onEditing={setEditingDoc} />
-							</div>
-							{/* While a document is open, its editor has the whole panel. */}
-							{mine && !editingDoc && (
-								<BrowserProfile agent={agent} pending={profileReset} onPending={onProfileReset} />
-							)}
-							{mine && !editingDoc && <AgentHandover agent={agent} onTransferred={onDeleted} />}
-							{mine && !editingDoc && <RetireAgent agent={agent} onDeleted={onDeleted} />}
+							<AgentBrain agent={agent} settings={settings} mine={mine} onChanged={onChanged} />
+							{mine && <ExperimentalSection agent={agent} onChanged={onChanged} />}
+							{mine && <BrowserProfile agent={agent} pending={profileReset} onPending={onProfileReset} />}
+							{mine && <ExportAgent agent={agent} />}
+							{mine && <AgentHandover agent={agent} onTransferred={onDeleted} />}
+							{mine && <RetireAgent agent={agent} onDeleted={onDeleted} />}
 						</SettingsPanel>
 					)}
 				</Tabs>
@@ -300,6 +296,7 @@ function EditAgent({ agent, settings, onSaved }: { agent: Agent; settings: Publi
 	);
 }
 
+/** Hours without activity that close one of its trabajos (the next thing asked opens a new one). */
 function BrowserProfile({
 	agent,
 	pending,

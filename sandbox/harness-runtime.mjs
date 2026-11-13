@@ -60,7 +60,9 @@ export function prepareHarness(value, dir, granted = [], selfMaintenance = true)
 	// explicitly, but never advertise it to a delegated child process.
 	const tools = [
 		...runtimeToolNames(h),
-		...(selfMaintenance ? ['self_maintenance'] : []),
+		...(selfMaintenance
+			? ['self_maintenance', 'job_done', 'job_goal', 'task_plan', 'task_update', 'task_ask', 'task_list', 'learn']
+			: []),
 		...mcp.map((s) => `${mcpPrefix(s.name)}*`),
 	];
 	return {

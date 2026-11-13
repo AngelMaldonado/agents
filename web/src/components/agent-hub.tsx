@@ -1,19 +1,19 @@
-// The agent's hub (Bubble agents #25), below its current work: a composer that starts a new chat,
-// its chats like Claude's «Recientes», and the files its runs produced. Plus the current work's
-// footer: who ran it and for how long.
+// The agent's hub (Bubble agents #25), like a stream: its current work on a stage as wide as the page,
+// under it who the agent is and what it works on (with «Nuevo trabajo»), and tabs with its trabajos and
+// the files its runs produced. Plus the current work's footer for the chat view: who ran it and for how long.
 import { ComputerBusy, humanDriving } from '@/components/computer-busy';
-import { useEffect, useRef, useState, type FormEvent, type KeyboardEvent } from 'react';
+import { useEffect, useRef, useState, type ReactNode } from 'react';
 import {
 	BrainCircuit,
+	GraduationCap,
+	BookMarked,
 	MoreHorizontal,
 	Pencil,
 	Trash2,
 	ArrowLeft,
-	ArrowUp,
 	ArrowUpRight,
 	Check,
-	ChevronLeft,
-	ChevronRight,
+	ChevronDown,
 	Clock,
 	Clock3,
 	Download,
@@ -21,11 +21,18 @@ import {
 	Image,
 	LoaderCircle,
 	Table2,
+	UserPlus,
 } from 'lucide-react';
-import { api, ago, isLive, type Agent, type Conversation, type Task } from '@/api';
+import { api, ago, isLive, type Agent, type Conversation, type Person, type PublicSettings, type Task } from '@/api';
 import { artifactFileUrl, artifactUrl } from '@/lib/artifacts';
 import { cn } from '@/lib/utils';
-import { AttachButton, AttachmentChips, useAttachments } from '@/components/attachments';
+import { ChannelIcon } from '@/components/channel-icon';
+import { Character, STATE_LABEL } from '@/Character';
+import { stateOf } from '@/Gallery';
+import { modelLabel } from '@/components/agent-header';
+import { IconButton } from '@/components/actions';
+import { PeopleStack } from '@/components/people-stack';
+import { StatusIcon } from '@/components/status-icon';
 import { Button } from '@/components/ui/button';
 import {
 	DropdownMenu,
@@ -35,8 +42,12 @@ import {
 	DropdownMenuTrigger,
 } from '@/components/ui/dropdown-menu';
 import { ChatDialog } from '@/components/chat-dialog';
+import { LearnDialog } from '@/components/learn-dialog';
+import { DevBubble } from '@/components/dev-bubble';
+import { previewed, usePreview } from '@/lib/card-preview';
+import { Evaluating, JobStatusBadge, scoreClass } from '@/components/job-bar';
 import { improveWith } from '@/lib/sidebar-events';
-import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
+import { TaskMeter } from '@/components/task-meter';
 
 const clock = (seconds: number) => `${Math.floor(seconds / 60)}:${String(seconds % 60).padStart(2, '0')}`;
 
@@ -52,7 +63,7 @@ export function whoRan(t: Task, owner: string) {
 
 /** Under the current work: who ran it (or runs it), which run it is, and how long it took. */
 export function WorkFooter({ task, agent, chatHref }: { task: Task | null; agent: Agent; chatHref?: string }) {
-	if (!task) return <footer className="work-footer text-muted-foreground">Sin trabajos todavía</footer>;
+	if (!task) return <footer className="work-footer text-muted-foreground">Sin turnos todavía</footer>;
 	const live = isLive(task),
 		who = whoRan(task, agent.owner);
 	const verb = task.status === 'queued' ? 'En cola para' : live ? 'Ejecutando' : 'Ejecutó';
@@ -85,11 +96,11 @@ export function WorkFooter({ task, agent, chatHref }: { task: Task | null; agent
 								className="inline-flex items-center gap-0.5 text-foreground underline decoration-muted-foreground/60 underline-offset-4 hover:decoration-foreground"
 								title="Abrir su chat"
 							>
-								Trabajo #{task.id}
+								Turno #{task.id}
 								<ArrowUpRight className="size-3.5" aria-hidden="true" />
 							</a>
 						) : (
-							`Trabajo #${task.id}`
+							`Turno #${task.id}`
 						)}
 					</span>
 				</span>
@@ -105,124 +116,205 @@ export function WorkFooter({ task, agent, chatHref }: { task: Task | null; agent
 	);
 }
 
+/** A value that follows another at most every `ms` (a stage's backdrop does not need every frame). */
+function useThrottled<T>(value: T, ms: number) {
+	const [shown, setShown] = useState(value);
+	const last = useRef(0);
+	useEffect(() => {
+		const wait = last.current + ms - Date.now();
+		if (wait <= 0) {
+			last.current = Date.now();
+			setShown(value);
+			return;
+		}
+		const timer = setTimeout(() => {
+			last.current = Date.now();
+			setShown(value);
+		}, wait);
+		return () => clearTimeout(timer);
+	}, [value, ms]);
+	return shown;
+}
+
 /**
- * Prepares the first message of a new chat: sending opens a new conversation with it and goes to
- * that chat. Retrying after a failure reuses the same request ids, so nothing is created twice.
+ * The hub's stage, like a stream: the agent's current work as big as the page allows, centered, with
+ * a dark blur of itself (its screen, or its surface when it is text) filling the sides. It has no tabs:
+ * it shows what the work does now. Clicking it opens that work.
  */
-export function HubComposer({
-	agent,
-	canUse,
-	hint,
-	onSent,
+export function HubStage({
+	backdrop,
+	surface,
+	href,
+	label,
+	view,
+	live,
+	children,
 }: {
-	agent: Agent;
-	canUse: boolean;
-	hint?: string;
-	onSent: (conversation: Conversation) => void;
+	/** What it shows, as a JPEG (base64): blurred, it fills the sides. */
+	backdrop?: string | null;
+	/** Without a picture, the sides take the tone of its surface. */
+	surface: 'dark' | 'card';
+	/** Where clicking it goes (the work's chat); none while the owner drives its browser. */
+	href?: string;
+	label: string;
+	/** What it shows now: Navegador, Terminal, Actividad, Respuesta. */
+	view: string;
+	live: boolean;
+	children: ReactNode;
 }) {
-	const [text, setText] = useState('');
-	const [busy, setBusy] = useState(false),
-		[error, setError] = useState('');
-	const attach = useAttachments({ files: 10, fileBytes: 10 * 1024 * 1024, totalBytes: 25 * 1024 * 1024 });
-	const pending = useRef<{ sig: string; conversation: string; message: string; created?: Conversation } | null>(null);
-	const input = useRef<HTMLTextAreaElement>(null);
-	const files = attach.files;
-	const ready = canUse && !busy && (text.trim().length > 0 || files.length > 0);
-	const send = async (e?: FormEvent) => {
-		e?.preventDefault();
-		if (!ready) return;
-		if (text.length > 4000) return setError('El mensaje es demasiado largo. Máximo 4000 caracteres.');
-		const sig = `${text}\n${files.map((f) => f.id).join(',')}`;
-		if (pending.current?.sig !== sig)
-			pending.current = { sig, conversation: crypto.randomUUID(), message: crypto.randomUUID() };
-		const p = pending.current;
-		setBusy(true);
-		setError('');
-		try {
-			p.created ??= (
-				await api<{ conversation: Conversation }>(`/agents/${agent.id}/conversations`, {
-					method: 'POST',
-					body: { requestId: p.conversation },
-				})
-			).conversation;
-			await api(`/agents/${agent.id}/conversations/${p.created.id}/messages`, {
-				method: 'POST',
-				body: {
-					text: text.trim(),
-					requestId: p.message,
-					...(files.length ? { attachments: files.map(({ name, mime, data }) => ({ name, mime, data })) } : {}),
-				},
-			});
-			pending.current = null;
-			setText('');
-			attach.clear();
-			onSent(p.created);
-		} catch (err) {
-			setError((err as Error).message);
-		} finally {
-			setBusy(false);
-		}
-	};
-	const keyDown = (e: KeyboardEvent<HTMLTextAreaElement>) => {
-		if (e.key === 'Enter' && !e.shiftKey && !e.nativeEvent.isComposing) {
-			e.preventDefault();
-			void send();
-		}
-	};
+	const blur = useThrottled(backdrop ?? null, 1500);
 	return (
-		<section className="hub-composer" aria-labelledby="hub-composer-title">
-			<h2 id="hub-composer-title" className="hub-composer-title">
-				Nuevo trabajo
-			</h2>
-			{error && (
-				<p role="alert" className="error mb-2">
-					{error}
-				</p>
+		<section className="hub-stage" aria-label={`Trabajo actual: ${view}`}>
+			<div
+				className={cn('hub-stage-backdrop', !blur && `tint-${surface}`)}
+				style={blur ? { backgroundImage: `url(data:image/jpeg;base64,${blur})` } : undefined}
+				aria-hidden="true"
+			/>
+			<div className={cn('hub-stage-screen', `surface-${surface}`)}>{children}</div>
+			<div className="hub-stage-badges">
+				{live && <span className="hub-live">En vivo</span>}
+				<span className="hub-view">{view}</span>
+			</div>
+			{href && (
+				<a href={href} className="hub-stage-link" aria-label={label} title={label}>
+					<span className="hub-stage-cta">
+						Abrir trabajo
+						<ArrowUpRight aria-hidden="true" />
+					</span>
+				</a>
 			)}
-			{attach.error && (
-				<p role="alert" className="error mb-2">
-					{attach.error}
-				</p>
-			)}
-			<form
-				className="designer-composer"
-				onSubmit={(e) => void send(e)}
-				onDrop={canUse ? attach.onDrop : undefined}
-				onDragOver={canUse ? attach.onDragOver : undefined}
-			>
-				<AttachmentChips files={files} onRemove={attach.remove} />
-				<textarea
-					ref={input}
-					value={text}
-					onChange={(e) => setText(e.target.value)}
-					onKeyDown={keyDown}
-					onPaste={attach.onPaste}
-					rows={2}
-					maxLength={4000}
-					disabled={!canUse || busy}
-					aria-label={`Nuevo trabajo para ${agent.name}`}
-					placeholder={canUse ? 'Escribe al agente…' : 'Sólo su dueño y quienes lo tienen compartido le dan trabajo.'}
-					className="designer-composer-input field-sizing-content max-h-48 min-h-16"
-				/>
-				<div className="designer-composer-actions">
-					<AttachButton onFiles={(f) => void attach.add(f)} disabled={!canUse || busy} />
-					<Button type="submit" size="icon" aria-label="Enviar y abrir el chat" disabled={!ready}>
-						<ArrowUp aria-hidden="true" />
-					</Button>
-				</div>
-			</form>
-			<p className="mt-2 text-xs text-muted-foreground">
-				{hint ?? 'Cada envío abre un chat nuevo. Para continuar uno, ábrelo desde Recientes.'}
-			</p>
 		</section>
 	);
 }
 
-const SHOWN = 8;
-const PAGE = 15;
+const JOB_STATUS = {
+	open: 'Abierto',
+	done: 'Terminado',
+	closed: 'Cerrado',
+} as const;
 
-/** The agent's chats, newest activity first, like Claude's «Recientes»; «Ver todos» slides to a table. */
-export function ChatHistory({
+/**
+ * Under the stage, like a stream's info: who the agent is and its state, what it works on now (the
+ * trabajo's objective), a few tags about it, its actions, and how long and how much the current turn.
+ */
+export function StreamInfo({
+	agent,
+	settings,
+	mine,
+	task,
+	job,
+	live,
+	onBack,
+	people,
+	onShare,
+	actions,
+	workActions,
+}: {
+	agent: Agent;
+	settings: PublicSettings;
+	mine: boolean;
+	task: Task | null;
+	job: Conversation | null;
+	live: boolean;
+	onBack: () => void;
+	people: Pick<Person, 'id' | 'name'>[];
+	onShare?: () => void;
+	/** Computadora, Automejora, Configuración, Nuevo trabajo. */
+	actions: ReactNode;
+	/** The live turn's: take or give back control, cancel. */
+	workActions: ReactNode;
+}) {
+	const state = stateOf(agent);
+	const queued = agent.task?.status === 'queued';
+	const title = job?.goal || (job && !job.is_default ? job.title : null) || task?.prompt || 'Sin trabajo todavía';
+	const tags = [
+		job && !job.is_default ? `Trabajo #${job.id}` : job?.is_default ? 'Principal' : null,
+		job && !job.is_default && job.status ? JOB_STATUS[job.status] : null,
+		task ? `Turno #${task.id}` : null,
+		task ? `${task.status === 'queued' ? 'Para' : 'De'} ${whoRan(task, agent.owner)}` : null,
+	].filter(Boolean) as string[];
+	return (
+		// A container of its own: the actions stay on the name's row (icons when they do not fit), and on a
+		// narrow one they go under it as buttons.
+		<header className="stream-info">
+			<div className="stream-grid">
+				<Button
+					variant="ghost"
+					size="icon"
+					className="stream-back"
+					onClick={onBack}
+					aria-label="Volver a agentes"
+					title="Volver a agentes"
+				>
+					<ArrowLeft />
+				</Button>
+				<div className={cn('stream-avatar', live && 'is-live')}>
+					<Character seed={agent.seed} state={state} size={64} />
+					{live && <span className="hub-live stream-avatar-badge">En vivo</span>}
+				</div>
+				<div className="stream-text">
+					<h1 className="stream-name" title={agent.name}>
+						{agent.name}
+					</h1>
+					<p className="stream-title" title={title}>
+						{title}
+					</p>
+					{!!job?.tasks && (
+						<p className="stream-task">
+							<TaskMeter done={job.tasks_done ?? 0} total={job.tasks} label="Avance del trabajo" />
+							<span className="tabular-nums">
+								{job.tasks_done ?? 0}/{job.tasks}
+							</span>
+							{job.task_now && <span className="min-w-0 truncate">▶ {job.task_now}</span>}
+						</p>
+					)}
+					<p className="stream-meta">
+						<StatusIcon status={queued ? 'queued' : state} label={queued ? 'En cola' : STATE_LABEL[state]} />
+						<span className="truncate">
+							{modelLabel(settings, agent.model)}
+							{!mine && ` · de ${agent.owner}`}
+							{(agent.aliases?.length || agent.handle) &&
+								` · ${(agent.aliases?.length ? agent.aliases : [agent.handle]).map((x) => `@${x}`).join(' ')}`}
+						</span>
+					</p>
+					{tags.length > 0 && (
+						<ul className="stream-tags" aria-label="Del trabajo actual">
+							{tags.map((t) => (
+								<li key={t}>{t}</li>
+							))}
+						</ul>
+					)}
+				</div>
+				<div className="stream-side">
+					<div className="agent-actions" aria-label="Acciones del agente">
+						{actions}
+					</div>
+					<div className="stream-stats">
+						{workActions}
+						{task && (
+							<>
+								<span className="inline-flex items-center gap-1" aria-label="Tiempo del turno">
+									<Clock3 className="size-3.5" aria-hidden="true" />
+									{clock(elapsedOf(task))}
+								</span>
+								<span title={`${(task.tokens / 1000).toFixed(1)}k tokens`}>US${task.cost.toFixed(3)}</span>
+							</>
+						)}
+						<span className="inline-flex items-center gap-1">
+							<PeopleStack people={people} />
+							{onShare && <IconButton icon={UserPlus} label="Compartir" onClick={onShare} className="size-6" />}
+						</span>
+					</div>
+				</div>
+			</div>
+		</header>
+	);
+}
+
+const JOBS_PAGE = 12;
+
+/** The agent's trabajos (not its chats: the Principal is apart), newest activity first, as cards. */
+export function JobGallery({
 	agentId,
 	conversations,
 	loading,
@@ -236,211 +328,125 @@ export function ChatHistory({
 	loading: boolean;
 	error: string;
 	onRetry: () => void;
-	/** The owner's agent: its chats can be used to improve it (Automejora). */
+	/** The owner's agent: its trabajos can be used to improve it (Automejora). */
 	mine: boolean;
-	/** A chat was renamed or deleted: reload the list. */
+	/** A trabajo was renamed or deleted: reload the list. */
 	onChanged: () => void;
 }) {
 	const [edit, setEdit] = useState<{ chat: Conversation; action: 'rename' | 'delete' } | null>(null);
-	const menu = (c: Conversation, className?: string) => (
-		<ChatRowMenu
-			chat={c}
-			className={className}
-			onRename={() => setEdit({ chat: c, action: 'rename' })}
-			onDelete={() => setEdit({ chat: c, action: 'delete' })}
-			onImprove={mine ? () => improveWith(agentId, { id: c.id, title: c.title }) : undefined}
-		/>
-	);
-	const [table, setTable] = useState(false);
-	const [settled, setSettled] = useState(true);
-	const [page, setPage] = useState(0);
-	const sorted = [...conversations].sort((a, b) => (b.last_at ?? b.started_at) - (a.last_at ?? a.started_at));
-	const pages = Math.max(1, Math.ceil(sorted.length / PAGE));
-	const current = Math.min(page, pages - 1);
-	const slide = (open: boolean) => {
-		setSettled(false);
-		setTable(open);
-		if (open) setPage(0);
-	};
-	const href = (c: Conversation) => `#/agent/${agentId}/chat/${c.id}`;
+	const [learning, setLearning] = useState<Conversation | null>(null);
+	const [shown, setShown] = useState(JOBS_PAGE);
+	// In development, the bubble may play states on the cards (lib/card-preview); never in production.
+	const preview = usePreview();
+	const jobs = conversations
+		.filter((c) => !c.is_default)
+		.sort((a, b) => (b.last_at ?? b.started_at) - (a.last_at ?? a.started_at))
+		.map((c, i) => (import.meta.env.DEV && (i === 0 || preview.all) ? previewed(c, preview) : c));
+	// A trabajo opens its hub: its flow of tasks, its conversations and its encargos.
+	const href = (c: Conversation) => `#/agent/${agentId}/job/${c.id}`;
+	if (error)
+		return (
+			<p role="alert" className="error">
+				{error}{' '}
+				<Button variant="outline" size="sm" onClick={onRetry}>
+					Reintentar
+				</Button>
+			</p>
+		);
+	if (loading && !conversations.length)
+		return (
+			<p role="status" className="muted small">
+				Cargando trabajos…
+			</p>
+		);
+	if (!jobs.length) return <p className="muted small">Todavía no hay trabajos: empieza uno con «Nuevo trabajo».</p>;
 	return (
-		<section className="hub-section" aria-labelledby="hub-recents">
-			{error ? (
-				<>
-					<h2 id="hub-recents" className="hub-section-title">
-						Recientes
-					</h2>
-					<p role="alert" className="error">
-						{error}{' '}
-						<Button variant="outline" size="sm" onClick={onRetry}>
-							Reintentar
-						</Button>
-					</p>
-				</>
-			) : (
-				<div
-					className="slide-stack"
-					data-detail={table}
-					onTransitionEnd={(e) => {
-						if (e.target === e.currentTarget.firstElementChild && e.propertyName === 'transform') setSettled(true);
-					}}
-				>
-					<div className="slide-stack-track">
-						<div
-							className={cn('slide-stack-pane', table && settled && 'slide-stack-hidden')}
-							inert={table}
-							aria-hidden={table}
-						>
-							<h2 id="hub-recents" className="hub-section-title">
-								Recientes
-							</h2>
-							{loading && !conversations.length ? (
-								<p role="status" className="muted small">
-									Cargando chats…
-								</p>
-							) : !conversations.length ? (
-								<p className="muted small">Todavía no hay chats.</p>
-							) : (
-								<>
-									<ul className="hub-list">
-										{sorted.slice(0, SHOWN).map((c) => (
-											<li key={c.id} className="group/chat relative">
-												<a href={href(c)} className="hub-row pr-11">
-													<span className={cn('min-w-0 truncate', c.archived_at && 'text-muted-foreground')}>
-														{c.title || 'Conversación'}
-													</span>
-													<span className="flex shrink-0 items-center gap-2 text-xs text-muted-foreground">
-														{c.live && (
-															<LoaderCircle
-																className="size-3.5 animate-spin text-primary"
-																role="img"
-																aria-label="Trabajando"
-															/>
-														)}
-														{c.archived_at && (
-															<span className="rounded-sm bg-muted px-1.5 py-0.5 text-2xs">Cerrada</span>
-														)}
-														{ago(c.last_at ?? c.started_at)}
-													</span>
-												</a>
-												{menu(
-													c,
-													'absolute top-1/2 right-2 -translate-y-1/2 opacity-0 group-hover/chat:opacity-100 focus-visible:opacity-100 data-[state=open]:opacity-100',
-												)}
-											</li>
-										))}
-									</ul>
-									{sorted.length > SHOWN && (
-										<Button variant="ghost" size="sm" className="mt-1" onClick={() => slide(true)}>
-											Ver todos ({sorted.length})
-											<ChevronRight aria-hidden="true" />
-										</Button>
+		<>
+			<ul className="job-grid">
+				{jobs.slice(0, shown).map((c) => {
+					const status = c.live ? 'live' : (c.status ?? 'open');
+					return (
+						<li key={c.id} className={cn('job-card group/job', `is-${status}`)}>
+							<a href={href(c)} className="job-card-link">
+								<span className="job-card-top">
+									{c.live ? (
+										<span className="inline-flex items-center gap-1.5 text-primary">
+											Trabajando
+											<LoaderCircle className="size-3.5 animate-spin" aria-hidden="true" />
+										</span>
+									) : c.status === 'done' || c.status === 'closed' ? (
+										<JobStatusBadge status={c.status} />
+									) : (
+										<span className="job-card-status">{JOB_STATUS.open}</span>
 									)}
-								</>
-							)}
-						</div>
-						<div
-							className={cn('slide-stack-pane', !table && settled && 'slide-stack-hidden')}
-							inert={!table}
-							aria-hidden={!table}
-						>
-							<div className="mb-3 flex items-center gap-2">
-								<Button variant="ghost" size="icon-sm" onClick={() => slide(false)} aria-label="Volver a Recientes">
-									<ArrowLeft aria-hidden="true" />
-								</Button>
-								<h2 className="hub-section-title !mb-0">Todas las conversaciones</h2>
-								<span className="text-xs text-muted-foreground">{sorted.length}</span>
-							</div>
-							<Table className="hub-chats-table">
-								<TableHeader>
-									<TableRow>
-										<TableHead>Conversación</TableHead>
-										<TableHead className="w-24 text-right">Trabajos</TableHead>
-										<TableHead className="w-28">Estado</TableHead>
-										<TableHead className="w-32 text-right">Última actividad</TableHead>
-										<TableHead className="w-10">
-											<span className="sr-only">Acciones</span>
-										</TableHead>
-									</TableRow>
-								</TableHeader>
-								<TableBody>
-									{sorted.slice(current * PAGE, current * PAGE + PAGE).map((c) => (
-										// The whole row opens the chat; its title is the link (keyboard and screen readers).
-										<TableRow
-											key={c.id}
-											className="cursor-pointer"
-											onClick={(e) => {
-												// Clicks inside its menu (a portal) bubble here too: only the row's own open the chat.
-												const target = e.target as Element;
-												if (!e.currentTarget.contains(target) || target.closest('a, button')) return;
-												location.hash = href(c).slice(1);
-											}}
+									{c.score != null && (
+										<span className={`job-score ${scoreClass(c.score)}`} title="Evaluación">
+											{Math.round(c.score)}/100
+										</span>
+									)}
+									{c.evaluation === 'pending' && <Evaluating />}
+									{!!c.learned && (
+										<span
+											className="job-card-mark is-learned"
+											title={`Aprendió ${c.learned} ${c.learned === 1 ? 'cosa' : 'cosas'} de este trabajo`}
 										>
-											<TableCell className="max-w-0">
-												<a href={href(c)} className="block truncate font-medium hover:underline">
-													{c.title || 'Conversación'}
-												</a>
-											</TableCell>
-											<TableCell className="text-right tnum text-muted-foreground">{c.runs}</TableCell>
-											<TableCell>
-												{c.live ? (
-													<span className="inline-flex items-center gap-1.5 text-primary">
-														<LoaderCircle className="size-3.5 animate-spin" aria-hidden="true" />
-														Trabajando
-													</span>
-												) : c.archived_at ? (
-													<span className="rounded-sm bg-muted px-1.5 py-0.5 text-2xs text-muted-foreground">
-														Cerrada
-													</span>
-												) : c.is_default ? (
-													<span className="text-muted-foreground">Principal</span>
-												) : (
-													<span className="text-muted-foreground">Abierta</span>
-												)}
-											</TableCell>
-											<TableCell
-												className="text-right text-muted-foreground"
-												title={new Date(c.last_at ?? c.started_at).toLocaleString('es-MX')}
-											>
-												{ago(c.last_at ?? c.started_at)}
-											</TableCell>
-											<TableCell className="p-1 text-right">{menu(c)}</TableCell>
-										</TableRow>
-									))}
-								</TableBody>
-							</Table>
-							{pages > 1 && (
-								<nav
-									className="mt-3 flex items-center justify-end gap-2 text-xs"
-									aria-label="Páginas de conversaciones"
-								>
-									<span className="text-muted-foreground">
-										Página {current + 1} de {pages}
+											<BookMarked aria-hidden="true" />
+											{c.learned}
+											<span className="sr-only">{c.learned === 1 ? ' aprendizaje' : ' aprendizajes'}</span>
+										</span>
+									)}
+								</span>
+								<span className="job-card-title">{c.goal || c.title || 'Sin objetivo'}</span>
+								{!!c.tasks && (
+									<span className="job-card-tasks">
+										{/* Across the whole card; under it, how many and the one going on. */}
+										<TaskMeter done={c.tasks_done ?? 0} total={c.tasks} label="Avance del trabajo" />
+										<span className="flex min-w-0 items-center gap-1">
+											<span className="shrink-0 tabular-nums">
+												{c.tasks_done ?? 0}/{c.tasks} tareas
+											</span>
+											{c.task_now && c.status === 'open' && <span className="min-w-0 truncate">· {c.task_now}</span>}
+										</span>
 									</span>
-									<Button
-										variant="outline"
-										size="icon-sm"
-										disabled={current === 0}
-										onClick={() => setPage(current - 1)}
-										aria-label="Página anterior"
-									>
-										<ChevronLeft aria-hidden="true" />
-									</Button>
-									<Button
-										variant="outline"
-										size="icon-sm"
-										disabled={current >= pages - 1}
-										onClick={() => setPage(current + 1)}
-										aria-label="Página siguiente"
-									>
-										<ChevronRight aria-hidden="true" />
-									</Button>
-								</nav>
-							)}
-						</div>
-					</div>
-				</div>
+								)}
+								{c.goal && c.title && c.title !== c.goal && <span className="job-card-sub">{c.title}</span>}
+								<span className="job-card-foot">
+									<span className="inline-flex min-w-0 items-center gap-1.5">
+										<ChannelIcon origin={c.origin} />#{c.id} · {c.runs} {c.runs === 1 ? 'turno' : 'turnos'}
+									</span>
+									<span title={new Date(c.last_at ?? c.started_at).toLocaleString('es-MX')}>
+										{ago(c.last_at ?? c.started_at)}
+									</span>
+								</span>
+							</a>
+							<ChatRowMenu
+								chat={c}
+								className="job-card-menu"
+								onRename={() => setEdit({ chat: c, action: 'rename' })}
+								onDelete={() => setEdit({ chat: c, action: 'delete' })}
+								onImprove={mine ? () => improveWith(agentId, { id: c.id, title: c.title }) : undefined}
+								onLearn={mine ? () => setLearning(c) : undefined}
+							/>
+						</li>
+					);
+				})}
+			</ul>
+			{jobs.length > shown && (
+				<Button variant="ghost" size="sm" className="mt-3" onClick={() => setShown((n) => n + JOBS_PAGE)}>
+					Ver más ({jobs.length - shown})
+					<ChevronDown aria-hidden="true" />
+				</Button>
 			)}
+			<DevBubble />
+			<LearnDialog
+				agentId={agentId}
+				job={learning && { id: learning.id, title: learning.goal || learning.title }}
+				onClose={() => setLearning(null)}
+				onDone={() => {
+					setLearning(null);
+					onChanged();
+				}}
+			/>
 			<ChatDialog
 				edit={edit}
 				onClose={() => setEdit(null)}
@@ -449,23 +455,26 @@ export function ChatHistory({
 					onChanged();
 				}}
 			/>
-		</section>
+		</>
 	);
 }
 
-/** A chat's «…»: rename, use it to improve the agent (Automejora), delete. */
+/** A chat's «…»: rename, use it to improve the agent (Automejora), teach it something (Aprender), delete. */
 function ChatRowMenu({
 	chat,
 	className,
 	onRename,
 	onDelete,
 	onImprove,
+	onLearn,
 }: {
 	chat: Conversation;
 	className?: string;
 	onRename: () => void;
 	onDelete: () => void;
 	onImprove?: () => void;
+	/** Aprender: its owner teaches the agent something from this trabajo. */
+	onLearn?: () => void;
 }) {
 	return (
 		<DropdownMenu>
@@ -491,6 +500,12 @@ function ChatRowMenu({
 						Usar para mejorar
 					</DropdownMenuItem>
 				)}
+				{onLearn && (
+					<DropdownMenuItem onSelect={onLearn}>
+						<GraduationCap aria-hidden="true" />
+						Aprender
+					</DropdownMenuItem>
+				)}
 				<DropdownMenuSeparator />
 				<DropdownMenuItem
 					variant="destructive"
@@ -499,7 +514,7 @@ function ChatRowMenu({
 						chat.is_default
 							? 'Principal no se elimina: ahí llegan los webhooks y los horarios.'
 							: chat.live
-								? 'Tiene un trabajo en curso.'
+								? 'Tiene un turno en curso.'
 								: undefined
 					}
 					onSelect={onDelete}
@@ -515,33 +530,31 @@ function ChatRowMenu({
 type RecentFile = { id: number; name: string; mime: string; size: number; run_id: number; created_at: number };
 
 /** What its runs produced lately, newest first; each opens in the file drawer. */
-export function RecentFiles({ agentId, version }: { agentId: number; version: number }) {
+export function RecentFiles({ agentId, version, limit = 8 }: { agentId: number; version: number; limit?: number }) {
 	const [files, setFiles] = useState<RecentFile[] | null>(null),
 		[error, setError] = useState('');
 	useEffect(() => {
 		let alive = true;
 		setError('');
-		api<{ files: RecentFile[] }>(`/agents/${agentId}/files?limit=8`)
+		api<{ files: RecentFile[] }>(`/agents/${agentId}/files?limit=${limit}`)
 			.then((r) => alive && setFiles(r.files))
 			.catch((e) => alive && setError((e as Error).message));
 		return () => {
 			alive = false;
 		};
-	}, [agentId, version]);
-	if (!error && files && !files.length) return null;
+	}, [agentId, version, limit]);
 	return (
-		<section className="hub-section" aria-labelledby="hub-files">
-			<h2 id="hub-files" className="hub-section-title">
-				Archivos recientes
-			</h2>
+		<section className="hub-section" aria-label="Artefactos">
 			{error ? (
 				<p role="alert" className="error">
 					{error}
 				</p>
 			) : !files ? (
 				<p role="status" className="muted small">
-					Cargando archivos…
+					Cargando artefactos…
 				</p>
+			) : !files.length ? (
+				<p className="muted small">Todavía no hay artefactos: lo que el agente deja en ~/work/out aparece aquí.</p>
 			) : (
 				<ul className="hub-files">
 					{files.map((f) => {
@@ -556,7 +569,7 @@ export function RecentFiles({ agentId, version }: { agentId: number; version: nu
 								>
 									<span className="truncate font-medium">{f.name}</span>
 									<span className="text-2xs text-muted-foreground">
-										Trabajo #{f.run_id} · {ago(f.created_at)} · {(f.size / 1024).toFixed(1)} KB
+										Turno #{f.run_id} · {ago(f.created_at)} · {(f.size / 1024).toFixed(1)} KB
 									</span>
 								</a>
 								<Button asChild variant="ghost" size="icon-sm">

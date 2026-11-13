@@ -68,6 +68,9 @@ export function normalizeProxyUrl(raw: string) {
 	return `${u.origin}${u.pathname.replace(/\/+$/, '').replace(/\/v1$/, '')}`;
 }
 
+/** The proxy did not answer (network, timeout, 5xx, 429): the same request may work in a while. */
+export class ProxyUnreachable extends Error {}
+
 /** The model ids the proxy serves with this key; throws a readable error otherwise. */
 export async function proxyModels(url: string, key: string) {
 	let res: Response;
@@ -77,9 +80,11 @@ export async function proxyModels(url: string, key: string) {
 			signal: AbortSignal.timeout(8000),
 		});
 	} catch (err) {
-		throw new Error(`No se pudo conectar a ${url} desde el servidor: ${(err as Error).message}`);
+		throw new ProxyUnreachable(`No se pudo conectar a ${url} desde el servidor: ${(err as Error).message}`);
 	}
 	if (res.status === 401 || res.status === 403) throw new Error('El proxy rechazó la API key.');
+	if (res.status >= 500 || res.status === 429)
+		throw new ProxyUnreachable(`El proxy respondió ${res.status} en /v1/models.`);
 	if (!res.ok) throw new Error(`El proxy respondió ${res.status} en /v1/models.`);
 	const data = (await res.json().catch(() => null)) as { data?: { id: string }[] } | null;
 	if (!Array.isArray(data?.data)) throw new Error('Eso no parece un CLIProxyAPI (/v1/models no devolvió una lista).');

@@ -43,8 +43,10 @@ type Entry = {
 	label: string;
 	personId: number | null;
 	personName?: string | null;
-	/** A guest the agents write to one to one (a supplier), never in a group. */
-	supplier?: boolean;
+	/** A guest the agents write to one to one (an external contact), never in a group. */
+	external?: boolean;
+	/** A guest who talks one to one with a single agent, never in a group. */
+	direct?: boolean;
 };
 type Lists = { allow: Entry[]; block: Entry[]; people: { id: number; name: string }[] };
 
@@ -433,7 +435,7 @@ function EditNumber({
 				{list === 'allow' ? 'Lista blanca' : 'Lista negra'}
 				<InfoTip label={list === 'allow' ? 'Qué es la lista blanca' : 'Qué es la lista negra'}>
 					{list === 'allow'
-						? 'Sus mensajes se atienden. Si el número es de una persona de Agents, habla con sus agentes y con los que le comparten en este número, y la tarea queda a su nombre; si no, es un invitado: tiene su grupo con los agentes que su dueño le encienda. Un proveedor nunca tiene grupo: los agentes que lo tengan encendido le escriben uno a uno (por ejemplo, para cotizar) y su respuesta vuelve al agente que le preguntó.'
+						? 'Sus mensajes se atienden. Si el número es de una persona de Agents, habla con sus agentes y con los que le comparten en este número, y la tarea queda a su nombre; si no, es un invitado: tiene su grupo con los agentes que su dueño le encienda. Un invitado directo nunca tiene grupo: habla uno a uno con el único agente que lo tenga encendido. Un contacto externo (un proveedor, un cliente, un técnico) tampoco tiene grupo: los agentes que lo tengan encendido le escriben uno a uno (por ejemplo, para cotizar, o con un encargo) y su respuesta vuelve al agente que le preguntó.'
 						: 'Sus mensajes se rechazan sin respuesta. Útil para bloquear a alguien sin perder quién era.'}
 				</InfoTip>
 			</legend>
@@ -448,21 +450,22 @@ function EditNumber({
 					/>
 					{list === 'allow' && (
 						<OptionSelect
-							className="w-32 shrink-0"
+							className="w-40 shrink-0"
 							label="Quién es"
-							value={e.personId ? String(e.personId) : e.supplier ? 'supplier' : 'guest'}
+							value={e.personId ? String(e.personId) : e.external ? 'external' : e.direct ? 'direct' : 'guest'}
 							onValueChange={(v) =>
 								edit(
 									list,
 									i,
-									v === 'guest' || v === 'supplier'
-										? { personId: null, supplier: v === 'supplier' }
-										: { personId: Number(v), supplier: false },
+									v === 'guest' || v === 'external' || v === 'direct'
+										? { personId: null, external: v === 'external', direct: v === 'direct' }
+										: { personId: Number(v), external: false, direct: false },
 								)
 							}
 							options={[
 								{ id: 'guest', label: 'Invitado' },
-								{ id: 'supplier', label: 'Proveedor' },
+								{ id: 'direct', label: 'Invitado directo' },
+								{ id: 'external', label: 'Contacto externo' },
 								...l.people.map((p) => ({ id: String(p.id), label: p.name })),
 							]}
 						/>
@@ -510,7 +513,8 @@ function EditNumber({
 							phone: e.phone,
 							label: e.label,
 							personId: e.personId,
-							supplier: !!e.supplier,
+							external: !!e.external,
+							direct: !!e.direct,
 						});
 						const saved = await saving.run(
 							async () => {

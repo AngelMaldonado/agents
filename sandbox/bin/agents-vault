@@ -1,4 +1,4 @@
-#!/usr/bin/env node
+#!/usr/bin/env bun
 // agent-browser credential plugin (agent-browser.plugin.v1 over stdio). It asks the supervisor,
 // which asks the backend; the login goes straight to agent-browser and never to the model.
 let input = '';

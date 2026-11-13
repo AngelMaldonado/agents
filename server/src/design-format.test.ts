@@ -54,6 +54,7 @@ test('rejects truncation, refusals, invalid JSON and arbitrary model fields inst
 		contract: { name: 'A', prompt: 'Rol' },
 		harness: null,
 		schedules: null,
+		goalMode: null,
 		ready: true,
 		questions: [],
 		accesses: [],
@@ -62,7 +63,7 @@ test('rejects truncation, refusals, invalid JSON and arbitrary model fields inst
 		pensamiento: '',
 	});
 });
-test('access suggestions keep only known kinds and named entries; a round may ask up to six questions', () => {
+test('access suggestions keep only known kinds and named entries; a round asks up to four questions', () => {
 	const parsed = parseDesignReply(
 		response({
 			message: 'Propuesta',
@@ -98,15 +99,11 @@ test('access suggestions keep only known kinds and named entries; a round may as
 		options: [{ id: 'a', label: 'A', description: '' }],
 		recommended: 'a',
 	});
-	const six = parseDesignReply(
+	// A round asks up to four; more are cut, not refused (the rest can come in the next round).
+	const four = parseDesignReply(
 		response({ message: 'Ronda', contract: null, ready: false, questions: [1, 2, 3, 4, 5, 6].map(q) }),
 	);
-	expect(six.questions).toHaveLength(6);
-	expect(() =>
-		parseDesignReply(
-			response({ message: 'Ronda', contract: null, ready: false, questions: [1, 2, 3, 4, 5, 6, 7].map(q) }),
-		),
-	).toThrow();
+	expect(four.questions.map((x) => x.id)).toEqual(['q-1', 'q-2', 'q-3', 'q-4']);
 });
 test('a skill with a sloppy name or a long description is repaired; oversized instructions are not', async () => {
 	const { defaultHarness } = await import('../../sandbox/harness');

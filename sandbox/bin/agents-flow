@@ -1,0 +1,5 @@
+#!/bin/sh
+# Tareas (task_plan/update/ask/list): the platform keeps the trabajo's list of tasks for the agent.
+# Usage: agents-flow <plan|update|ask|list> '<json>'
+if [ -z "$1" ] || [ -z "$2" ]; then echo 'Uso: agents-flow <plan|update|ask|list> <json>' >&2; exit 2; fi
+exec curl -sS --max-time 55 -X POST -H 'content-type: application/json' --data-binary "$2" "http://127.0.0.1:7777/flow/$1"

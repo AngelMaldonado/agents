@@ -44,14 +44,15 @@ type Contact = {
 	key: string;
 	shown: string;
 	name: string;
-	kind: 'owner' | 'person' | 'guest' | 'supplier';
+	kind: 'owner' | 'person' | 'guest' | 'external' | 'direct';
 	enabled: boolean;
 };
 const KIND: Record<Contact['kind'], string> = {
 	owner: 'Tú',
 	person: 'Compartido',
 	guest: 'Invitado',
-	supplier: 'Proveedor',
+	external: 'Contacto externo',
+	direct: 'Invitado directo',
 };
 
 export function useAgentChannels(agentId: number) {
@@ -169,11 +170,12 @@ function WhatsAppContacts({
 				Quién le escribe por WhatsApp
 				<InfoTip label="Quién habla con este agente">
 					Los teléfonos de la lista blanca del número de los grupos. Cada uno encendido tiene este agente en su grupo
-					«Agentes tuyo» y puede recibir sus avisos; un proveedor encendido no tiene grupo: el agente le escribe uno a
-					uno con sus avisos (por ejemplo, para cotizar) y su respuesta vuelve a la conversación que le preguntó. Tú y
-					las personas con quienes lo compartiste (si su teléfono está ligado a ellas en la lista) están encendidos por
-					defecto; los invitados y proveedores, apagados. Agregar o bloquear teléfonos se hace en Configuración →
-					WhatsApp → Editar, por quien administra el número.
+					«Agentes tuyo» y puede recibir sus avisos; un invitado directo encendido no tiene grupo: habla uno a uno con
+					este agente (sólo un agente puede tenerlo encendido); un contacto externo encendido tampoco tiene grupo: el
+					agente le escribe uno a uno con sus avisos o un encargo (por ejemplo, para cotizar) y su respuesta vuelve a la
+					conversación que le preguntó. Tú y las personas con quienes lo compartiste (si su teléfono está ligado a ellas
+					en la lista) están encendidos por defecto; los invitados y contactos externos, apagados. Agregar o bloquear
+					teléfonos se hace en Configuración → WhatsApp → Editar, por quien administra el número.
 				</InfoTip>
 			</h2>
 			{contacts.length ? (

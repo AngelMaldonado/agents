@@ -18,7 +18,8 @@
 	--shell-header-border: #d8e0e9;
 	--primary: #0986c7;
 	--primary-foreground: #ffffff;
-	--secondary: #e07c00;
+	/* Darker than nova's #e07c00 (and #d97706 for warning): white text on it reaches 4.5:1 (AA). */
+	--secondary: #b85c00;
 	--secondary-foreground: #ffffff;
 	--muted: #f4f6f8;
 	--muted-foreground: #606d80;
@@ -40,7 +41,8 @@
 	--success: #16a34a;
 	--success-soft: #e8f6ec;
 	--success-on-soft: #0f7a36;
-	--warning: #d97706;
+	--warning: #b45309;
+	--warning-foreground: #ffffff;
 	--warning-soft: #fdf1e2;
 	--warning-on-soft: #a15a05;
 	--danger: #e53017;
@@ -98,6 +100,7 @@
 	--success-soft: #0f2a1a;
 	--success-on-soft: #6ee7a4;
 	--warning: #f6a440;
+	--warning-foreground: #1a1206;
 	--warning-soft: #2b1e0a;
 	--warning-on-soft: #fbbf4e;
 	--danger: #ef5340;
@@ -156,6 +159,7 @@
 	--color-success-soft: var(--success-soft);
 	--color-success-on-soft: var(--success-on-soft);
 	--color-warning: var(--warning);
+	--color-warning-foreground: var(--warning-foreground);
 	--color-warning-soft: var(--warning-soft);
 	--color-warning-on-soft: var(--warning-on-soft);
 	--color-danger: var(--danger);

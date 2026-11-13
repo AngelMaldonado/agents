@@ -1,0 +1,514 @@
+#!/usr/bin/env bun
+// agent-browser as pi sees it: first in its PATH, so the browser tool and bash both pass here. Two jobs:
+//
+// 1. Pagos simulados (AGENTS_SIMULATION=1, the agent's switch; Angel 6-nov-2026). Every payment is simulated,
+//    and realistically: the agent believes it paid. Two layers:
+//    - Clicks: a click on something that pays or commits a purchase never reaches the site. In its place the
+//      tab shows a confirmation page (on the store's own URL) with what the checkout said (total, items,
+//      delivery, payment method) and an order number, and the click answers «✓ Done» as any click.
+//    - Network: Chrome blocks the requests that charge or create the order (payment gateways and the store's
+//      order endpoints), so a click this does not recognize still charges nothing; the next command then
+//      shows the same confirmation.
+//    The platform records each one (the run's activity, the list's history), for people only.
+// 2. A lost tab. Sometimes a page action makes agent-browser lose the CDP session of its tab («Session with
+//    given id not found»); it then falls back to an empty tab (about:blank) while the real page is still open
+//    in Chrome. Here that is healed: back to the tab it lost (or its page reopened), and a read (snapshot,
+//    get…) runs again once. A click is never repeated. Every incident goes to a log in the agent's state.
+// 0. Chrome never uses the egress proxy of API keys (#24). pi's environment points HTTP(S)_PROXY at it, with
+//    the run's credentials in its URL; agent-browser reads those variables as its own proxy, and a proxy with
+//    credentials turns on its «network controls» (proxy authentication) on every tab, which is what wedges it
+//    (3, below). So agent-browser runs here without them: Chrome goes out directly, as it always meant to.
+// 4. Its assigned card (Angel 11-nov-2026). The agent pays with it by itself: where a site asks to type a
+//    card, it fills a marker ({{tarjeta.numero}}, {{tarjeta.vencimiento}}, {{tarjeta.mes}}, {{tarjeta.año}},
+//    {{tarjeta.cvv}}, {{tarjeta.titular}}) and the value goes in here, from the supervisor (GET /card): the
+//    model never sees it, and its number and CVV are hidden in what it reads back. With Pagos simulados the
+//    card is its simulated one, and the store's payment page also shows it as saved (drawn in the agent's tab,
+//    in the payment section and in a dialog to choose how to pay), so it pays as with a real saved card.
+// 3. A wedged daemon (Angel 11-nov-2026; agent-browser #1651, open in 0.42). With network routes (the
+//    simulated payments' ones) agent-browser installs its «network controls» on every tab before each
+//    command; a tab that went away meanwhile (a store's navigation does it) leaves its dead CDP session in
+//    the daemon, and from then on every command fails with «Failed to install browser network controls …
+//    Session with given id not found». Only a new daemon clears it: the browser restarts (its profile, and
+//    so the store's session and cart, stay), its routes go in again, and its page is reopened; a read runs
+//    again once. At most once a minute, so it never loops. The same daemon may also go blind without that
+//    error: a read of a real page comes back empty («(no interactive elements)») while the page itself
+//    has links and buttons. Asked to the page, that is a wedged daemon too.
+import { spawnSync } from 'node:child_process';
+import { appendFileSync, readdirSync, readFileSync, writeFileSync } from 'node:fs';
+
+const REAL = process.env.AGENTS_BROWSER_REAL ?? '/usr/local/bin/agent-browser';
+const LOG = process.env.AGENTS_BROWSER_LOG ?? '/home/agent/state/browser-incidents.log';
+const PROFILE = process.env.AGENT_BROWSER_PROFILE ?? '/home/agent/state/browser';
+const MARKS = process.env.AGENTS_BROWSER_MARKS ?? '/tmp';
+const SIMULATING = process.env.AGENTS_SIMULATION === '1';
+const SUPERVISOR = process.env.AGENTS_SUPERVISOR_URL ?? 'http://127.0.0.1:7777';
+const args = process.argv.slice(2);
+// As it asked, for the logs: its markers, never a card's values.
+const asked = args.join(' ');
+// agent-browser's environment: pi's, without any proxy (0, above).
+const ENV = { ...process.env };
+for (const k of [
+	'HTTP_PROXY',
+	'HTTPS_PROXY',
+	'ALL_PROXY',
+	'NO_PROXY',
+	'http_proxy',
+	'https_proxy',
+	'all_proxy',
+	'no_proxy',
+	'AGENT_BROWSER_PROXY',
+	'AGENT_BROWSER_PROXY_BYPASS',
+	'AGENT_BROWSER_PROXY_USERNAME',
+	'AGENT_BROWSER_PROXY_PASSWORD',
+])
+	delete ENV[k];
+const real = (a, timeout) => spawnSync(REAL, a, { encoding: 'utf8', maxBuffer: 64 * 1024 * 1024, timeout, env: ENV });
+const note = (line) => {
+	try {
+		appendFileSync(LOG, JSON.stringify({ at: new Date().toISOString(), ...line }) + '\n');
+	} catch {}
+};
+
+// ---------- its assigned card ----------
+
+let card;
+/** Its card for this run (the supervisor has it only when one is assigned); null: none. */
+function cardOf() {
+	if (card !== undefined) return card;
+	try {
+		const r = JSON.parse(
+			spawnSync('curl', ['-s', '--max-time', '3', `${SUPERVISOR}/card`], { encoding: 'utf8' }).stdout || '{}',
+		);
+		card = r.ok && r.card?.number ? r.card : null;
+	} catch {
+		card = null;
+	}
+	return card;
+}
+const MARKER = /\{\{\s*tarjeta\.(numero|número|vencimiento|mes|año|ano|cvv|titular)\s*\}\}/gi;
+if (args.some((a) => /\{\{\s*tarjeta\./i.test(a))) {
+	const c = cardOf();
+	if (!c) {
+		process.stderr.write(
+			'[Plataforma] No tienes una tarjeta asignada: no puedo llenar {{tarjeta.*}}. Pide ayuda con request_help.\n',
+		);
+		process.exit(1);
+	}
+	const [mm, yy] = c.exp.split('/');
+	const value = {
+		numero: c.number,
+		número: c.number,
+		vencimiento: c.exp,
+		mes: mm,
+		año: yy,
+		ano: yy,
+		cvv: c.cvv,
+		titular: c.holder,
+	};
+	for (let i = 0; i < args.length; i++) args[i] = args[i].replace(MARKER, (_, k) => value[k.toLowerCase()]);
+}
+/** What the agent reads back: its card's number and CVV hidden (a field may echo them). */
+function hide(text) {
+	// Only what could carry them (a long run of digits, a security code) asks for the card.
+	if (!text || !/\d(?:[\s-]?\d){11,}|cvv|cvc|c[óo]digo de seguridad|security code/i.test(text)) return text;
+	const c = cardOf();
+	if (!c) return text;
+	const digits = c.number.split('').join('[\\s-]?');
+	return text
+		.replace(new RegExp(digits, 'g'), `•••• ${c.last4}`)
+		.replace(/((?:cvv|cvc|c[óo]digo de seguridad|security code)[^\n]{0,40}?:\s*"?)(\d{3,4})/gi, '$1•••');
+}
+
+/** A saved card, drawn where the store asks how to pay (Pagos simulados): its section and its dialog. */
+const SAVED = (c) => `(() => {
+	const C = ${JSON.stringify({ label: c.label, last4: c.last4, exp: c.exp, holder: c.holder })};
+	const PAY = /(m[ée]todo|forma) de pago|payment method|pago con tarjeta|tarjeta (de )?(cr[ée]dito|d[ée]bito|bancaria)|credit card|debit card/i;
+	if (!document.body || !PAY.test(document.body.innerText || '')) return 0;
+	const make = (tag) => {
+		const el = document.createElement(tag);
+		el.setAttribute('data-agents-card', '');
+		el.setAttribute('role', 'radio');
+		el.setAttribute('aria-checked', 'true');
+		el.setAttribute('aria-label', 'Tarjeta guardada ' + C.label + ' terminación ' + C.last4 + ', vence ' + C.exp + ', predeterminada');
+		el.tabIndex = 0;
+		el.textContent = '💳 Tarjeta guardada: ' + C.label + ' •••• ' + C.last4 + ' · vence ' + C.exp + ' · ' + C.holder + ' · Predeterminada';
+		el.style.cssText = 'display:flex;align-items:center;gap:8px;width:100%;box-sizing:border-box;margin:8px 0;padding:10px 12px;border:1px solid #c9ced6;border-radius:8px;background:#fff;color:#111;font:500 14px system-ui,sans-serif;text-align:left;cursor:pointer';
+		el.addEventListener('click', (e) => {
+			e.preventDefault();
+			e.stopPropagation();
+			el.setAttribute('aria-checked', 'true');
+			const dialog = el.closest('[role=dialog],dialog,[aria-modal=true]');
+			const close = dialog && dialog.querySelector('[aria-label*="errar" i],[aria-label*="lose" i],button[class*="close" i]');
+			if (close) close.click();
+		}, true);
+		return el;
+	};
+	let n = 0;
+	for (const label of document.querySelectorAll('h1,h2,h3,h4,h5,h6,p,span,div,legend,label,strong')) {
+		if (label.children.length || !/^\\s*((m[ée]todo|forma) de pago|payment method)\\s*$/i.test(label.textContent || '')) continue;
+		if (label.closest('[role=dialog],dialog,[aria-modal=true]')) continue;
+		const box = label.parentElement;
+		if (!box || box.querySelector('[data-agents-card]')) continue;
+		label.insertAdjacentElement('afterend', make('div'));
+		n++;
+	}
+	for (const d of document.querySelectorAll('[role=dialog],dialog[open],[aria-modal=true]')) {
+		if (!PAY.test(d.innerText || '') || d.querySelector('[data-agents-card]')) continue;
+		const heading = d.querySelector('h1,h2,h3,h4,[role=heading]');
+		const el = make('button');
+		el.type = 'button';
+		if (heading) heading.insertAdjacentElement('afterend', el);
+		else d.prepend(el);
+		n++;
+	}
+	return n;
+})()`;
+
+// ---------- pagos simulados ----------
+
+// The button that pays or commits a purchase (Spanish and English shops): a verb that commits with what it
+// commits, «pagar…», or English. «Proceder al pago», «Ir a pagar» or «Método de pago» only move toward it.
+const PAY =
+	/^\s*(pagar|paga ahora|pay\b|pay now|comprar( ahora)?$|buy now|(completar|finalizar|confirmar|realizar|hacer|enviar|procesar|terminar|colocar)( (el|la|mi|tu|su))? (pedido|compra|pago|orden)|place (your )?order|submit order|complete (your )?(purchase|order|payment)|checkout now)/i;
+// What charges or creates the order, as Chrome routes (blocked) and as the requests list shows them.
+const BLOCK = [
+	'**/api.stripe.com/v1/charges*',
+	'**/api.stripe.com/v1/payment_intents/*/confirm*',
+	'**/api.mercadopago.com/v1/payments*',
+	'**/api.mercadopago.com/v1/orders*',
+	'**/*.paypal.com/v2/checkout/orders/*/capture*',
+	'**/*.paypal.com/v1/payments/*',
+	'**/api.openpay.mx/v1/*/charges*',
+	'**/api.conekta.io/orders*',
+	'**/api.conekta.io/charges*',
+	'**/*.adyen.com/*/payments*',
+	'**/*place-order*',
+	'**/*placeOrder*',
+	'**/*place_order*',
+	'**/checkout/complete*',
+	'**/checkout/submit*',
+	'**/checkout/place*',
+	'**/orders/create*',
+	'**/order/create*',
+	'**/order/submit*',
+	'**/*crear-pedido*',
+	'**/*confirmar-pedido*',
+	'**/*completar-pedido*',
+	'**/payments/process*',
+	'**/payment/process*',
+	// A typed card turned into a token (it would go to the processor): blocked as well.
+	'**/api.stripe.com/v1/tokens*',
+	'**/api.stripe.com/v1/payment_methods*',
+	'**/api.conekta.io/tokens*',
+	'**/api.openpay.mx/v1/*/tokens*',
+	'**/api.mercadopago.com/v1/card_tokens*',
+];
+const BLOCKED =
+	/api\.stripe\.com\/v1\/(charges|payment_intents\/[^/]+\/confirm)|api\.mercadopago\.com\/v1\/(payments|orders)|paypal\.com\/(v2\/checkout\/orders\/[^/]+\/capture|v1\/payments\/)|api\.openpay\.mx\/v1\/[^/]+\/charges|api\.conekta\.io\/(orders|charges)|adyen\.com\/.*\/payments|place[-_]?order|checkout\/(complete|submit|place)|orders?\/(create|submit)|(crear|confirmar|completar)-pedido|payments?\/process/i;
+
+/** The routes go into the browser's session once per daemon (a new daemon starts without them). */
+function guard() {
+	let pid = '';
+	try {
+		pid = readFileSync('/home/agent/.agent-browser/default.pid', 'utf8').trim();
+	} catch {}
+	try {
+		if (pid && readFileSync(`${MARKS}/agents-pay-routes`, 'utf8') === pid) return;
+	} catch {}
+	for (const g of BLOCK) real(['network', 'route', g, '--abort'], 15000);
+	try {
+		pid = readFileSync('/home/agent/.agent-browser/default.pid', 'utf8').trim();
+		writeFileSync(`${MARKS}/agents-pay-routes`, pid);
+	} catch {}
+}
+
+/**
+ * The confirmation, drawn in the tab on the store's URL from what its checkout says. Returns what it read
+ * (total, order number) for the platform's record.
+ */
+const RECEIPT = `(() => {
+	const text = document.body ? document.body.innerText : '';
+	const lines = text.split('\\n').map((s) => s.trim()).filter(Boolean);
+	const money = /([$€£]|MXN|USD)\\s?\\d[\\d,]*(\\.\\d{2})?/;
+	let total = '';
+	for (let i = lines.length - 1; i >= 0 && !total; i--)
+		if (/^total\\b/i.test(lines[i])) total = ((lines[i] + ' ' + (lines[i + 1] || '')).match(money) || [''])[0];
+	const items = (text.match(/(\\d+)\\s*(productos|artículos|items|products)/i) || [])[1] || '';
+	const card = (text.match(/(terminada en|termina en|ending in|••••|\\*{4})\\s?(\\d{4})/i) || [])[2] || '';
+	const method = (lines.find((l) => /^(tarjeta|card|efectivo|cash|paypal|mercado ?pago|transferencia|vales)/i.test(l)) || '').slice(0, 60);
+	const hours = (text.match(/\\d{1,2}:\\d{2}\\s?(a\\.?\\s?m\\.?|p\\.?\\s?m\\.?)?\\s?[-–a]\\s?\\d{1,2}:\\d{2}\\s?(a\\.?\\s?m\\.?|p\\.?\\s?m\\.?)?/i) || [''])[0];
+	const picked = document.querySelector('[aria-pressed="true"],[aria-selected="true"][role="tab"],[aria-checked="true"]');
+	const day = picked ? picked.innerText.replace(/\\s+/g, ' ').trim().slice(0, 40) : '';
+	const es = /^es/i.test(document.documentElement.lang || '') || /\\b(pedido|compra|carrito|entrega|envío)\\b/i.test(text);
+	const store = (document.title.split(/[|·–-]/).map((s) => s.trim()).filter(Boolean).pop() || location.hostname).slice(0, 40);
+	const order = String(Math.floor(10000000 + Math.random() * 89999999));
+	const when = new Date().toLocaleString(es ? 'es-MX' : 'en-US', { dateStyle: 'long', timeStyle: 'short' });
+	const row = (k, v) => (v ? '<tr><th>' + k + '</th><td>' + v.replace(/</g, '&lt;') + '</td></tr>' : '');
+	const t = es
+		? { title: '¡Gracias por tu compra!', lead: 'Tu pedido fue confirmado.', order: 'Pedido', date: 'Fecha', total: 'Total', items: 'Productos', delivery: 'Entrega', pay: 'Método de pago', next: 'Te avisaremos cuando tu pedido vaya en camino.', home: 'Seguir comprando', orders: 'Ver mis pedidos', path: '/pedido/confirmacion' }
+		: { title: 'Thank you for your order!', lead: 'Your order is confirmed.', order: 'Order', date: 'Date', total: 'Total', items: 'Items', delivery: 'Delivery', pay: 'Payment method', next: 'We will let you know when your order is on its way.', home: 'Continue shopping', orders: 'View my orders', path: '/order/confirmation' };
+	const html = '<!doctype html><html lang="' + (es ? 'es' : 'en') + '"><head><meta charset="utf-8"><title>' + t.title + ' | ' + store + '</title>' +
+		'<style>body{font-family:system-ui,sans-serif;background:#f6f7f9;margin:0;color:#111}main{max-width:560px;margin:48px auto;background:#fff;border-radius:12px;padding:32px;box-shadow:0 1px 4px #0002}h1{font-size:24px;margin:0 0 4px}p{color:#444}table{width:100%;border-collapse:collapse;margin:20px 0}th{text-align:left;color:#666;font-weight:500;padding:8px 0;width:40%}td{padding:8px 0;font-weight:600}tr+tr{border-top:1px solid #eee}.ok{width:48px;height:48px;border-radius:50%;background:#16a34a;color:#fff;display:grid;place-items:center;font-size:28px;margin-bottom:16px}a{display:inline-block;margin-right:12px;color:#0b6bcb}</style></head>' +
+		'<body><main><div class="ok">✓</div><h1>' + t.title + '</h1><p>' + t.lead + '</p><table>' +
+		row(t.order, '#' + order) + row(t.date, when) + row(t.total, total) + row(t.items, items) +
+		row(t.delivery, [day, hours].filter(Boolean).join(' · ')) +
+		row(t.pay, card && !method.includes(card) ? (method || (es ? 'Tarjeta' : 'Card')) + ' •••• ' + card : method) +
+		'</table><p>' + t.next + '</p><a href="/">' + t.home + '</a><a href="/">' + t.orders + '</a></main></body></html>';
+	try { history.replaceState(null, '', t.path + '?id=' + order); } catch (e) {}
+	document.open();
+	document.write(html);
+	document.close();
+	return JSON.stringify({ total, order });
+})()`;
+
+/** The tab shows the confirmation, and the platform records the simulated payment. */
+function confirm(how, label) {
+	let read = {};
+	try {
+		read = JSON.parse(JSON.parse(real(['eval', RECEIPT], 20000).stdout || '""') || '{}');
+	} catch {}
+	spawnSync(
+		'curl',
+		[
+			'-sS',
+			'--max-time',
+			'5',
+			'-X',
+			'POST',
+			'-H',
+			'content-type: application/json',
+			'--data-binary',
+			JSON.stringify({ action: asked.slice(0, 300), label: label.slice(0, 200), how, ...read }),
+			`${SUPERVISOR}/simulated`,
+		],
+		{ timeout: 8000 },
+	);
+	note({ command: asked.slice(0, 300), simulated: how, label: label.slice(0, 120), ...read });
+}
+
+/** A payment request Chrome blocked since the last look (the click layer did not see it coming). */
+function blockedPayment() {
+	const list = (real(['network', 'requests'], 15000).stdout || '').split('\n');
+	let seen = [];
+	try {
+		seen = JSON.parse(readFileSync(`${MARKS}/agents-pay-seen`, 'utf8'));
+	} catch {}
+	// Blocked ones have no status at the end of their line.
+	const hit = list
+		.map((l) => l.match(/^\[([^\]]+)\]\s+(POST|PUT|PATCH|GET)\s+(\S+)\s+\([^)]*\)\s*$/))
+		.find((m) => m && BLOCKED.test(m[3]) && !seen.includes(m[1]));
+	if (!hit) return null;
+	try {
+		writeFileSync(`${MARKS}/agents-pay-seen`, JSON.stringify([...seen, hit[1]].slice(-200)));
+	} catch {}
+	return hit[3];
+}
+
+if (SIMULATING) {
+	guard();
+	// A payment the click layer missed was blocked by Chrome (its request goes after the click answered): the
+	// page shows the confirmation before this command runs, so what it reads now is what it would after paying.
+	const missed = blockedPayment();
+	if (missed) confirm('network', missed.replace(/^https?:\/\//, '').slice(0, 120));
+	let label = '';
+	if ((args[0] === 'click' || args[0] === 'dblclick') && args[1]) {
+		label = (real(['get', 'text', args[1]], 20000).stdout || '').trim();
+		if (!label) label = (real(['get', 'attr', 'aria-label', args[1]], 20000).stdout || '').trim();
+		if (!label) label = (real(['get', 'value', args[1]], 20000).stdout || '').trim();
+	} else if (args[0] === 'find' && args.includes('click')) {
+		// find role button click --name 'Pagar' · find text 'Pagar' click · find label 'Pagar' click
+		const name = args.indexOf('--name');
+		label = name > 0 && args[name + 1] ? args[name + 1] : args[1] === 'role' ? '' : (args[2] ?? '');
+		if (!label) label = args.slice(1, args.indexOf('click')).join(' ');
+	}
+	if (label && label.length <= 120 && PAY.test(label)) {
+		confirm('click', label.replace(/\s+/g, ' '));
+		process.stdout.write('✓ Done\n');
+		process.exit(0);
+	}
+}
+
+// ---------- a wedged daemon ----------
+
+const WEDGED =
+	/Failed to install browser network controls: CDP error \([\w.]+\): (Session with given id not found|No target with given id)/i;
+
+/** The pages Chrome has open, from its own DevTools endpoint (the daemon may answer nothing now). */
+function chromePages() {
+	let port = '';
+	try {
+		port = readFileSync(`${PROFILE}/DevToolsActivePort`, 'utf8').split('\n')[0].trim();
+	} catch {}
+	if (!/^\d+$/.test(port)) return [];
+	try {
+		return JSON.parse(
+			spawnSync('curl', ['-s', '--max-time', '3', `http://127.0.0.1:${port}/json/list`], { encoding: 'utf8' }).stdout ||
+				'[]',
+		).filter((t) => t.type === 'page' && /^https?:/.test(t.url));
+	} catch {
+		return [];
+	}
+}
+
+/** Its daemon and the Chrome on its profile: asked to end, then made to. */
+function killBrowser() {
+	const pids = new Set();
+	try {
+		const pid = Number(readFileSync(`${process.env.HOME ?? '/home/agent'}/.agent-browser/default.pid`, 'utf8'));
+		if (pid) pids.add(pid);
+	} catch {}
+	try {
+		for (const d of readdirSync('/proc'))
+			if (/^\d+$/.test(d))
+				try {
+					if (readFileSync(`/proc/${d}/cmdline`, 'utf8').includes(`--user-data-dir=${PROFILE}`)) pids.add(Number(d));
+				} catch {}
+	} catch {}
+	for (const signal of ['SIGTERM', 'SIGKILL']) {
+		for (const pid of pids)
+			try {
+				process.kill(pid, signal);
+			} catch {}
+		Bun.sleepSync(1500);
+	}
+}
+
+/** A new daemon and browser, on the page it was on; null when it restarted less than a minute ago. */
+function restart() {
+	const mark = `${MARKS}/agents-browser-restart`;
+	try {
+		if (Date.now() - Number(readFileSync(mark, 'utf8')) < 60_000) return null;
+	} catch {}
+	try {
+		writeFileSync(mark, String(Date.now()));
+	} catch {}
+	let last = null;
+	try {
+		last = readFileSync(`${MARKS}/agents-browser-url`, 'utf8').trim() || null;
+	} catch {}
+	const url = chromePages()[0]?.url ?? last;
+	real(['close'], 30_000);
+	// `close` may be wedged too: then its daemon and its Chrome go by hand (this computer has no pkill).
+	if (WEDGED.test(real(['get', 'url'], 15_000).stderr ?? '')) killBrowser();
+	// Its routes went with the daemon: in again before anything opens.
+	try {
+		writeFileSync(`${MARKS}/agents-pay-routes`, '');
+	} catch {}
+	if (SIMULATING) guard();
+	if (url) real(['open', url], 60_000);
+	return { how: 'restart', url };
+}
+
+// ---------- a lost tab ----------
+
+// Reads are safe to run again once the tab is back; anything else is not (a click, a fill, an open).
+const READS = new Set(['snapshot', 'get', 'screenshot', 'is', 'text', 'title', 'url']);
+// Pagos simulados: before it reads a page, its saved card is there (React redraws may have taken it away).
+if (SIMULATING && READS.has(args[0]) && cardOf()) real(['eval', SAVED(card)], 15_000);
+const LOST = /Session with given id not found|No target with given id|tab_gone|Target closed/i;
+const blank = (url) => !url || url === 'about:blank' || url.startsWith('chrome://');
+
+/** Back to the page it lost: its tab if agent-browser still has it, else that page reopened here. */
+function heal() {
+	const now = (real(['get', 'url'], 15000).stdout || '').trim();
+	if (!blank(now)) return null;
+	// A tab of its own with a real page: switch to it and close the empty one.
+	const tabs = (real(['tab', 'list'], 15000).stdout || '').split('\n');
+	const other = tabs.map((l) => l.match(/^\s*(→)?\s*\[(t\d+)\].* - (https?:\S+)\s*$/)).find((m) => m && !m[1]);
+	if (other) {
+		const empty = tabs.map((l) => l.match(/^\s*→\s*\[(t\d+)\]/)).find(Boolean);
+		real(['tab', other[2]], 15000);
+		if (empty) real(['tab', 'close', empty[1]], 15000);
+		return { how: 'tab', url: other[3] };
+	}
+	// Not one of its tabs any more, but still open in Chrome: reopen its page here and close the orphan.
+	const port = ((real(['get', 'cdp-url'], 15000).stdout || '').match(/:(\d+)\//) || [])[1];
+	if (!port) return null;
+	let pages = [];
+	try {
+		pages = JSON.parse(
+			spawnSync('curl', ['-s', '--max-time', '3', `http://127.0.0.1:${port}/json/list`], { encoding: 'utf8' }).stdout ||
+				'[]',
+		).filter((t) => t.type === 'page' && /^https?:/.test(t.url));
+	} catch {}
+	if (!pages.length) return null;
+	const page = pages[0];
+	real(['open', page.url], 60000);
+	spawnSync('curl', ['-s', '--max-time', '3', `http://127.0.0.1:${port}/json/close/${page.id}`]);
+	return { how: 'reopen', url: page.url };
+}
+
+// What it asked, as it asked it (its stdin too: eval --stdin).
+const run = () =>
+	spawnSync(REAL, args, {
+		encoding: 'utf8',
+		maxBuffer: 64 * 1024 * 1024,
+		stdio: ['inherit', 'pipe', 'pipe'],
+		env: ENV,
+	});
+const first = run();
+let out = first.stdout || '',
+	err = first.stderr || '',
+	status = first.status ?? 1;
+const said = out + err;
+// The last real page it showed (open and batch print it under their title): where a restart goes back to.
+const shown = [...out.matchAll(/^\s+(https?:\/\/\S+)\s*$/gm)].at(-1)?.[1];
+if (shown)
+	try {
+		writeFileSync(`${MARKS}/agents-browser-url`, shown);
+	} catch {}
+/**
+ * A read that came back empty on a real page whose links and buttons the page itself counts: the daemon
+ * is not seeing it. A page that really has none (or a blank tab, handled below) is not this.
+ */
+function blind() {
+	if (!READS.has(args[0]) || !/\(no interactive elements\)/.test(said)) return false;
+	const url = (real(['get', 'url'], 15_000).stdout || '').trim();
+	if (blank(url)) return false;
+	const counted = (
+		real(['eval', "document.querySelectorAll('a[href],button,input,select,textarea,[role=button]').length"], 15_000)
+			.stdout || ''
+	).trim();
+	return !/^0$/.test(counted);
+}
+
+if (WEDGED.test(said) || blind()) {
+	const restarted = restart();
+	note({ command: asked.slice(0, 300), said: said.slice(0, 600), healed: restarted });
+	if (restarted && READS.has(args[0])) {
+		const again = run();
+		out = again.stdout || '';
+		err = again.stderr || '';
+		status = again.status ?? 1;
+		err += `\n[Plataforma] El navegador se había trabado (fallo conocido de agent-browser) y lo reinicié${restarted.url ? ` en ${restarted.url}` : ''}; este resultado ya es del navegador nuevo. Tu sesión y tu carrito en la tienda siguen.\n`;
+	} else if (restarted)
+		err += `\n[Plataforma] El navegador se había trabado (fallo conocido de agent-browser) y lo reinicié${restarted.url ? ` en ${restarted.url}` : ''}; tu sesión y tu carrito en la tienda siguen. Este comando no se hizo: lee la página (snapshot) y repítelo si todavía hace falta.\n`;
+	else
+		err += `\n[Plataforma] El navegador sigue trabado aunque lo reinicié hace menos de un minuto. Espera un momento y vuelve a intentarlo; si sigue, pide ayuda con request_help.\n`;
+	process.stdout.write(hide(out));
+	process.stderr.write(hide(err));
+	process.exit(status);
+}
+// An explicit loss, or an empty page while a real one is still open (a fresh browser is empty too: not a loss).
+const explicit = LOST.test(said);
+const suspicious =
+	!explicit &&
+	(/\(no interactive elements\)/.test(said) || /^about:blank\s*$/m.test(out)) &&
+	blank((real(['get', 'url'], 15000).stdout || '').trim());
+const healed = explicit || suspicious ? heal() : null;
+if (explicit || healed) {
+	note({ command: asked.slice(0, 300), said: said.slice(0, 600), healed });
+	if (healed && READS.has(args[0])) {
+		const again = run();
+		out = again.stdout || '';
+		err = again.stderr || '';
+		status = again.status ?? 1;
+		err += `\n[Plataforma] El navegador había perdido la pestaña (fallo conocido) y la recuperé en ${healed.url}; este resultado ya es de esa página.\n`;
+	} else if (healed)
+		err += `\n[Plataforma] El navegador perdió la pestaña (fallo conocido) y la recuperé en ${healed.url}. Vuelve a leer la página (snapshot) antes de seguir: si tu último clic debía llevarte a otra página, revisa en cuál quedaste.\n`;
+	else err += `\n[Plataforma] El navegador perdió la pestaña y no encontré la página: ábrela otra vez por su URL.\n`;
+}
+
+process.stdout.write(hide(out));
+process.stderr.write(hide(err));
+process.exit(status);

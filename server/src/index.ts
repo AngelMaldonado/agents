@@ -4,7 +4,7 @@ import { Hono, type Context } from 'hono';
 import { getCookie, setCookie, deleteCookie } from 'hono/cookie';
 import { upgradeWebSocket, websocket, serveStatic } from 'hono/bun';
 import { existsSync } from 'node:fs';
-import { migrate, row } from './db';
+import { exec, migrate, row, rows } from './db';
 import { startDbos } from './dbos';
 import * as people from './people';
 import * as agents from './agents';
@@ -37,6 +37,19 @@ import * as channels from './channels';
 import * as inbox from './inbox';
 import * as monitor from './monitor';
 import * as whatsapp from './whatsapp';
+import * as waSim from './whatsapp-sim';
+import * as waActor from './whatsapp-actor';
+import * as waLog from './whatsapp-log';
+import * as simCard from './simulated-card';
+import * as harnessTune from './harness-tune';
+import * as lessons from './lessons';
+import * as bundle from './agent-bundle';
+import { cleanPersonality } from './personality';
+import { SOUL_CHARS, STYLES } from '../../shared/souls';
+import * as delegations from './delegations';
+import * as flows from './flows';
+import * as jobs from './jobs';
+import * as evaluations from './evaluations';
 import * as aliases from './aliases';
 import * as transfers from './transfers';
 import * as imageUpdates from './image-updates';
@@ -63,12 +76,20 @@ await agents.loadShares();
 }
 await tasks.recover();
 await computerUpdates.recover();
+await harnessTune.recover();
 computerUpdates.startReconciler();
 await selfMaintenance.recoverRepairs();
 selfMaintenance.startRepairReconciler();
 tasks.startImageKeeper(); // a prune must not delete the images agents were validated on
+tasks.startLostTurnWatch(); // a turn its pi lost in a restart is taken up
 await inbox.startRouter();
 whatsapp.startSleeper(); // WhatsApp groups follow lists, shares and agents; «escribiendo…» while one works
+delegations.startSweeper(); // encargos: deadlines, turns a restart left and results that did not go back
+flows.startSweeper(); // flujos: deadlines, waits that are over and steps nobody took
+jobs.startSweeper(); // trabajos: the ones without activity for the agent's hours close
+whatsapp.startDeferredSweeper(); // avisos held by the quiet hours go out at 7:00
+waActor.startActors(); // the simulator's actors answer the agent as its contacts
+evaluations.startSweeper(); // evaluations a restart left or that may try again
 await cuby.load();
 cuby.restart(); // the cuby-whatsapp consumer, when an admin turned it on
 monitor.startMonitor();
@@ -163,6 +184,8 @@ app.post('/hooks/:token', async (c) => {
 			context: body.context,
 			attachments: Array.isArray(body.attachments) ? body.attachments : [],
 			dedupeKey: c.req.header('idempotency-key')?.slice(0, 200) || null,
+			// Each call is a trabajo of its own.
+			job: { origin: 'hook', title: typeof body.text === 'string' ? body.text.slice(0, 80) : 'Webhook' },
 		});
 		return c.json(r, r.duplicate ? 200 : 202);
 	} catch (err) {
@@ -354,6 +377,41 @@ app.get('/api/agents', async (c) => {
 	});
 });
 // Your aliases for one agent you use (yours or shared with you): they replace the ones it had.
+// .cubyagent (agent-bundle.ts): its owner downloads an agent as a file and mounts it on any instance.
+app.get('/api/agents/:id/export', async (c) => {
+	const a = await ownAgent(c);
+	if (!a) return c.json({ error: 'No es tuyo.' }, 404);
+	try {
+		const file = await bundle.exportAgent(a, c.get('me'));
+		return new Response(file.bytes as unknown as BodyInit, {
+			headers: {
+				'content-type': 'application/zip',
+				'content-disposition': `attachment; filename="${file.name}"`,
+			},
+		});
+	} catch (err) {
+		return fail(c, err);
+	}
+});
+const bundleBytes = async (c: Context<Env>) => {
+	if (Number(c.req.header('content-length') ?? 0) > bundle.MAX_BYTES)
+		throw new Error('El archivo es demasiado grande.');
+	return new Uint8Array(await c.req.arrayBuffer());
+};
+app.post('/api/agents/import/inspect', async (c) => {
+	try {
+		return c.json({ preview: await bundle.inspect(await bundleBytes(c), c.get('me').id) });
+	} catch (err) {
+		return fail(c, err);
+	}
+});
+app.post('/api/agents/import', async (c) => {
+	try {
+		return c.json(await bundle.importAgent(await bundleBytes(c), c.get('me')));
+	} catch (err) {
+		return fail(c, err);
+	}
+});
 app.put('/api/agents/:id/aliases', async (c) => {
 	try {
 		const body = await c.req.json().catch(() => null);
@@ -514,6 +572,228 @@ app.patch('/api/agents/:id', async (c) => {
 	} catch (err) {
 		return fail(c, err);
 	}
+});
+
+// How long one of its trabajos may go without activity before it closes (1 h to 30 days).
+app.put('/api/agents/:id/inactivity', async (c) => {
+	const a = await ownAgent(c);
+	if (!a) return c.json({ error: 'No es tuyo.' }, 404);
+	const hours = Number((await c.req.json().catch(() => ({})))?.hours);
+	if (!Number.isInteger(hours) || hours < 1 || hours > 720) return c.json({ error: 'Escribe de 1 a 720 horas.' }, 400);
+	await exec('update agents set inactivity_hours = $2 where id = $1', [a.id, hours]);
+	return c.json({ ok: true, hours });
+});
+
+// Pagos simulados: its owner turns them on to test flows; every payment of the agent is then simulated.
+app.put('/api/agents/:id/simulated-payments', async (c) => {
+	const a = await ownAgent(c);
+	if (!a) return c.json({ error: 'No es tuyo.' }, 404);
+	const on = (await c.req.json().catch(() => ({})))?.on === true;
+	await exec('update agents set simulated_payments = $2 where id = $1', [a.id, on]);
+	return c.json({ ok: true, on });
+});
+
+// Avanzado: its personality (five dials) and its harness tuned by hand (tested in the background, applied
+// only if the test passes).
+// Estilo: how it sounds (shared/souls.ts): a preset, or its owner's own text; it applies from its next turn.
+app.put('/api/agents/:id/soul', async (c) => {
+	const a = await ownAgent(c);
+	if (!a) return c.json({ error: 'No es tuyo.' }, 404);
+	const body = (await c.req.json().catch(() => ({}))) as { style?: unknown; soul?: unknown };
+	const style = typeof body.style === 'string' && STYLES.some((x) => x.key === body.style) ? body.style : null;
+	const soul = typeof body.soul === 'string' && body.soul.trim() ? body.soul.trim() : null;
+	if (soul && soul.length > SOUL_CHARS) return c.json({ error: `Hasta ${SOUL_CHARS} caracteres.` }, 400);
+	await exec('update agents set style = $2, soul = $3 where id = $1', [a.id, style, soul]);
+	return c.json({ style, soul });
+});
+app.put('/api/agents/:id/personality', async (c) => {
+	const a = await ownAgent(c);
+	if (!a) return c.json({ error: 'No es tuyo.' }, 404);
+	const personality = cleanPersonality((await c.req.json().catch(() => ({})))?.personality);
+	await exec('update agents set personality = $2 where id = $1', [a.id, JSON.stringify(personality)]);
+	return c.json({ personality });
+});
+app.get('/api/agents/:id/rank', async (c) => {
+	const a = await ownAgent(c);
+	if (!a) return c.json({ error: 'No es tuyo.' }, 404);
+	return c.json({ rank: await (await import('./evaluations')).rank(a.id) });
+});
+// Aprendizajes: what it learned by itself after each trabajo; its owner pins or deletes them.
+app.get('/api/agents/:id/lessons', async (c) => {
+	const a = await ownAgent(c);
+	if (!a) return c.json({ error: 'No es tuyo.' }, 404);
+	return c.json({ lessons: await lessons.list(a.id) });
+});
+// Aprender: its owner teaches it something, from a trabajo (pinned, shown on that trabajo).
+app.post('/api/agents/:id/lessons', async (c) => {
+	const a = await ownAgent(c);
+	if (!a) return c.json({ error: 'No es tuyo.' }, 404);
+	try {
+		const body = await c.req.json().catch(() => ({}));
+		const conversation = Number(body?.conversation) || null;
+		if (
+			conversation &&
+			!(await row('select 1 from conversations where id = $1 and agent_id = $2', [conversation, a.id]))
+		)
+			return c.json({ error: 'Ese trabajo no es de este agente.' }, 400);
+		await lessons.teach(a.id, conversation, body?.text);
+		return c.json({ lessons: await lessons.list(a.id) });
+	} catch (err) {
+		return fail(c, err);
+	}
+});
+app.post('/api/agents/:id/lessons/delete', async (c) => {
+	const a = await ownAgent(c);
+	if (!a) return c.json({ error: 'No es tuyo.' }, 404);
+	try {
+		await lessons.removeMany(a.id, await c.req.json().catch(() => ({})));
+		return c.json({ lessons: await lessons.list(a.id) });
+	} catch (err) {
+		return fail(c, err);
+	}
+});
+app.delete('/api/agents/:id/lessons/:lesson', async (c) => {
+	const a = await ownAgent(c);
+	if (!a) return c.json({ error: 'No es tuyo.' }, 404);
+	try {
+		await lessons.remove(a.id, Number(c.req.param('lesson')));
+		return c.json({ lessons: await lessons.list(a.id) });
+	} catch (err) {
+		return fail(c, err);
+	}
+});
+app.put('/api/agents/:id/lessons/:lesson/pin', async (c) => {
+	const a = await ownAgent(c);
+	if (!a) return c.json({ error: 'No es tuyo.' }, 404);
+	try {
+		await lessons.pin(a.id, Number(c.req.param('lesson')), (await c.req.json().catch(() => ({})))?.on === true);
+		return c.json({ lessons: await lessons.list(a.id) });
+	} catch (err) {
+		return fail(c, err);
+	}
+});
+app.get('/api/agents/:id/tune', async (c) => {
+	const a = await ownAgent(c);
+	if (!a) return c.json({ error: 'No es tuyo.' }, 404);
+	return c.json({ tune: await harnessTune.latest(a.id) });
+});
+app.post('/api/agents/:id/tune', async (c) => {
+	const a = await ownAgent(c);
+	if (!a) return c.json({ error: 'No es tuyo.' }, 404);
+	try {
+		return c.json({ tune: await harnessTune.request(a.id, c.get('me').id, await c.req.json().catch(() => ({}))) }, 202);
+	} catch (err) {
+		return fail(c, err);
+	}
+});
+
+// Tarjeta simulada: the card its simulated payments use (brand, last four, expiry, holder).
+app.get('/api/agents/:id/simulated-card', async (c) => {
+	const a = await ownAgent(c);
+	if (!a) return c.json({ error: 'No es tuyo.' }, 404);
+	return c.json({ card: await simCard.cardOf(a.id) });
+});
+app.put('/api/agents/:id/simulated-card', async (c) => {
+	const a = await ownAgent(c);
+	if (!a) return c.json({ error: 'No es tuyo.' }, 404);
+	try {
+		return c.json({ card: await simCard.setCard(a.id, await c.req.json().catch(() => ({}))) });
+	} catch (err) {
+		return fail(c, err);
+	}
+});
+
+// Modo objetivo: its trabajos go on by themselves until their objective is met.
+app.put('/api/agents/:id/goal-mode', async (c) => {
+	const a = await ownAgent(c);
+	if (!a) return c.json({ error: 'No es tuyo.' }, 404);
+	const on = (await c.req.json().catch(() => ({})))?.on === true;
+	await exec('update agents set goal_mode = $2 where id = $1', [a.id, on]);
+	// Turned on: its open trabajos with a list go on from where they are.
+	if (on)
+		for (const t of await rows<{ id: number }>(
+			"select c.id from conversations c join flows f on f.conversation_id = c.id and f.status = 'running' where c.agent_id = $1 and c.status = 'open' and not c.is_default",
+			[a.id],
+		))
+			void flows.resume(t.id).catch((err) => console.error('reanudar trabajo:', (err as Error).message));
+	return c.json({ ok: true, on });
+});
+
+// Conversaciones simuladas: its WhatsApp goes to the simulator, where its owner writes as its contacts.
+app.put('/api/agents/:id/simulated-conversations', async (c) => {
+	const a = await ownAgent(c);
+	if (!a) return c.json({ error: 'No es tuyo.' }, 404);
+	const on = (await c.req.json().catch(() => ({})))?.on === true;
+	await waSim.setOn(a.id, on);
+	return c.json({ ok: true, on });
+});
+// Conversaciones: its WhatsApp chats (real and simulated), the latest first; ?conversation= only a trabajo's.
+app.get('/api/agents/:id/chats', async (c) => {
+	const a = await ownAgent(c);
+	if (!a) return c.json({ error: 'Sólo su dueño ve sus conversaciones.' }, 403);
+	const conversation = Number(c.req.query('conversation')) || undefined;
+	return c.json({ chats: await waLog.chats(a.id, c.get('me'), conversation), trabajos: await waLog.trabajos(a.id) });
+});
+app.get('/api/agents/:id/chats/:chat', async (c) => {
+	const a = await ownAgent(c);
+	if (!a) return c.json({ error: 'Sólo su dueño ve sus conversaciones.' }, 403);
+	const chat = c.req.param('chat');
+	if (!waLog.VIEW_CHAT.test(chat)) return c.json({ error: 'Chat inválido.' }, 400);
+	// Who is writing now, if anyone: its agent («…» on its side) or the simulated contact's AI.
+	const typing = (await waLog.agentTyping(a.id, chat))
+		? 'agent'
+		: chat.startsWith('s') && waActor.isComposing(a.id, chat.slice(1))
+			? 'contact'
+			: null;
+	return c.json({ ...(await waLog.messages(a.id, chat, Number(c.req.query('after')) || 0)), typing });
+});
+app.get('/api/agents/:id/sim', async (c) => {
+	const a = await ownAgent(c);
+	if (!a) return c.json({ error: 'Sólo su dueño usa su simulador.' }, 403);
+	const last = new Map((await waSim.last(a.id)).map((m) => [m.chat, m]));
+	const actors = new Map((await waActor.list(a.id)).map((x) => [x.chat, x]));
+	return c.json({
+		on: await waSim.on(a.id),
+		chats: (await whatsapp.simChats(a.id, c.get('me'))).map((x) => ({
+			...x,
+			last: last.get(x.chat) ?? null,
+			actor: actors.get(x.chat) ?? null,
+		})),
+	});
+});
+app.get('/api/agents/:id/sim/:chat', async (c) => {
+	const a = await ownAgent(c);
+	if (!a) return c.json({ error: 'Sólo su dueño usa su simulador.' }, 403);
+	const chat = c.req.param('chat');
+	if (!waSim.CHAT.test(chat)) return c.json({ error: 'Chat inválido.' }, 400);
+	return c.json({ messages: await waSim.messages(a.id, chat, Number(c.req.query('after')) || 0) });
+});
+app.post('/api/agents/:id/sim/:chat', async (c) => {
+	const a = await ownAgent(c);
+	if (!a) return c.json({ error: 'Sólo su dueño usa su simulador.' }, 403);
+	try {
+		return c.json(
+			await whatsapp.simulate(a.id, c.get('me'), c.req.param('chat'), await c.req.json().catch(() => ({}))),
+		);
+	} catch (err) {
+		return fail(c, err);
+	}
+});
+// The chat's actor: GPT plays that contact; on «auto» it answers the agent until the conversation is done.
+app.put('/api/agents/:id/sim/:chat/actor', async (c) => {
+	const a = await ownAgent(c);
+	if (!a) return c.json({ error: 'Sólo su dueño usa su simulador.' }, 403);
+	try {
+		return c.json({ actor: await waActor.set(a.id, c.req.param('chat'), await c.req.json().catch(() => ({}))) });
+	} catch (err) {
+		return fail(c, err);
+	}
+});
+app.delete('/api/agents/:id/sim', async (c) => {
+	const a = await ownAgent(c);
+	if (!a) return c.json({ error: 'Sólo su dueño usa su simulador.' }, 403);
+	await waSim.clear(a.id);
+	return c.json({ ok: true });
 });
 
 app.delete('/api/agents/:id', async (c) => {
@@ -718,6 +998,8 @@ app.post('/api/tasks/:id/help', async (c) => {
 	const t = await usableTask(c);
 	if (!t || !tasks.directs(t, c.get('me').id))
 		return c.json({ error: 'Sólo quien pidió esta tarea le responde al agente.' }, 403);
+	if (c.get('me').id !== t.person_id && (await tasks.helpFor(t.id)) === 'dueño')
+		return c.json({ error: 'Esta pregunta es para su dueño: sólo él la responde.' }, 403);
 	try {
 		return c.json({ ok: true, ...(await tasks.answerHelp(t.id, await c.req.json())) });
 	} catch (err) {
@@ -926,6 +1208,137 @@ app.post('/api/agents/:id/mcp/:server/login', async (c) => {
 	}
 });
 
+// Trabajos: what one is for and how it went; its owner or whoever it is for ends, reopens or redirects it.
+async function jobOf(c: Context<Env>) {
+	const a = await usableAgent(c);
+	const j = a ? await jobs.get(Number(c.req.param('conversation'))) : null;
+	if (!a || !j || j.agent_id !== a.id) return null;
+	return { a, j, mine: a.person_id === c.get('me').id || j.person_id === c.get('me').id };
+}
+app.get('/api/agents/:id/conversations/:conversation/job', async (c) => {
+	const x = await jobOf(c);
+	if (!x) return c.json({ error: 'No existe.' }, 404);
+	return c.json({
+		job: x.j,
+		evaluation: await evaluations.of(x.j.id),
+		// Its playbook (what its agent worked with) and what it taught (Aprendizajes).
+		...(await lessons.ofTrabajo(x.j.id)),
+		canManage: x.mine,
+		owner: x.a.person_id === c.get('me').id,
+		simulatedPayments: !!x.a.simulated_payments,
+		goalMode: !!x.a.goal_mode,
+	});
+});
+app.post('/api/agents/:id/conversations/:conversation/job/:op', async (c) => {
+	const x = await jobOf(c);
+	if (!x) return c.json({ error: 'No existe.' }, 404);
+	if (!x.mine) return c.json({ error: 'Sólo su dueño o quien lo pidió decide sobre este trabajo.' }, 403);
+	try {
+		const op = c.req.param('op');
+		const body = await c.req.json().catch(() => ({}));
+		if (op === 'close') {
+			if (!(await jobs.closeByPerson(x.j.id, c.get('me').name))) throw new Error('Este trabajo ya había terminado.');
+		} else if (op === 'reopen') {
+			if (!(await jobs.reopen(x.j.id))) throw new Error('Este trabajo está abierto.');
+		} else if (op === 'goal') await jobs.setGoal(x.j.id, String(body?.goal ?? ''));
+		else if (op === 'budget') {
+			if (x.a.person_id !== c.get('me').id) throw new Error('Sólo su dueño cambia su presupuesto.');
+			await jobs.setBudget(x.j.id, body ?? {});
+			void flows.resume(x.j.id).catch((err) => console.error('reanudar trabajo:', (err as Error).message));
+		} else if (op === 'rating') {
+			if (x.a.person_id !== c.get('me').id) throw new Error('Sólo su dueño califica sus trabajos.');
+			await jobs.rate(x.j.id, body?.rating, body?.note);
+		} else return c.json({ error: 'Acción desconocida.' }, 400);
+		return c.json({
+			job: await jobs.get(x.j.id),
+			evaluation: await evaluations.of(x.j.id),
+			...(await lessons.ofTrabajo(x.j.id)),
+		});
+	} catch (err) {
+		return fail(c, err);
+	}
+});
+
+// Tareas: a trabajo's list; whoever sees the trabajo reads it, its owner edits it (the agent hears it).
+app.get('/api/agents/:id/conversations/:conversation/tasks', async (c) => {
+	const x = await jobOf(c);
+	if (!x) return c.json({ error: 'No existe.' }, 404);
+	return c.json({
+		...(await flows.tasksOf(x.a.id, x.j.id)),
+		canEdit: x.a.person_id === c.get('me').id && x.j.status === 'open' && !x.j.is_default,
+	});
+});
+app.post('/api/agents/:id/conversations/:conversation/tasks', async (c) => {
+	const x = await jobOf(c);
+	if (!x) return c.json({ error: 'No existe.' }, 404);
+	if (x.a.person_id !== c.get('me').id) return c.json({ error: 'Sólo su dueño cambia las tareas.' }, 403);
+	try {
+		return c.json({
+			...(await flows.ownerEdit(x.a.id, x.j.id, await c.req.json().catch(() => ({})))),
+			canEdit: true,
+		});
+	} catch (err) {
+		return fail(c, err);
+	}
+});
+
+// Flujos (#18): its owner sees them; they answer its questions and may stop one. Shared people do not.
+app.get('/api/agents/:id/flows', async (c) => {
+	const a = await ownAgent(c);
+	if (!a) return c.json({ error: 'Sólo su dueño ve los flujos del agente.' }, 403);
+	return c.json({ flows: await flows.list(a.id) });
+});
+app.get('/api/agents/:id/flows/:fid', async (c) => {
+	const a = await ownAgent(c);
+	if (!a) return c.json({ error: 'Sólo su dueño ve los flujos del agente.' }, 403);
+	const d = await flows.detail(a.id, Number(c.req.param('fid')), Number(c.req.query('after') ?? 0));
+	return d ? c.json(d) : c.json({ error: 'Ese flujo no existe.' }, 404);
+});
+app.post('/api/agents/:id/flows/:fid/steps/:key/answer', async (c) => {
+	const a = await ownAgent(c);
+	if (!a) return c.json({ error: 'Sólo su dueño contesta las preguntas del flujo.' }, 403);
+	try {
+		await flows.answer(a.id, Number(c.req.param('fid')), c.req.param('key'), String((await c.req.json())?.texto ?? ''));
+		return c.json({ ok: true });
+	} catch (err) {
+		return fail(c, err);
+	}
+});
+app.post('/api/agents/:id/flows/:fid/stop', async (c) => {
+	const a = await ownAgent(c);
+	if (!a) return c.json({ error: 'Sólo su dueño detiene los flujos del agente.' }, 403);
+	try {
+		await flows.stop(a.id, Number(c.req.param('fid')));
+		return c.json({ ok: true });
+	} catch (err) {
+		return fail(c, err);
+	}
+});
+
+// Encargos (#18): what each one of the agent's did, for its owner.
+app.get('/api/agents/:id/delegations', async (c) => {
+	const a = await ownAgent(c);
+	if (!a) return c.json({ error: 'Sólo su dueño ve los encargos del agente.' }, 403);
+	const conversation = Number(c.req.query('conversation')) || undefined;
+	return c.json({ delegations: await delegations.list(a.id, conversation) });
+});
+app.get('/api/agents/:id/delegations/:did', async (c) => {
+	const a = await ownAgent(c);
+	if (!a) return c.json({ error: 'Sólo su dueño ve los encargos del agente.' }, 403);
+	const d = await delegations.detail(a.id, Number(c.req.param('did')));
+	return d ? c.json({ delegation: d }) : c.json({ error: 'Ese encargo no existe.' }, 404);
+});
+app.post('/api/agents/:id/delegations/:did/stop', async (c) => {
+	const a = await ownAgent(c);
+	if (!a) return c.json({ error: 'Sólo su dueño detiene los encargos del agente.' }, 403);
+	try {
+		await delegations.stop(a.id, Number(c.req.param('did')));
+		return c.json({ delegation: await delegations.detail(a.id, Number(c.req.param('did'))) });
+	} catch (err) {
+		return fail(c, err);
+	}
+});
+
 app.put('/api/agents/:id/channels/whatsapp/contacts', async (c) => {
 	const a = await ownAgent(c);
 	if (!a) return c.json({ error: 'Sólo el dueño decide quién le escribe a su agente.' }, 403);
@@ -1110,6 +1523,15 @@ app.post('/api/agents/:id/conversations/:conversation/messages', async (c) => {
 		return c.json({ error: 'Escribe un mensaje de hasta 4000 caracteres o adjunta un archivo.' }, 400);
 	try {
 		const key = conversations.requestKey(body.requestId);
+		// /terminar: its owner (or whoever it is for) ends the trabajo; nothing reaches the agent.
+		if (/^\/terminar\b/i.test(body.text.trim())) {
+			const j = await jobs.get(id);
+			if (!j || j.is_default) throw new Error('Esta conversación (Principal) no es un trabajo: no se termina.');
+			if (a.person_id !== c.get('me').id && j.person_id !== c.get('me').id)
+				throw new Error('Sólo su dueño o quien lo pidió da por terminado un trabajo.');
+			if (!(await jobs.closeByPerson(id, c.get('me').name))) throw new Error('Este trabajo ya había terminado.');
+			return c.json({ ok: true, closed: true });
+		}
 		if (body.replyTo !== undefined) {
 			if (attachments.length)
 				throw new Error('Responde la pregunta sin adjuntos y manda los archivos en un mensaje aparte.');

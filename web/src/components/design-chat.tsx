@@ -1,4 +1,5 @@
 import { createContext, useContext, useEffect, useId, useLayoutEffect, useMemo, useRef, useState } from 'react';
+import { GoalModeNote } from '@/components/goal-mode';
 import {
 	AssistantRuntimeProvider,
 	ComposerPrimitive,
@@ -177,18 +178,24 @@ const FilesContext = createContext<{
 	designId: string;
 	files: (Design['messages'][number]['attachments'] | undefined)[];
 } | null>(null);
-// The designer reads images and text files; other formats are refused before sending.
+// The designer reads images, PDFs, Word files (.docx) and text files; other formats are refused before sending
+// (the server reads a document's text; a scanned PDF or an old .doc it refuses with what to do).
+const DOCX = 'application/vnd.openxmlformats-officedocument.wordprocessingml.document';
 const DESIGN_FILES = {
 	files: 4,
-	fileBytes: 5 * 1024 * 1024,
+	fileBytes: 10 * 1024 * 1024,
 	totalBytes: 20 * 1024 * 1024,
-	accept: 'image/png,image/jpeg,image/gif,image/webp,text/*,.md,.csv,.tsv,.json,.yaml,.yml,.xml,.log',
+	accept: `image/png,image/jpeg,image/gif,image/webp,application/pdf,.pdf,${DOCX},.docx,text/*,.md,.csv,.tsv,.json,.yaml,.yml,.xml,.log`,
 	allow: (f: File) =>
 		/^image\/(png|jpeg|gif|webp)$/.test(f.type) ||
+		f.type === 'application/pdf' ||
+		f.type === DOCX ||
+		/\.(pdf|docx)$/i.test(f.name) ||
 		f.type.startsWith('text/') ||
 		f.type === 'application/json' ||
 		/\.(txt|md|markdown|csv|tsv|json|ya?ml|xml|html?|log)$/i.test(f.name),
-	rejectMessage: 'El diseñador lee imágenes (png, jpg, gif, webp) y archivos de texto (txt, md, csv, json…).',
+	rejectMessage:
+		'El diseñador lee imágenes (png, jpg, gif, webp), PDF, Word (.docx) y archivos de texto (txt, md, csv, json…). Un Word antiguo (.doc): guárdalo como .docx o PDF.',
 };
 
 function ArtifactCard() {
@@ -733,8 +740,8 @@ function DesignWorkspace(
 					</ComposerPrimitive.Root>
 				</ComposerPrimitive.TriggerPopoverRoot>
 				<p className="mt-2 text-center text-2xs text-muted-foreground">
-					{agent ? 'Escribe @ para citar un trabajo o una conversación anterior. ' : ''}Tu cuenta GPT · Nada se aplica
-					sin tu aprobación.
+					{agent ? 'Escribe @ para citar un turno o un trabajo anterior. ' : ''}Tu cuenta GPT · Nada se aplica sin tu
+					aprobación.
 				</p>
 			</div>
 		</ThreadPrimitive.Root>
@@ -775,8 +782,8 @@ function DesignWorkspace(
 						</TooltipTrigger>
 						<TooltipContent className="max-w-72">
 							Contrato largo: pasa de los {CONTRACT_RECOMMENDED.toLocaleString('es-MX')} caracteres recomendados.
-							Funciona igual, pero cada trabajo lo carga completo (más tokens y costo). Para acortarlo, pídele en el
-							chat que lo condense o que pase procedimientos largos a una skill.
+							Funciona igual, pero cada turno lo carga completo (más tokens y costo). Para acortarlo, pídele en el chat
+							que lo condense o que pase procedimientos largos a una skill.
 						</TooltipContent>
 					</Tooltip>
 				)}
@@ -828,6 +835,7 @@ function DesignWorkspace(
 								viewportProps={{ tabIndex: 0, 'aria-label': 'Contenido del harness' }}
 							>
 								<div className="designer-preview-content">
+									<GoalModeNote proposed={design.goal_mode} current={agent?.goal_mode} />
 									<HarnessPanel
 										value={design.harness}
 										accesses={design.accessSuggestions}
@@ -926,7 +934,7 @@ function DesignWorkspace(
 									: agent && !props.canApply
 										? 'Para aplicarla, termina o cancela la corrida activa.'
 										: agent
-											? 'Aprueba contrato, modelo, harness y horarios. Se aplican en corridas nuevas; conservan conversación y memoria. No conceden accesos de plataforma.'
+											? 'Aprueba contrato, modelo, harness y horarios. Se aplican en corridas nuevas; conservan conversación y aprendizajes. No conceden accesos de plataforma.'
 											: 'Prueba y aprueba contrato, modelo, harness y horarios antes de inicializar. Conversar o probar no crea un agente.'}
 					</TooltipContent>
 				</Tooltip>

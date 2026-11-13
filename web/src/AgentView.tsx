@@ -7,6 +7,7 @@
 // A file (#/agent/:id/artifact/…) opens in a drawer over whichever of the first two it came from.
 import { lazy, Suspense, useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import {
+	ago,
 	api,
 	isLive,
 	type Agent,
@@ -18,33 +19,38 @@ import {
 	type Task,
 	type TaskEvent,
 } from './api';
-import { AgentHeader, AutomejoraLink } from '@/components/agent-header';
+import { AutomejoraLink } from '@/components/agent-header';
 import { Browser } from './Browser';
-import { onEvent, onTask, useConnected, useTick, useWatch } from './live';
+import { onEvent, onTask, useConnected, useFrame, useTick, useWatch } from './live';
 import { directsTask } from './lib/work-access';
 import { AgentSettings } from './AgentSettings';
 import {
+	BookMarked,
 	Bot,
+	Briefcase,
+	ChevronDown,
+	ChevronRight,
 	Compass,
+	Computer,
+	Files,
 	Globe,
 	Hand,
 	KeyRound,
 	ListChecks,
 	MessageSquareText,
-	Pencil,
-	Plus,
-	type LucideIcon,
-	PanelRightClose,
-	ChevronDown,
-	Computer,
+	MessagesSquare,
 	Monitor,
 	MonitorPlay,
-	Power,
+	PanelRightClose,
 	PanelRightOpen,
+	Pencil,
+	Plus,
+	Power,
 	RotateCw,
 	Square,
 	Terminal as TerminalIcon,
 	TriangleAlert,
+	type LucideIcon,
 } from 'lucide-react';
 import { ResizableHandle, ResizablePanel, ResizablePanelGroup } from '@/components/ui/resizable';
 import { ScrollArea } from '@/components/ui/scroll-area';
@@ -62,7 +68,12 @@ import { WorkChat } from '@/components/work-chat';
 import { useWorkConversations } from '@/lib/use-work-conversations';
 import { ArtifactCards, ArtifactDrawer, ArtifactMarkdown, type ArtifactTarget } from '@/components/artifacts';
 import { IconButton } from '@/components/actions';
-import { ChatHistory, HubComposer, RecentFiles, WorkFooter } from '@/components/agent-hub';
+import { HubStage, JobGallery, RecentFiles, StreamInfo, WorkFooter } from '@/components/agent-hub';
+import { AgentLessons } from '@/components/agent-lessons';
+import { JobHub, type JobTab } from '@/components/job-hub';
+import { AgentChats } from '@/components/agent-chats';
+import { Character } from '@/Character';
+import { stateOf } from '@/Gallery';
 import { ConversationMenu } from '@/components/conversation-menu';
 import { HeaderSlot } from '@/components/header-slot';
 import { crewOf, usePeople } from '@/lib/use-people';
@@ -74,7 +85,13 @@ import { useComputerUpdate } from '@/components/computer-update';
 
 type Tab = 'browser' | 'desktop' | 'activity' | 'terminal' | 'answer';
 // 'browser' is the computer's focused view: its browser, terminal or desktop (Resource).
-type Mode = 'hub' | 'chat' | 'browser' | 'improve';
+type Mode = 'hub' | 'chat' | 'job' | 'browser' | 'improve' | 'whatsapp';
+const JOB_TAB_LABEL: Record<JobTab, string> = {
+	flujo: 'Flujo',
+	saga: 'Saga',
+	conversaciones: 'Conversaciones',
+	encargos: 'Encargos',
+};
 type Resource = 'browser' | 'terminal' | 'desktop';
 const RESOURCES: Record<Resource, { label: string; hint: string; icon: LucideIcon }> = {
 	browser: { label: 'Navegador', hint: 'Iniciar sesión o guardar métodos de pago', icon: Globe },
@@ -105,6 +122,12 @@ export function AgentView({
 	designId,
 	chatId,
 	computer,
+	jobId,
+	jobTab,
+	jobItem,
+	jobChat,
+	whatsapp = false,
+	whatsappChat,
 	onRoute,
 	artifact = null,
 }: {
@@ -120,7 +143,16 @@ export function AgentView({
 	/** #/agent/:id/browser|terminal|desktop: that resource of its computer, as big as the page allows. */
 	computer?: Resource;
 	artifact?: ArtifactTarget | null;
-	/** Goes to another view of this agent: '' (hub), '/chat/<id>', '/browser', '/improve[/<draft>]'. */
+	/** #/agent/:id/job/:conversation[/flujo|saga|conversaciones|encargos[/:item]]: a trabajo's hub. */
+	jobId?: number;
+	jobTab?: JobTab;
+	jobItem?: number;
+	/** #/agent/:id/job/:conversation/conversaciones/<chat>: that chat of the trabajo's Conversaciones. */
+	jobChat?: string;
+	/** #/agent/:id/whatsapp[/<chat>]: its Conversaciones, all of its WhatsApp chats. */
+	whatsapp?: boolean;
+	whatsappChat?: string;
+	/** Goes to another view of this agent: '' (hub), '/chat/<id>', '/job/<id>', '/browser', '/improve[/<draft>]'. */
 	onRoute: (suffix: string) => void;
 }) {
 	useTick(1000);
@@ -133,21 +165,36 @@ export function AgentView({
 
 	// The view under an open file is the one it was opened from.
 	const routed = {
-		mode: (improving ? 'improve' : computer ? 'browser' : chatId ? 'chat' : 'hub') as Mode,
+		mode: (improving
+			? 'improve'
+			: computer
+				? 'browser'
+				: chatId
+					? 'chat'
+					: jobId
+						? 'job'
+						: whatsapp
+							? 'whatsapp'
+							: 'hub') as Mode,
 		chatId,
+		jobId,
 		resource: computer ?? 'browser',
 	};
 	const lastView = useRef(routed);
 	if (!artifact) lastView.current = routed;
-	const { mode, chatId: openChat, resource } = artifact ? lastView.current : routed;
-	const suffixOf = (v: { mode: Mode; chatId?: number; resource?: Resource }) =>
+	const { mode, chatId: openChat, resource, jobId: openJob } = artifact ? lastView.current : routed;
+	const suffixOf = (v: { mode: Mode; chatId?: number; jobId?: number; resource?: Resource }) =>
 		v.mode === 'chat'
 			? `/chat/${v.chatId}`
-			: v.mode === 'improve'
-				? '/improve'
-				: v.mode === 'browser'
-					? `/${v.resource ?? 'browser'}`
-					: '';
+			: v.mode === 'job'
+				? `/job/${v.jobId}`
+				: v.mode === 'improve'
+					? '/improve'
+					: v.mode === 'browser'
+						? `/${v.resource ?? 'browser'}`
+						: v.mode === 'whatsapp'
+							? '/whatsapp'
+							: '';
 
 	const [improvementVisited, setImprovementVisited] = useState(improving);
 	const [lastDraftId, setLastDraftId] = useState(designId);
@@ -211,6 +258,7 @@ export function AgentView({
 	}, [openChat, mode]);
 	const chat = mode === 'chat' ? conversations.find((c) => c.id === openChat) : undefined;
 	const missingChat = mode === 'chat' && conversationsLoaded && !chat;
+	const jobOpen = mode === 'job' ? conversations.find((c) => c.id === openJob && !c.is_default) : undefined;
 	useEffect(() => {
 		if (!chat) return;
 		// A closed chat reopens when its owner (or someone it is shared with) opens it, like picking a
@@ -265,7 +313,7 @@ export function AgentView({
 		api(`/tasks/${taskId}`)
 			.then((r) => {
 				if (!alive) return;
-				if (r.task?.id !== taskId || r.task.agent_id !== agent.id) throw new Error('No se pudo cargar este trabajo.');
+				if (r.task?.id !== taskId || r.task.agent_id !== agent.id) throw new Error('No se pudo cargar este turno.');
 				setTask((t) => (t?.id === taskId && !isLive(t) && isLive(r.task) ? t : r.task));
 				setEvents((es) => merge(r.events, es));
 				setFiles(r.artifacts);
@@ -528,7 +576,7 @@ export function AgentView({
 				<div role="alert" className="error mb-3">
 					{detailError}{' '}
 					<Button size="sm" variant="outline" onClick={() => setRefresh((v) => v + 1)}>
-						Reintentar trabajo
+						Reintentar turno
 					</Button>
 				</div>
 			)}
@@ -541,7 +589,7 @@ export function AgentView({
 				className="agent-tabs"
 			>
 				<div className="work-toolbar">
-					<TabsList aria-label="Detalle del trabajo">
+					<TabsList aria-label="Detalle del turno">
 						{(Object.keys(TABS) as Tab[])
 							.filter((t) => t !== 'desktop' || computerOn)
 							.map((t) => {
@@ -581,7 +629,7 @@ export function AgentView({
 					<TabsContent value="answer" forceMount hidden={tab !== 'answer'}>
 						<ScrollArea
 							className="work-content-scroll"
-							viewportProps={{ tabIndex: 0, 'aria-label': 'Respuesta del trabajo' }}
+							viewportProps={{ tabIndex: 0, 'aria-label': 'Respuesta del turno' }}
 						>
 							<div className="work-content">
 								<Answer task={shownTask} files={task?.id === taskId ? files : []} />
@@ -613,27 +661,6 @@ export function AgentView({
 				request={iconOnly ? null : settingsRequest}
 			/>
 		);
-	const header = (
-		<AgentHeader
-			agent={{ ...agent, task: agentTask }}
-			settings={settings}
-			mine={mine}
-			onBack={mode === 'improve' ? () => onRoute('') : onBack}
-			backLabel={mode === 'improve' ? `Volver a ${agent.name}` : 'Volver a agentes'}
-			people={crewOf(agent, people)}
-			onShare={mine ? () => setSettingsRequest({ section: 'share', at: Date.now() }) : undefined}
-		>
-			{computerMenu}
-			{mine && (
-				<AutomejoraLink
-					agentId={agent.id}
-					active={mode === 'improve'}
-					designId={mode === 'improve' ? designId : lastDraftId}
-				/>
-			)}
-			{settingsButton(false)}
-		</AgentHeader>
-	);
 	const errors = actionError && (
 		<p role="alert" className="error agent-view-error">
 			{actionError}
@@ -689,6 +716,81 @@ export function AgentView({
 		if (showPanel) setPeekClosed(false);
 	}, [showPanel]);
 	useEffect(() => setPeekClosed(false), [openChat, baseTask?.id]);
+	// ---------- the hub's stage: what the current work does now, with no tabs ----------
+	const frameNow = useFrame(agent.id);
+	const stageView: Tab = driving
+		? 'browser'
+		: live
+			? usingBrowser
+				? 'browser'
+				: ranCommands
+					? 'terminal'
+					: 'activity'
+			: browserActive
+				? 'browser'
+				: shownTask?.answer
+					? 'answer'
+					: ranCommands
+						? 'terminal'
+						: 'activity';
+	const stageFrame = frameNow && frameNow.taskId === (driving ? liveAgent!.id : taskId) ? frameNow.jpeg : null;
+	const stageBackdrop =
+		stageView === 'browser' ? (live || driving ? stageFrame : (shot?.data?.jpeg ?? stageFrame)) : null;
+	const stageJob = conversations.find((c) => c.id === shownTask?.conversation_id) ?? null;
+	const stageHref =
+		driving || !shownTask
+			? undefined
+			: shownTask.kind === 'browser'
+				? `#/agent/${agent.id}/browser`
+				: `#/agent/${agent.id}/chat/${shownTask.conversation_id}`;
+	const stageBody =
+		!shownTask && !driving ? (
+			<div className="hub-stage-idle">
+				<Character seed={agent.seed} state={stateOf(agent)} size={96} />
+				<p>Sin trabajo todavía</p>
+			</div>
+		) : stageView === 'browser' ? (
+			browserPane
+		) : stageView === 'terminal' ? (
+			<Terminal events={peekEvents} />
+		) : stageView === 'answer' ? (
+			<ScrollArea className="work-content-scroll" viewportProps={{ 'aria-label': 'Respuesta del turno' }}>
+				<div className="work-content">
+					<Answer task={shownTask} files={task?.id === taskId ? files : []} />
+				</div>
+			</ScrollArea>
+		) : (
+			<Activity events={peekEvents} />
+		);
+	// «Nuevo trabajo»: a new conversation, opened to write in. An empty one already open is reused.
+	const [creating, setCreating] = useState(false);
+	const newJob = () =>
+		void action(async () => {
+			const empty = conversations.find((c) => !c.is_default && c.status === 'open' && !c.runs && !c.live);
+			if (empty) return onRoute(`/chat/${empty.id}`);
+			setCreating(true);
+			try {
+				const { conversation } = await api<{ conversation: Conversation }>(`/agents/${agent.id}/conversations`, {
+					method: 'POST',
+					body: { requestId: crypto.randomUUID() },
+				});
+				setConversations((cs) => [conversation, ...cs.filter((x) => x.id !== conversation.id)]);
+				onRoute(`/chat/${conversation.id}`);
+			} finally {
+				setCreating(false);
+			}
+		});
+	const [hubTab, setHubTab] = useState<'jobs' | 'files' | 'memory'>('jobs');
+	const principal = conversations.find((c) => c.is_default);
+	/** The conversation with the agent, pinned on top of Conversaciones. */
+	const pinnedOf = (c: Conversation) => ({
+		href: `#/agent/${agent.id}/chat/${c.id}`,
+		title: c.is_default ? 'Conversación principal' : 'Con el agente',
+		sub: `${c.is_default ? `Con ${agent.name}` : c.title}${c.last_at ? ` · ${ago(c.last_at)}` : ''}`,
+		principal: c.is_default,
+		live: !!c.live,
+		origin: c.origin,
+	});
 	const page = chatReady ? conversationState.pages[openChat!] : undefined;
 	const latest = page?.records?.[page.records.length - 1];
 	useEffect(() => {
@@ -697,41 +799,218 @@ export function AgentView({
 	}, [compact, openChat]);
 
 	return (
-		<div className={`page agent-view${mode === 'improve' ? ' is-improving' : ''}`} data-view={mode}>
+		<div
+			className={`page agent-view${mode === 'improve' ? ' is-improving' : ''}`}
+			// A trabajo's Conversaciones is laid out as the agent's: edge to edge.
+			data-view={mode === 'job' && jobTab === 'conversaciones' && mine ? 'whatsapp' : mode}
+		>
 			{computerUpdate.dialog}
 			{mode === 'hub' && (
 				<div className="agent-hub">
-					{header}
+					<HubStage
+						backdrop={stageBackdrop}
+						surface={stageView === 'browser' || stageView === 'terminal' ? 'dark' : 'card'}
+						href={stageHref}
+						label={stageJob && !stageJob.is_default ? `Abrir el trabajo #${stageJob.id}` : 'Abrir el trabajo'}
+						view={TABS[stageView].label}
+						live={live || driving}
+					>
+						{stageBody}
+					</HubStage>
 					{errors}
-					<section className="current-work" aria-label="Trabajo actual">
-						{workPanels(workActions(false), true)}
-					</section>
-					<HubComposer
-						agent={agent}
-						canUse={canUse}
-						hint={
-							busyWith
-								? `Ocupado con la tarea de ${busyWith}: tu chat nuevo esperará a que termine.`
-								: liveAgent && liveAgent.kind !== 'browser'
-									? 'El agente está trabajando: tu chat nuevo esperará su turno.'
-									: undefined
-						}
-						onSent={(c) => {
-							setConversations((cs) => [c, ...cs.filter((x) => x.id !== c.id)]);
-							onRoute(`/chat/${c.id}`);
-						}}
-					/>
-					<ChatHistory
-						agentId={agent.id}
-						conversations={conversations}
-						loading={listLoading}
-						error={listError}
-						onRetry={() => setListVersion((v) => v + 1)}
+					{detailError && (
+						<div role="alert" className="error">
+							{detailError}{' '}
+							<Button size="sm" variant="outline" onClick={() => setRefresh((v) => v + 1)}>
+								Reintentar turno
+							</Button>
+						</div>
+					)}
+					<StreamInfo
+						agent={{ ...agent, task: agentTask }}
+						settings={settings}
 						mine={mine}
-						onChanged={() => setListVersion((v) => v + 1)}
+						task={shownTask ?? null}
+						job={stageJob}
+						live={live || driving}
+						onBack={onBack}
+						people={crewOf(agent, people)}
+						onShare={mine ? () => setSettingsRequest({ section: 'share', at: Date.now() }) : undefined}
+						actions={
+							<>
+								{computerMenu}
+								{mine && <AutomejoraLink agentId={agent.id} designId={lastDraftId} />}
+								{settingsButton(false)}
+								<Button
+									size="sm"
+									className="stream-new-job"
+									onClick={newJob}
+									disabled={!canUse || creating}
+									aria-label="Nuevo trabajo"
+									title={
+										canUse ? 'Abrir un trabajo nuevo' : 'Sólo su dueño y quienes lo tienen compartido le dan trabajo.'
+									}
+								>
+									<Plus aria-hidden="true" />
+									<span className="agent-action-label">Nuevo trabajo</span>
+								</Button>
+							</>
+						}
+						workActions={workActions(false)}
 					/>
-					<RecentFiles agentId={agent.id} version={filesVersion} />
+					<Tabs value={hubTab} onValueChange={(v) => setHubTab(v as 'jobs' | 'files' | 'memory')} className="hub-tabs">
+						<div className="hub-tabs-bar">
+							<TabsList aria-label="Del agente">
+								<TabsTrigger value="jobs">
+									<Briefcase aria-hidden="true" />
+									Trabajos
+								</TabsTrigger>
+								<TabsTrigger value="files">
+									<Files aria-hidden="true" />
+									Artefactos
+								</TabsTrigger>
+								{mine && (
+									<TabsTrigger value="memory">
+										<BookMarked aria-hidden="true" />
+										Aprendizajes
+									</TabsTrigger>
+								)}
+							</TabsList>
+							{(mine || principal) && (
+								<a
+									href={`#/agent/${agent.id}${principal ? `/chat/${principal.id}` : '/whatsapp'}`}
+									className="job-eval hub-main-link"
+								>
+									<MessagesSquare className="size-3.5 shrink-0" aria-hidden="true" />
+									Conversaciones
+									<ChevronRight className="job-eval-arrow" aria-hidden="true" />
+								</a>
+							)}
+						</div>
+						<TabsContent value="jobs">
+							<JobGallery
+								agentId={agent.id}
+								conversations={conversations}
+								loading={listLoading}
+								error={listError}
+								onRetry={() => setListVersion((v) => v + 1)}
+								mine={mine}
+								onChanged={() => setListVersion((v) => v + 1)}
+							/>
+						</TabsContent>
+						<TabsContent value="files">
+							<RecentFiles agentId={agent.id} version={filesVersion} limit={48} />
+						</TabsContent>
+						{mine && (
+							<TabsContent value="memory">
+								<AgentLessons agentId={agent.id} mine={mine} />
+							</TabsContent>
+						)}
+					</Tabs>
 				</div>
+			)}
+			{mode === 'job' && (
+				<>
+					<HeaderSlot>
+						<nav aria-label="Ruta" className="flex min-w-0 items-center gap-1 text-sm">
+							<a href={`#/agent/${agent.id}`} className="breadcrumb-link">
+								{agent.name}
+							</a>
+							<span className="text-muted-foreground" aria-hidden="true">
+								/
+							</span>
+							{jobTab ? (
+								<>
+									<a href={`#/agent/${agent.id}/job/${openJob}`} className="breadcrumb-link">
+										Trabajo #{openJob}
+									</a>
+									<span className="text-muted-foreground" aria-hidden="true">
+										/
+									</span>
+									{jobTab === 'encargos' && jobItem ? (
+										<>
+											<a href={`#/agent/${agent.id}/job/${openJob}/encargos`} className="breadcrumb-link">
+												Encargos
+											</a>
+											<span className="text-muted-foreground" aria-hidden="true">
+												/
+											</span>
+											<span className="truncate">Encargo #{jobItem}</span>
+										</>
+									) : (
+										<span className="truncate">{JOB_TAB_LABEL[jobTab]}</span>
+									)}
+								</>
+							) : (
+								<span className="truncate">Trabajo #{openJob}</span>
+							)}
+						</nav>
+					</HeaderSlot>
+					{errors}
+					<div className={jobTab === 'conversaciones' && mine ? 'agent-chats-page' : 'agent-hub'}>
+						{jobOpen && jobTab === 'conversaciones' && mine ? (
+							<AgentChats
+								agentId={agent.id}
+								agentName={agent.name}
+								conversationId={jobOpen.id}
+								chat={jobChat}
+								onChat={(c) => onRoute(`/job/${jobOpen.id}/conversaciones${c ? `/${c}` : ''}`)}
+								pinned={pinnedOf(jobOpen)}
+							/>
+						) : jobOpen ? (
+							<JobHub
+								agentId={agent.id}
+								agentName={agent.name}
+								conversation={jobOpen}
+								mine={mine}
+								tab={jobTab}
+								item={jobItem}
+								onRoute={onRoute}
+								onChanged={() => setListVersion((v) => v + 1)}
+							/>
+						) : conversationsLoaded ? (
+							<p className="muted">
+								Ese trabajo no existe.{' '}
+								<a href={`#/agent/${agent.id}`} className="underline">
+									Volver a {agent.name}
+								</a>
+							</p>
+						) : (
+							<p role="status" className="muted small">
+								Cargando trabajo…
+							</p>
+						)}
+					</div>
+				</>
+			)}
+			{mode === 'whatsapp' && (
+				<>
+					<HeaderSlot>
+						<nav aria-label="Ruta" className="flex min-w-0 items-center gap-1 text-sm">
+							<a href={`#/agent/${agent.id}`} className="breadcrumb-link">
+								{agent.name}
+							</a>
+							<span className="text-muted-foreground" aria-hidden="true">
+								/
+							</span>
+							<span className="truncate">Conversaciones</span>
+						</nav>
+					</HeaderSlot>
+					{errors}
+					<div className="agent-chats-page">
+						{mine ? (
+							<AgentChats
+								agentId={agent.id}
+								agentName={agent.name}
+								chat={whatsappChat}
+								onChat={(c) => onRoute(`/whatsapp${c ? `/${c}` : ''}`)}
+								pinned={principal ? pinnedOf(principal) : undefined}
+							/>
+						) : (
+							<p className="muted">Sólo su dueño ve sus conversaciones de WhatsApp.</p>
+						)}
+					</div>
+				</>
 			)}
 			{mode === 'chat' && (
 				<>
@@ -743,6 +1022,17 @@ export function AgentView({
 							<span className="text-muted-foreground" aria-hidden="true">
 								/
 							</span>
+							{/* A trabajo's conversation: under the trabajo it belongs to (the Principal is none). */}
+							{chat && !chat.is_default && (
+								<>
+									<a href={`#/agent/${agent.id}/job/${chat.id}`} className="breadcrumb-link shrink-0">
+										Trabajo #{chat.id}
+									</a>
+									<span className="text-muted-foreground" aria-hidden="true">
+										/
+									</span>
+								</>
+							)}
 							<ConversationMenu
 								agentId={agent.id}
 								conversation={chat}
@@ -771,143 +1061,169 @@ export function AgentView({
 						</div>
 					</HeaderSlot>
 					{errors}
-					<div ref={chatView} className="chat-view" data-panel={showPanel} data-compact={compact}>
-						{hasWork && !showPanel && !missingChat && !compact && (
-							// Where the panel's own close button was: open it again from the same spot.
-							<IconButton
-								icon={PanelRightOpen}
-								label="Mostrar el trabajo"
-								aria-expanded={false}
-								className="panel-reopen"
-								onClick={() => setPanelOpen(true)}
-							/>
-						)}
-						{hasWork && !showPanel && !missingChat && !peekClosed && (
-							// The work panel is hidden: a small live view, top right (or where it was dragged); it opens the
-							// panel. The browser when the work uses it; otherwise its latest activity.
-							<WorkPeek container={chatView} onOpen={() => setPanelOpen(true)} onClose={() => setPeekClosed(true)}>
-								{usingBrowser ? (
-									<Browser
-										compact
-										agentId={agent.id}
-										taskId={driving ? liveAgent!.id : taskId}
-										live={driving || live}
-										snapshot={shot?.data}
-										loading={shot?.loading}
-										error={shot?.error}
+					{(() => {
+						const view = (
+							<div ref={chatView} className="chat-view" data-panel={showPanel} data-compact={compact}>
+								{hasWork && !showPanel && !missingChat && !compact && (
+									// Where the panel's own close button was: open it again from the same spot.
+									<IconButton
+										icon={PanelRightOpen}
+										label="Mostrar el turno"
+										aria-expanded={false}
+										className="panel-reopen"
+										onClick={() => setPanelOpen(true)}
 									/>
-								) : (
-									<PeekActivity events={peekEvents} live={live} />
 								)}
-							</WorkPeek>
-						)}
-						{missingChat ? (
-							<div className="empty">
-								<p>Ese chat no existe o ya no es de este agente.</p>
-								<Button variant="outline" size="sm" className="mt-3" onClick={() => onRoute('')}>
-									Ver sus chats
-								</Button>
-							</div>
-						) : (
-							(() => {
-								const chatPane = (
-									<div className="chat-pane">
-										{chat && chatReady ? (
-											<WorkChat
-												key={chat.id}
-												agent={{ ...agent, mine: canUse }}
-												busyWith={busyWith}
-												directs={directs}
-												conversation={chat}
-												records={page?.records ?? []}
-												inputs={page?.inputs ?? []}
-												waitingForComputer={isLive(agentTask) && agentTask?.conversation_id !== chat.id}
-												task={latest?.task ?? null}
-												events={latest?.events ?? []}
-												files={latest?.artifacts ?? []}
-												historical={false}
-												footer={baseTask ? footer : undefined}
-												composerActions={
-													hasWork && (
-														<Button
-															type="button"
-															variant="outline"
-															size="sm"
-															aria-label={showPanel ? 'Ocultar el trabajo' : 'Mostrar el trabajo'}
-															title={showPanel ? 'Ocultar el trabajo' : 'Mostrar el trabajo'}
-															aria-expanded={showPanel}
-															onClick={() => setPanelOpen((v) => !v)}
-														>
-															<span className="work-toggle-icon" data-live={live || undefined}>
-																<MonitorPlay aria-hidden="true" />
-															</span>
-															Trabajo
-															{live && <span className="sr-only">(trabajando)</span>}
-														</Button>
-													)
-												}
-												active={mode === 'chat' && !artifact && (!compact || !showPanel)}
-												loading={!page?.records && !page?.error}
-												loadError={page?.error}
-												hasEarlier={page?.hasEarlier}
-												onLoadEarlier={() => conversationState.load(chat.id, true)}
-												onRefresh={() => conversationState.load(chat.id)}
+								{hasWork && !showPanel && !missingChat && !peekClosed && (
+									// The work panel is hidden: a small live view, top right (or where it was dragged); it opens the
+									// panel. The browser when the work uses it; otherwise its latest activity.
+									<WorkPeek container={chatView} onOpen={() => setPanelOpen(true)} onClose={() => setPeekClosed(true)}>
+										{usingBrowser ? (
+											<Browser
+												compact
+												agentId={agent.id}
+												taskId={driving ? liveAgent!.id : taskId}
+												live={driving || live}
+												snapshot={shot?.data}
+												loading={shot?.loading}
+												error={shot?.error}
 											/>
 										) : (
-											<p role="status" className="muted p-4">
-												Cargando chat…
-											</p>
+											<PeekActivity events={peekEvents} live={live} />
 										)}
+									</WorkPeek>
+								)}
+								{missingChat ? (
+									<div className="empty">
+										<p>Ese chat no existe o ya no es de este agente.</p>
+										<Button variant="outline" size="sm" className="mt-3" onClick={() => onRoute('')}>
+											Ver sus chats
+										</Button>
 									</div>
-								);
-								const workPane = (
-									<div className="chat-work">
-										{workPanels(
-											<IconButton
-												icon={PanelRightClose}
-												label="Cerrar el trabajo"
-												onClick={() => setPanelOpen(false)}
-											/>,
-										)}
-									</div>
-								);
-								if (!hasWork) return chatPane;
-								// Narrow: the panel replaces the chat. Wide: it slides in and out beside it.
-								if (compact) return showPanel ? workPane : chatPane;
-								return (
-									<ResizablePanelGroup
-										orientation="horizontal"
-										className="chat-split slide-split"
-										data-animating={slide.animating}
-									>
-										<ResizablePanel id="chat-conversation" minSize="22rem">
-											{chatPane}
-										</ResizablePanel>
-										<ResizableHandle
-											withHandle
-											className="work-resize-handle"
-											hidden={!showPanel}
-											disabled={!showPanel}
-											aria-label="Redimensionar chat y trabajo"
-										/>
-										<ResizablePanel
-											id="chat-work"
-											panelRef={slide.ref}
-											defaultSize="55%"
-											minSize="30%"
-											collapsible
-											collapsedSize={0}
-											onResize={slide.onResize}
-										>
-											<div className="h-full min-w-0" inert={!showPanel} aria-hidden={!showPanel}>
-												{workPane}
+								) : (
+									(() => {
+										const chatPane = (
+											<div className="chat-pane">
+												{chat && chatReady ? (
+													<WorkChat
+														key={chat.id}
+														agent={{ ...agent, mine: canUse }}
+														busyWith={busyWith}
+														directs={directs}
+														conversation={chat}
+														records={page?.records ?? []}
+														inputs={page?.inputs ?? []}
+														waitingForComputer={isLive(agentTask) && agentTask?.conversation_id !== chat.id}
+														task={latest?.task ?? null}
+														events={latest?.events ?? []}
+														files={latest?.artifacts ?? []}
+														historical={false}
+														footer={baseTask ? footer : undefined}
+														composerActions={
+															hasWork && (
+																<Button
+																	type="button"
+																	variant="outline"
+																	size="sm"
+																	aria-label={showPanel ? 'Ocultar el turno' : 'Mostrar el turno'}
+																	title={showPanel ? 'Ocultar el turno' : 'Mostrar el turno'}
+																	aria-expanded={showPanel}
+																	onClick={() => setPanelOpen((v) => !v)}
+																>
+																	<span className="work-toggle-icon" data-live={live || undefined}>
+																		<MonitorPlay aria-hidden="true" />
+																	</span>
+																	Turno
+																	{live && <span className="sr-only">(trabajando)</span>}
+																</Button>
+															)
+														}
+														active={mode === 'chat' && !artifact && (!compact || !showPanel)}
+														loading={!page?.records && !page?.error}
+														loadError={page?.error}
+														hasEarlier={page?.hasEarlier}
+														onLoadEarlier={() => conversationState.load(chat.id, true)}
+														onRefresh={() => conversationState.load(chat.id)}
+													/>
+												) : (
+													<p role="status" className="muted p-4">
+														Cargando chat…
+													</p>
+												)}
 											</div>
-										</ResizablePanel>
-									</ResizablePanelGroup>
-								);
-							})()
-						)}
-					</div>
+										);
+										const workPane = (
+											<div className="chat-work">
+												{workPanels(
+													<IconButton
+														icon={PanelRightClose}
+														label="Ocultar el turno"
+														onClick={() => setPanelOpen(false)}
+													/>,
+												)}
+											</div>
+										);
+										if (!hasWork) return chatPane;
+										// Narrow: the panel replaces the chat. Wide: it slides in and out beside it.
+										if (compact) return showPanel ? workPane : chatPane;
+										return (
+											<ResizablePanelGroup
+												orientation="horizontal"
+												className="chat-split slide-split"
+												data-animating={slide.animating}
+											>
+												<ResizablePanel id="chat-conversation" minSize="22rem">
+													{chatPane}
+												</ResizablePanel>
+												<ResizableHandle
+													withHandle
+													className="work-resize-handle"
+													hidden={!showPanel}
+													disabled={!showPanel}
+													aria-label="Redimensionar chat y turno"
+												/>
+												<ResizablePanel
+													id="chat-work"
+													panelRef={slide.ref}
+													defaultSize="55%"
+													minSize="30%"
+													collapsible
+													collapsedSize={0}
+													onResize={slide.onResize}
+												>
+													<div className="h-full min-w-0" inert={!showPanel} aria-hidden={!showPanel}>
+														{workPane}
+													</div>
+												</ResizablePanel>
+											</ResizablePanelGroup>
+										);
+									})()
+								)}
+							</div>
+						);
+						// Its owner sees it among its WhatsApp chats (a trabajo's conversation, among the trabajo's); whoever
+						// it is shared with, alone.
+						if (!mine || !chat) return view;
+						const trabajo = chat.is_default ? undefined : chat.id;
+						return (
+							<div className="agent-chats-page">
+								<AgentChats
+									agentId={agent.id}
+									agentName={agent.name}
+									conversationId={trabajo}
+									onChat={(c) =>
+										onRoute(
+											trabajo ? `/job/${trabajo}/conversaciones${c ? `/${c}` : ''}` : `/whatsapp${c ? `/${c}` : ''}`,
+										)
+									}
+									pinned={pinnedOf(chat)}
+									pinnedOpen
+								>
+									{view}
+								</AgentChats>
+							</div>
+						);
+					})()}
 				</>
 			)}
 			{mode === 'browser' && (
@@ -1079,7 +1395,7 @@ function Activity({ events }: { events: TaskEvent[] }) {
 	return (
 		<ScrollArea
 			className="work-content-scroll"
-			viewportProps={{ ref, tabIndex: 0, 'aria-label': 'Actividad del trabajo' }}
+			viewportProps={{ ref, tabIndex: 0, 'aria-label': 'Actividad del turno' }}
 		>
 			<div className="log work-content">
 				{shown.map((e) => (
@@ -1239,7 +1555,7 @@ function Terminal({ events }: { events: TaskEvent[] }) {
 	return (
 		<ScrollArea
 			className="work-content-scroll work-terminal-scroll"
-			viewportProps={{ ref, tabIndex: 0, 'aria-label': 'Terminal del trabajo' }}
+			viewportProps={{ ref, tabIndex: 0, 'aria-label': 'Terminal del turno' }}
 		>
 			<div className="terminal work-content">
 				{blocks.flat().map((e) =>

@@ -30,24 +30,18 @@ export async function installAuthorized(plan, { work, env, run = exec }) {
 	const maxBytes = (plan.automatic ? 50 : 250) * 1024 * 1024,
 		timeout = plan.automatic ? 120000 : 300000;
 	// Do not pass granted tokens or the LLM gateway key to package installers.
-	// npm rejects loading the same file as both its user and global configuration.
-	const userConfig = join(staging, '.npm-user.conf'),
-		globalConfig = join(staging, '.npm-global.conf');
-	await writeFile(userConfig, '', { mode: 0o600 });
-	await writeFile(globalConfig, '', { mode: 0o600 });
-	const clean = {
-		HOME: env.HOME,
-		PATH: env.PATH,
-		LANG: 'C.UTF-8',
-		npm_config_userconfig: userConfig,
-		npm_config_globalconfig: globalConfig,
-		UV_NO_CONFIG: '1',
-	};
+	const clean = { HOME: env.HOME, PATH: env.PATH, LANG: 'C.UTF-8', UV_NO_CONFIG: '1' };
+	// Bun reads ~/.npmrc and ~/.bunfig.toml (registry tokens, scopes, preloads): it gets an empty home of its
+	// own, beside the staging directory so that its cache never counts as the installation.
+	const home = staging + '.home';
+	await rm(home, { recursive: true, force: true });
+	await mkdir(home);
+	const isolated = { ...clean, HOME: home, XDG_CONFIG_HOME: home, BUN_INSTALL_CACHE_DIR: join(home, 'cache') };
 	const started = Date.now();
-	const command = async (bin, args) => {
+	const command = async (bin, args, commandEnv = clean) => {
 		await run(bin, args, {
 			cwd: staging,
-			env: clean,
+			env: commandEnv,
 			timeout: Math.max(1, timeout - (Date.now() - started)),
 			maxBuffer: 1024 * 1024,
 		});
@@ -58,17 +52,19 @@ export async function installAuthorized(plan, { work, env, run = exec }) {
 			uv = plan.packages.filter((p) => p.kind === 'uv');
 		if (npm.length) {
 			await writeFile(join(staging, 'package.json'), JSON.stringify({ private: true }));
-			await command('npm', [
-				'install',
-				'--prefix',
-				staging,
-				'--ignore-scripts',
-				'--no-audit',
-				'--no-fund',
-				'--registry=https://registry.npmjs.org',
-				'--save-exact',
-				...npm.map((p) => p.spec),
-			]);
+			// Packages from the npm registry, installed with Bun (the computer has no Node.js nor npm).
+			await command(
+				'bun',
+				[
+					'add',
+					'--ignore-scripts',
+					'--exact',
+					'--no-progress',
+					'--registry=https://registry.npmjs.org',
+					...npm.map((p) => p.spec),
+				],
+				isolated,
+			);
 			for (const p of npm) {
 				const split = p.spec.lastIndexOf('@'),
 					name = p.spec.slice(0, split),
@@ -115,6 +111,7 @@ export async function installAuthorized(plan, { work, env, run = exec }) {
 		await writeFile(join(staging, 'installed.json'), JSON.stringify({ fingerprint, packages: plan.packages }));
 		await rm(dest, { recursive: true, force: true });
 		await rename(staging, dest);
+		await rm(home, { recursive: true, force: true });
 		return {
 			ok: true,
 			path: dest,
@@ -122,6 +119,7 @@ export async function installAuthorized(plan, { work, env, run = exec }) {
 		};
 	} catch {
 		await rm(staging, { recursive: true, force: true });
+		await rm(home, { recursive: true, force: true });
 		return {
 			ok: false,
 			error:

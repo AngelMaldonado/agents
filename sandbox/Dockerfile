@@ -1,6 +1,10 @@
-# A task's mini-computer: Linux, a shell, Chromium driven by agent-browser, and pi in RPC mode.
+# A task's mini-computer: Linux, a shell, Chromium driven by agent-browser, and pi in RPC mode, on Bun.
 # Dev (arm64, reko-2): just sandbox build. Prod (amd64) is built on reko-3 by the release.
-FROM node:24-bookworm-slim
+# Bun, not Node.js: the same runtime and version as the server (package.json packageManager).
+ARG BUN_VERSION=1.4.2
+FROM oven/bun:${BUN_VERSION}-slim AS bun
+
+FROM debian:bookworm-slim
 
 ENV DEBIAN_FRONTEND=noninteractive
 RUN apt-get update && apt-get install -y --no-install-recommends \
@@ -12,13 +16,29 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
       fonts-noto-color-emoji fonts-noto-cjk fonts-freefont-ttf fonts-liberation \
     && rm -rf /var/lib/apt/lists/*
 
-# Pinned: the backend speaks pi's RPC protocol and agent-browser's stream protocol.
+# Bun is the only JavaScript runtime. Third-party CLIs written for Node (a `#!/usr/bin/env node` shebang)
+# and MCP servers launched with `npx` still run: `node` and `npx` are Bun's stand-ins, last on the PATH
+# (the same fallback the official Bun images use). There is no npm: packages install with `bun add`.
+COPY --from=bun /usr/local/bin/bun /usr/local/bin/bun
+RUN ln -s /usr/local/bin/bun /usr/local/bin/bunx \
+    && mkdir -p /usr/local/bun-node-fallback-bin \
+    && ln -s /usr/local/bin/bun /usr/local/bun-node-fallback-bin/node \
+    && printf '#!/bin/sh\n# npx on Bun: bunx takes the same arguments (-y included).\nexec /usr/local/bin/bunx "$@"\n' > /usr/local/bun-node-fallback-bin/npx \
+    && chmod 0755 /usr/local/bun-node-fallback-bin/npx \
+    && bun --version
+ENV PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:/usr/local/bun-node-fallback-bin
+
+# Pinned: the backend speaks pi's RPC protocol and agent-browser's stream protocol. Bun's global packages
+# live in /usr/local/lib/bun-global (pi's dependencies hoisted there) with their commands in /usr/local/bin.
+# pi publishes Bun builds and smoke-tests Bun installs at every release; no lifecycle scripts run.
 ARG PI_VERSION=1.4.0
 LABEL io.cuby.agents.pi.version="${PI_VERSION}"
 ARG AGENT_BROWSER_VERSION=0.39.2
-RUN npm install -g --ignore-scripts @earendil-works/pi-coding-agent@${PI_VERSION} \
-    && npm install -g agent-browser@${AGENT_BROWSER_VERSION} \
-    && npm cache clean --force
+RUN BUN_INSTALL_GLOBAL_DIR=/usr/local/lib/bun-global BUN_INSTALL_BIN=/usr/local/bin BUN_INSTALL_CACHE_DIR=/tmp/bun-cache \
+      bun add -g --ignore-scripts --exact @earendil-works/pi-coding-agent@${PI_VERSION} agent-browser@${AGENT_BROWSER_VERSION} \
+    && rm -rf /tmp/bun-cache \
+    && chmod -R a+rX /usr/local/lib/bun-global \
+    && pi --version && agent-browser --version
 
 # Chrome for agent-browser, readable by the unprivileged user. Chrome for Testing has no Linux
 # arm64 build, so the arm64 image (dev on reko-2) uses Debian's Chromium; amd64 (prod) keeps Chrome.
@@ -74,8 +94,11 @@ RUN mkdir -p /opt/agents/owner-bin && ln -s /usr/local/bin/agents-pi /opt/agents
 RUN sed -i 's#<number>4</number>#<number>1</number>#; s#<file>/var/lib/openbox/debian-menu.xml</file>##' /etc/xdg/openbox/rc.xml \
     && cp /opt/agents/desktop/mimeapps.list /etc/xdg/mimeapps.list
 COPY supervisor.mjs self-maintenance.mjs harness*.mjs harness*.ts /opt/agents/
+# agent-browser as pi sees it (first in its PATH): it heals a lost tab and, in a simulated list of tasks,
+# intercepts clicks to pay.
+COPY --chmod=0755 browser-bin/ /opt/agents/browser-bin/
 # Resolve pi's pinned TypeBox/API dependencies for the platform-owned extension (no npm at runtime).
-RUN ln -s /usr/local/lib/node_modules/@earendil-works/pi-coding-agent/node_modules /opt/agents/node_modules
+RUN ln -s /usr/local/lib/bun-global/node_modules /opt/agents/node_modules && test -d /opt/agents/node_modules/typebox
 
 # --no-sandbox: the container is the sandbox (no new privileges, all capabilities dropped).
 # --no-proxy-server: Chrome browses directly; the egress proxy of API keys (#24) is only for pi's tools.
@@ -95,4 +118,4 @@ ENV AGENT_BROWSER_EXECUTABLE_PATH=/usr/local/bin/agents-chrome \
 
 USER agent
 WORKDIR /home/agent
-ENTRYPOINT ["tini", "--", "node", "/opt/agents/supervisor.mjs"]
+ENTRYPOINT ["tini", "--", "bun", "/opt/agents/supervisor.mjs"]

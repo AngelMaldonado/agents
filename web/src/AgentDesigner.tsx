@@ -354,7 +354,7 @@ export function AgentDesigner({
 				</div>
 				<p className="mt-4 text-xs text-muted-foreground">
 					La comprobación usa la cola y cuota normales. Al terminar se apaga esta computadora; las tareas arrancarán
-					otra sobre la misma memoria.
+					otra sobre el mismo espacio de trabajo y sus aprendizajes.
 				</p>
 			</div>
 		);

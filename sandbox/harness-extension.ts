@@ -26,9 +26,10 @@ export default function (pi: ExtensionAPI) {
 		content: [{ type: 'text' as const, text: typeof value === 'string' ? value : JSON.stringify(value) }],
 		details: {},
 	});
-	async function command(bin: string, args: string[], signal?: AbortSignal, timeout = 30000) {
+	async function command(bin: string, args: string[], signal?: AbortSignal, timeout = 30000, both = false) {
 		const r = await exec(bin, args, { signal, timeout, maxBuffer: 1024 * 1024, cwd: workspace });
-		return result(r.stdout || r.stderr || 'OK');
+		// `both`: what it printed and what it warned (the browser wrapper's «[Plataforma] …» notes go to stderr).
+		return result((both ? [r.stdout, r.stderr].filter((x) => x?.trim()).join('\n') : r.stdout || r.stderr) || 'OK');
 	}
 	// Platform capability, not an editable harness permission. It only diagnoses/proposes for this
 	// run; owner approval is checked by the backend. Never advertised to delegated subprocesses.
@@ -77,7 +78,8 @@ export default function (pi: ExtensionAPI) {
 		pi.registerTool({
 			name: 'request_help',
 			label: 'Pedir ayuda',
-			description: 'Comunicar un bloqueo o decisión y esperar respuesta humana.',
+			description:
+				'Pedir ayuda humana y esperar la respuesta, sólo si no puedes resolverlo tú: un paso que sólo un humano puede hacer (iniciar sesión, segundo factor, captcha), una decisión que tu contrato reserva a tu dueño y nadie te contestó, o un bloqueo tras intentar dos vías. Una pregunta breve, con opciones y tu recomendación.',
 			parameters: Type.Object({ reason: Type.String({ minLength: 1, maxLength: 2000 }) }),
 			execute: async (_id, p, signal) => command('agents-blocked', [p.reason], signal, 60 * 60 * 1000),
 		});
@@ -121,7 +123,7 @@ export default function (pi: ExtensionAPI) {
 			name: 'whatsapp_notify',
 			label: 'Avisar por WhatsApp',
 			description:
-				'Manda un aviso por el WhatsApp de este agente a contactos que su dueño habilitó (por su nombre, p. ej. "Cortez"), sólo como dice la sección «Avisos por WhatsApp» de tu contrato. Opcional: un archivo de ~/work/out (ruta relativa a ~/work, p. ej. "out/reporte.pdf"). La plataforma limita los avisos (3 por trabajo, 10 al día por persona) y no los manda de 22:00 a 7:00 salvo urgente. Devuelve a quién llegó y a quién no, y por qué.',
+				'Mensajes cortos (de una a tres líneas), en el tono de una persona, sólo con lo que le toca a ese contacto. Manda un aviso por el WhatsApp de este agente a contactos que su dueño habilitó, sólo como dice la sección «Avisos por WhatsApp» de tu contrato. Opcional: un archivo de ~/work/out (ruta relativa a ~/work, p. ej. "out/reporte.pdf"). Si un aviso queda programado, no lo repitas. Devuelve a quién llegó y a quién no, y por qué.',
 			parameters: Type.Object({
 				para: Type.Array(Type.String({ minLength: 1, maxLength: 80 }), { minItems: 1, maxItems: 10 }),
 				texto: Type.String({ minLength: 1, maxLength: 3500 }),
@@ -130,6 +132,54 @@ export default function (pi: ExtensionAPI) {
 			}),
 			execute: async (_id, p, signal) => command('agents-notify', [JSON.stringify(p)], signal, 95000),
 		});
+	if (h.tools.includes('delegations') && h.delegations?.length) {
+		const templates = h.delegations.map((t) => t.name);
+		const delegation = (op: string, p: unknown, signal?: AbortSignal) =>
+			command('agents-delegation', [op, JSON.stringify(p)], signal, 60000);
+		pi.registerTool({
+			name: 'delegation_start',
+			label: 'Lanzar encargo',
+			description: `Lanza un encargo: la plataforma conversa por WhatsApp con un contacto externo hacia el objetivo de la plantilla, con su propio contexto, y te devuelve los datos en esta conversación (los de este trabajo, juntos). Plantillas: ${templates.join(', ')}. contacto: su nombre en «Quién le escribe por WhatsApp». parametros: el valor de cada {parámetro} de la plantilla. contexto (opcional): lo que el encargo debe saber de tu trabajo; lo usa para conversar y sólo le comparte al contacto lo que su objetivo y sus reglas permiten. archivos (opcional, si la plantilla lo permite): rutas relativas a ~/work (p. ej. "out/pedido.pdf"), hasta 5 de 8 MB, que el encargo le manda al contacto cuando haga falta. Devuelve el id del encargo.`,
+			parameters: Type.Object({
+				plantilla: Type.String({ minLength: 1, maxLength: 40 }),
+				contacto: Type.String({ minLength: 1, maxLength: 80 }),
+				parametros: Type.Optional(Type.Record(Type.String(), Type.String({ maxLength: 2000 }))),
+				contexto: Type.Optional(Type.String({ maxLength: 4000 })),
+				archivos: Type.Optional(Type.Array(Type.String({ maxLength: 300 }), { maxItems: 5 })),
+			}),
+			execute: async (_id, p, signal) => delegation('start', p, signal),
+		});
+		pi.registerTool({
+			name: 'delegation_status',
+			label: 'Estado de encargos',
+			description:
+				'El estado de un encargo (o de todos los de esta conversación si no das id): activo, terminado, vencido o cancelado; los datos que lleva y si espera tu respuesta.',
+			parameters: Type.Object({ id: Type.Optional(Type.Integer({ minimum: 1 })) }),
+			execute: async (_id, p, signal) => delegation('status', p, signal),
+		});
+		pi.registerTool({
+			name: 'delegation_message',
+			label: 'Instrucción a un encargo',
+			description:
+				'Le da una instrucción a un encargo activo (por ejemplo, la respuesta a lo que escaló, o un dato nuevo). No se le reenvía al contacto tal cual: el encargo decide qué decirle. archivos (opcional, si la plantilla lo permite): rutas de ~/work para que se los mande al contacto.',
+			parameters: Type.Object({
+				id: Type.Integer({ minimum: 1 }),
+				texto: Type.String({ minLength: 1, maxLength: 2000 }),
+				archivos: Type.Optional(Type.Array(Type.String({ maxLength: 300 }), { maxItems: 5 })),
+			}),
+			execute: async (_id, p, signal) => delegation('message', p, signal),
+		});
+		pi.registerTool({
+			name: 'delegation_cancel',
+			label: 'Cancelar encargo',
+			description: 'Cierra un encargo activo. despedida: un último mensaje al contacto, opcional.',
+			parameters: Type.Object({
+				id: Type.Integer({ minimum: 1 }),
+				despedida: Type.Optional(Type.String({ maxLength: 500 })),
+			}),
+			execute: async (_id, p, signal) => delegation('cancel', p, signal),
+		});
+	}
 	if (h.tools.includes('browser'))
 		pi.registerTool({
 			name: 'browser',
@@ -184,7 +234,7 @@ export default function (pi: ExtensionAPI) {
 					default:
 						throw new Error('Operación de navegador no admitida.');
 				}
-				return command('agent-browser', args, signal, 60000);
+				return command('agent-browser', args, signal, 60000, true);
 			},
 		});
 	if (h.plugins.some((p) => p.id === 'text-utils'))
@@ -203,9 +253,137 @@ export default function (pi: ExtensionAPI) {
 			parameters: Type.Object({ text: Type.String({ maxLength: 64000 }) }),
 			execute: async (_id, p) => result(jsonInfo(p.text)),
 		});
+	// The trabajo it works on: its objective, and its end when the objective is met. Platform tools, like
+	// self_maintenance: the main agent's in a task, never a subagent's nor the owner's terminal.
+	const PLATFORM = [
+		'self_maintenance',
+		'job_done',
+		'job_goal',
+		'task_plan',
+		'task_update',
+		'task_ask',
+		'task_list',
+		'learn',
+	];
+	if (selfMaintenance) {
+		const job = async (op: string, p: unknown, signal?: AbortSignal) =>
+			process.env.AGENTS_INTERACTIVE === '1'
+				? result('En la terminal no hay un trabajo: eso se hace desde el chat de trabajo.')
+				: command('agents-job', [op, JSON.stringify(p)], signal, 30000);
+		pi.registerTool({
+			name: 'job_done',
+			label: 'Terminar el trabajo',
+			description:
+				'Da por terminado tu trabajo actual cuando cumpliste su objetivo. resumen: qué se pidió, qué hiciste, qué resultó y qué quedó pendiente (es lo que sabrás de este trabajo en los siguientes). resultado: el entregable en datos, si lo hay. Tu dueño puede reabrirlo; otro agente evalúa el trabajo.',
+			parameters: Type.Object({
+				resumen: Type.String({ minLength: 1, maxLength: 2000 }),
+				resultado: Type.Optional(Type.Unknown()),
+			}),
+			execute: async (_id, p, signal) => job('done', p, signal),
+		});
+		pi.registerTool({
+			name: 'job_goal',
+			label: 'Objetivo del trabajo',
+			description:
+				'Declara (o corrige) el objetivo de tu trabajo actual: qué es cierto cuando termine. Úsalo en cuanto lo que te piden esté claro.',
+			parameters: Type.Object({ objetivo: Type.String({ minLength: 1, maxLength: 1000 }) }),
+			execute: async (_id, p, signal) => job('goal', p, signal),
+		});
+		// Tareas: the trabajo's list, which its owner sees and edits too. The platform keeps it (encargos,
+		// questions to the owner, waits for a time or for a person's reply) and wakes the agent when it is its turn.
+		const tasks = async (op: string, p: unknown, signal?: AbortSignal) =>
+			process.env.AGENTS_INTERACTIVE === '1'
+				? result('En la terminal no hay un trabajo: las tareas se llevan desde el chat de trabajo.')
+				: command('agents-flow', [op, JSON.stringify(p)], signal, 60000);
+		const recipes = h.tools.includes('flows') ? (h.flows ?? []).map((r) => r.name) : [];
+		const Task = Type.Object({
+			key: Type.String({ minLength: 1, maxLength: 40 }),
+			titulo: Type.String({ minLength: 1, maxLength: 120 }),
+			tipo: Type.Optional(
+				Type.Union(['agent', 'subagent', 'delegation', 'question', 'wait'].map((k) => Type.Literal(k))),
+			),
+			depende: Type.Optional(Type.Array(Type.String({ maxLength: 40 }), { maxItems: 10 })),
+			instrucciones: Type.Optional(Type.String({ maxLength: 1000 })),
+			opcional: Type.Optional(Type.Boolean()),
+			horas: Type.Optional(Type.Integer({ minimum: 1, maximum: 168 })),
+			persona: Type.Optional(Type.String({ maxLength: 80 })),
+			encargo: Type.Optional(
+				Type.Object({
+					plantilla: Type.String({ maxLength: 40 }),
+					contacto: Type.String({ maxLength: 80 }),
+					parametros: Type.Optional(Type.Record(Type.String(), Type.String({ maxLength: 2000 }))),
+					contexto: Type.Optional(Type.String({ maxLength: 4000 })),
+				}),
+			),
+		});
+		pi.registerTool({
+			name: 'task_plan',
+			label: 'Tareas del trabajo',
+			description: `Escribe o ajusta la lista de tareas de tu trabajo (hasta 12, sin subtareas): tú y tu dueño la ven y la siguen. La primera vez la crea (agregar; o receta y parametros${recipes.length ? `: ${recipes.join(', ')}` : ', si tu contrato tiene recetas'}). Después agrega, redefine las que no empezaron o quita (quitar: claves), siempre con motivo. tipo: agent (tuya, por omisión), subagent, delegation (un encargo: plantilla, contacto, parámetros), question (a tu dueño), wait (horas; o persona: el nombre de un contacto cuya respuesta esperas, que llega a este trabajo). depende: claves de tareas que van antes. trabajo: otro de tus trabajos (por omisión, éste).`,
+			parameters: Type.Object({
+				trabajo: Type.Optional(Type.Integer({ minimum: 1 })),
+				receta: Type.Optional(Type.String({ maxLength: 40 })),
+				parametros: Type.Optional(Type.Record(Type.String(), Type.String({ maxLength: 2000 }))),
+				titulo: Type.Optional(Type.String({ maxLength: 80 })),
+				motivo: Type.Optional(Type.String({ maxLength: 500 })),
+				agregar: Type.Optional(Type.Array(Task, { maxItems: 12 })),
+				quitar: Type.Optional(Type.Array(Type.String({ maxLength: 40 }), { maxItems: 12 })),
+			}),
+			execute: async (_id, p, signal) => tasks('plan', p, signal),
+		});
+		pi.registerTool({
+			name: 'task_update',
+			label: 'Registrar una tarea',
+			description:
+				'Cambia el estado de una tarea: working al empezarla, done al terminarla (con su resultado), blocked si te atoras (nota: qué la bloquea), skipped o failed. Sin tarea, en una receta: entrega su resultado en la forma de la receta cuando todas terminaron. Devuelve la tarea que te toca después.',
+			parameters: Type.Object({
+				trabajo: Type.Optional(Type.Integer({ minimum: 1 })),
+				tarea: Type.Optional(Type.String({ maxLength: 40 })),
+				estado: Type.Optional(
+					Type.Union(['working', 'done', 'blocked', 'skipped', 'failed'].map((k) => Type.Literal(k))),
+				),
+				resultado: Type.Optional(Type.Unknown()),
+				nota: Type.Optional(Type.String({ maxLength: 500 })),
+			}),
+			execute: async (_id, p, signal) => tasks('update', p, signal),
+		});
+		pi.registerTool({
+			name: 'task_ask',
+			label: 'Preguntar al dueño',
+			description:
+				'Le pregunta algo a tu dueño (por su grupo de WhatsApp y la web), como una tarea del trabajo: una nueva, o la de una tarea de pregunta (tarea). Escríbela como para alguien ocupado: una o dos frases con lo que debe decidir y sus opciones, hasta 600 caracteres; los detalles van en un archivo adjunto (archivos: rutas de ~/work, p. ej. "out/reporte.pdf"). Su respuesta te llega en este trabajo y queda como hecho establecido.',
+			parameters: Type.Object({
+				trabajo: Type.Optional(Type.Integer({ minimum: 1 })),
+				tarea: Type.Optional(Type.String({ maxLength: 40 })),
+				pregunta: Type.String({ minLength: 1, maxLength: 600 }),
+				archivos: Type.Optional(Type.Array(Type.String({ maxLength: 300 }), { maxItems: 5 })),
+			}),
+			execute: async (_id, p, signal) => tasks('ask', p, signal),
+		});
+		// Aprendizajes: what it learns for other trabajos, saved as it works (the platform keeps them; its
+		// evaluator reviews them and its owner sees and corrects them). Each trabajo brings its playbook.
+		const memory = async (op: string, p: unknown, signal?: AbortSignal) =>
+			command('agents-memory', [op, JSON.stringify(p)], signal, 35000);
+		pi.registerTool({
+			name: 'learn',
+			label: 'Aprender',
+			description:
+				'Guarda un aprendizaje que te servirá en otros trabajos, ya comprobado: una respuesta de tu dueño (para no volver a preguntarla), cómo se hace algo que te costó resolver, un dato estable de una persona, tienda o sitio. Una frase concreta y accionable. Nunca secretos (contraseñas, tarjetas, códigos, tokens) ni lo que sólo vale para este trabajo.',
+			parameters: Type.Object({ aprendizaje: Type.String({ minLength: 1, maxLength: 300 }) }),
+			execute: async (_id, p, signal) => memory('learn', p, signal),
+		});
+		pi.registerTool({
+			name: 'task_list',
+			label: 'Ver tareas',
+			description:
+				'La lista de tareas de tu trabajo (o de otro: trabajo), con lo que obtuvo cada una, a quién espera y lo ya establecido; y tus otros trabajos con tareas abiertas.',
+			parameters: Type.Object({ trabajo: Type.Optional(Type.Integer({ minimum: 1 })) }),
+			execute: async (_id, p, signal) => tasks('list', p, signal),
+		});
+	}
 	pi.on('tool_call', (event, ctx) => {
 		if (
-			!(selfMaintenance && event.toolName === 'self_maintenance') &&
+			!(selfMaintenance && PLATFORM.includes(event.toolName)) &&
 			!runtimeToolNames(h).includes(event.toolName) &&
 			!mcpAllowed(h, event.toolName, granted)
 		)
@@ -220,7 +398,7 @@ export default function (pi: ExtensionAPI) {
 		// MCP tools of approved servers register (and activate) as their servers connect, later on.
 		pi.setActiveTools([
 			...names,
-			...(selfMaintenance ? ['self_maintenance'] : []),
+			...(selfMaintenance ? PLATFORM : []),
 			...pi
 				.getAllTools()
 				.map((t) => t.name)
@@ -235,7 +413,7 @@ export default function (pi: ExtensionAPI) {
 			throw new Error('No coincide la carga efectiva de skills.');
 		const active = pi
 			.getActiveTools()
-			.filter((n) => n !== 'self_maintenance' && !mcpAllowed(h, n, granted))
+			.filter((n) => !PLATFORM.includes(n) && !mcpAllowed(h, n, granted))
 			.sort();
 		if (JSON.stringify(active) !== JSON.stringify(names))
 			throw new Error('No coincide el conjunto efectivo de herramientas.');
@@ -269,9 +447,13 @@ async function subagentLaunch() {
 	const { prepareHarness } = await import('./harness-runtime.mjs');
 	const h = validateHarness(JSON.parse(process.env.AGENTS_HARNESS ?? 'null'));
 	const granted = JSON.parse(process.env.AGENTS_GRANTED_MCP ?? '[]') as string[];
-	// Without the subagents tool: a subagent never creates more. Granted MCP servers count only for
-	// --tools (their config is in the agent's own mcp.json already).
-	const child = { ...h, tools: h.tools.filter((t) => t !== 'subagents') };
+	// Without the subagents tool: a subagent never creates more. Nor does it talk to people: only the main
+	// agent sends WhatsApp notices and starts encargos. Granted MCP servers count only for --tools (their
+	// config is in the agent's own mcp.json already).
+	const child = {
+		...h,
+		tools: h.tools.filter((t) => t !== 'subagents' && t !== 'whatsapp_notify' && t !== 'delegations' && t !== 'flows'),
+	};
 	const prepared = prepareHarness(
 		child,
 		mkdtempSync('/tmp/agents-subagent-'),

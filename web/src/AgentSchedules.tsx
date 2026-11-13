@@ -41,6 +41,8 @@ export function AgentSchedules({ agentId }: { agentId: number }) {
 				}
 			>
 				<ScheduleCalendar
+					// As big as the settings let it: the calendar is the whole tab.
+					height={Math.max(560, window.innerHeight - 280)}
 					schedules={v.schedules}
 					timezone={v.timezone}
 					add={(cron, message) => call('/schedules', 'POST', { cron, message })}

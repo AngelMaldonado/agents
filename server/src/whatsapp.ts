@@ -9,16 +9,19 @@ import { createHash, timingSafeEqual } from 'node:crypto';
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { row, rows, exec, tx, DATA_DIR } from './db';
-import { receive, SUPPLIER_ROLE } from './inbox';
+import { receive, EXTERNAL_ROLE } from './inbox';
 
-/** How long a supplier's chat with an agent stays open for their answers (Cuby's longest thread: 7 days). */
-const SUPPLIER_HOURS = 168;
+/** How long an external contact's chat with an agent stays open for their answers (Cuby's longest thread: 7 days). */
+const EXTERNAL_HOURS = 168;
 import { whatsappConversation } from './conversations';
 import { decodeHelp } from './help';
 import { parseRepairDecision } from '../../shared/self-maintenance';
 import * as cuby from './cuby-whatsapp';
+import * as sim from './whatsapp-sim';
+import * as log from './whatsapp-log';
 import { TZ } from './channels';
 import * as aliases from './aliases';
+import { inQuietHours, quietHours, settings } from './settings';
 import type { Person } from './people';
 
 // Read on each use: the bridge's address and secret come from the environment.
@@ -302,13 +305,20 @@ export async function loggedOut(e: { number?: unknown }) {
 
 // ---------- who may write: the allow and block lists ----------
 
-type Phone = { phone: string; label: string; personId: number | null; personName: string | null; supplier: boolean };
+type Phone = {
+	phone: string;
+	label: string;
+	personId: number | null;
+	personName: string | null;
+	external: boolean;
+	direct: boolean;
+};
 
 /** A number's lists, and the people an allow entry may be (who writes from that phone). */
 export async function lists(me: Person, id: number) {
 	await own(me, id);
 	const phones = await rows<Phone & { list: 'allow' | 'block' }>(
-		`select w.phone, w.list, w.label, w.person_id as "personId", p.name as "personName", w.supplier
+		`select w.phone, w.list, w.label, w.person_id as "personId", p.name as "personName", w.external, w.direct
 		 from whatsapp_phones w left join people p on p.id = w.person_id where w.number_id = $1 order by w.created_at, w.phone`,
 		[id],
 	);
@@ -316,7 +326,7 @@ export async function lists(me: Person, id: number) {
 		allow: phones.filter((p) => p.list === 'allow').map(({ list: _, ...p }) => p),
 		block: phones
 			.filter((p) => p.list === 'block')
-			.map(({ list: _, personId: __, personName: ___, supplier: ____, ...p }) => p),
+			.map(({ list: _, personId: __, personName: ___, external: ____, direct: _____, ...p }) => p),
 		people: await rows<{ id: number; name: string }>('select id, name from people order by name, id'),
 	};
 }
@@ -330,12 +340,15 @@ export async function setLists(me: Person, id: number, input: { allow?: unknown;
 			if (!PHONE.test(phone))
 				throw new Error(`«${e?.phone ?? ''}» no es un número válido: elige el país y escribe el número.`);
 			const personId = kind === 'allow' && e?.personId ? Number(e.personId) : null;
+			const external = kind === 'allow' && !personId && !!e?.external;
 			return {
 				phone,
 				kind,
 				personId,
-				// A supplier is a guest (no person) the agents write to one to one, never in a group.
-				supplier: kind === 'allow' && !personId && !!e?.supplier,
+				// A external is a guest (no person) the agents write to one to one, never in a group.
+				external,
+				// A direct guest talks one to one with a single agent, never in a group.
+				direct: kind === 'allow' && !personId && !external && !!e?.direct,
 				label: String(e?.label ?? '')
 					.trim()
 					.slice(0, 60),
@@ -363,14 +376,28 @@ export async function setLists(me: Person, id: number, input: { allow?: unknown;
 		).map((p) => Number(p.id)),
 	);
 	if (all.some((e) => e.personId !== null && !people.has(e.personId))) throw new Error('Esa persona ya no existe.');
+	// A direct guest talks to one agent: one already switched on for several cannot become one.
+	for (const e of all.filter((x) => x.direct)) {
+		const on = await directAgents(id, e.phone);
+		if (on.length > 1)
+			throw new Error(
+				`+${e.phone} está encendido en ${on.length} agentes (${on.map((a) => a.name).join(', ')}): un invitado directo habla con uno solo. Que sus dueños lo apaguen en los demás (Canales → Quién le escribe por WhatsApp).`,
+			);
+	}
 	await tx(async (c) => {
 		await exec('delete from whatsapp_phones where number_id = $1', [id], c);
 		for (const e of all)
 			await exec(
-				'insert into whatsapp_phones (number_id, phone, list, person_id, label, supplier) values ($1, $2, $3, $4, $5, $6)',
-				[id, e.phone, e.kind, e.personId, e.label, e.supplier],
+				'insert into whatsapp_phones (number_id, phone, list, person_id, label, external, direct) values ($1, $2, $3, $4, $5, $6, $7)',
+				[id, e.phone, e.kind, e.personId, e.label, e.external, e.direct],
 				c,
 			);
+		// A phone that is no longer a direct guest leaves its one-to-one chat.
+		await exec(
+			'delete from whatsapp_direct_chats d where d.number_id = $1 and not exists (select 1 from whatsapp_phones p where p.number_id = $1 and p.phone = d.phone and p.direct)',
+			[id],
+			c,
+		);
 		// A phone that may no longer write stops talking to its agent.
 		await exec(
 			"delete from whatsapp_chats w where w.number_id = $1 and not exists (select 1 from whatsapp_phones p where p.number_id = $1 and p.phone = w.phone and p.list = 'allow')",
@@ -422,9 +449,10 @@ async function contacts(agentId: number, owner: Person, n: NumberRow) {
 		person_name: string | null;
 		reach: boolean;
 		choice: boolean | null;
-		supplier: boolean;
+		external: boolean;
+		direct: boolean;
 	}>(
-		`select w.phone, w.label, w.person_id, p.name as person_name, x.enabled as choice, w.supplier,
+		`select w.phone, w.label, w.person_id, p.name as person_name, x.enabled as choice, w.external, w.direct,
 		   coalesce(w.person_id = a.person_id or exists (select 1 from agent_shares s where s.agent_id = a.id and s.person_id = w.person_id), false) as reach
 		 from whatsapp_phones w join agents a on a.id = $1
 		 left join people p on p.id = w.person_id
@@ -440,10 +468,32 @@ async function contacts(agentId: number, owner: Person, n: NumberRow) {
 			phone: c.phone,
 			shown: sees || c.person_id === owner.id ? c.phone : `••••${c.phone.slice(-4)}`,
 			name: c.person_name ?? (c.label || 'Invitado'),
-			kind: (c.person_id === owner.id ? 'owner' : c.person_id ? 'person' : c.supplier ? 'supplier' : 'guest') as
-				'owner' | 'person' | 'guest' | 'supplier',
+			kind: (c.person_id === owner.id
+				? 'owner'
+				: c.person_id
+					? 'person'
+					: c.external
+						? 'external'
+						: c.direct
+							? 'direct'
+							: 'guest') as 'owner' | 'person' | 'guest' | 'external' | 'direct',
 			enabled: c.choice ?? !!c.person_id,
 		}));
+}
+
+/** Its contacts as its owner sees them, with their phones (the server's own views: Conversaciones). */
+export async function contactsOf(agentId: number, owner: Person) {
+	const n = await groupNumber();
+	return n ? contacts(agentId, owner, n) : [];
+}
+
+/** The agents a guest is switched on for (a direct guest's is one at most). */
+async function directAgents(numberId: number, phone: string) {
+	return rows<{ id: number; name: string; owner_id: number }>(
+		`select a.id, a.name, a.person_id as owner_id from whatsapp_agent_phones x join agents a on a.id = x.agent_id
+		 where x.number_id = $1 and x.phone = $2 and x.enabled and a.deleted_at is null order by x.updated_at desc, a.id`,
+		[numberId, phone],
+	);
 }
 
 /** The agent's owner switches one contact on or off for this agent; their groups follow. */
@@ -452,6 +502,13 @@ export async function setContact(agentId: number, owner: Person, input: { key?: 
 	if (!n) throw new Error('No hay un número de WhatsApp para los grupos.');
 	const c = (await contacts(agentId, owner, n)).find((x) => x.key === String(input.key ?? ''));
 	if (!c) throw new Error('Ese contacto ya no está en la lista blanca del número.');
+	if (c.kind === 'direct' && input.enabled) {
+		const other = (await directAgents(n.id, c.phone)).find((a) => a.id !== agentId);
+		if (other)
+			throw new Error(
+				`${c.name} es un invitado directo y ya habla con ${other.owner_id === owner.id ? `«${other.name}»` : 'un agente de otra persona'}: habla con un solo agente. Apágalo ahí primero.`,
+			);
+	}
 	await exec(
 		`insert into whatsapp_agent_phones (agent_id, number_id, phone, enabled) values ($1, $2, $3, $4)
 		 on conflict (agent_id, number_id, phone) do update set enabled = excluded.enabled, updated_at = now()`,
@@ -536,9 +593,14 @@ async function sayInGroup(
 	files: InboundFile[] = [],
 	conversationId: number | null = null,
 ) {
+	// Conversaciones simuladas: another person's group stays in the simulator (the real one is not touched).
+	// Its owner's own group is always real: what the agent tells its owner reaches them.
+	if (agent && g.person_id !== agent.owner_id && (await sim.on(agent.id)))
+		return sim.out(agent.id, `g:${g.phone}`, agent.name, text, files, { conversationId });
 	const body = agent && text.trim() ? `*${agent.name}:* ${text}` : text;
 	const ids = await deliver(n, { group: g.ref! }, body, files, agent?.owner_id ?? g.owner_id);
 	if (!agent) return ids;
+	await log.record(agent.id, `g:${g.phone}`, 'out', agent.name, text, files, { conversationId });
 	for (const id of ids)
 		await exec(
 			`insert into whatsapp_outbound (number_id, message_id, group_id, agent_id, conversation_id, text)
@@ -584,7 +646,7 @@ async function syncOnce() {
 	const want = await rows<{ owner_id: number; owner_name: string; phone: string; person_id: number | null }>(
 		`select distinct a.person_id as owner_id, o.name as owner_name, w.phone, w.person_id
 		 from whatsapp_phones w join agents a on a.deleted_at is null join people o on o.id = a.person_id
-		 where w.number_id = $1 and w.list = 'allow' and not w.supplier
+		 where w.number_id = $1 and w.list = 'allow' and not w.external and not w.direct
 		   and (w.person_id is null or w.person_id = a.person_id
 		        or exists (select 1 from agent_shares s where s.agent_id = a.id and s.person_id = w.person_id))
 		   and coalesce((select x.enabled from whatsapp_agent_phones x where x.agent_id = a.id and x.number_id = $1 and x.phone = w.phone),
@@ -817,15 +879,26 @@ export async function allowed(e: { number?: unknown; phone?: unknown; text?: unk
 		);
 		return { allowed: !!g };
 	}
-	const hit = await row<{ supplier: boolean; asked: boolean }>(
-		`select w.supplier, exists (select 1 from whatsapp_supplier_threads t where t.number_id = n.id and t.phone = w.phone
-		   and t.last_at > now() - make_interval(hours => $3)) as asked
+	const hit = await row<{ external: boolean; asked: boolean; direct: boolean }>(
+		`select w.external, exists (select 1 from whatsapp_external_threads t where t.number_id = n.id and t.phone = w.phone
+		   and t.last_at > now() - make_interval(hours => $3)) as asked,
+		   w.direct and exists (select 1 from whatsapp_agent_phones x join agents a on a.id = x.agent_id
+		     where x.number_id = n.id and x.phone = w.phone and x.enabled and a.deleted_at is null) as direct
 		 from whatsapp_phones w join whatsapp_numbers n on n.id = w.number_id
 		 where n.jid = $1 and n.deleted_at is null and n.status = 'linked' and w.phone = $2 and w.list = 'allow'`,
-		[String(e.number ?? ''), phone, SUPPLIER_HOURS],
+		[String(e.number ?? ''), phone, EXTERNAL_HOURS],
 	);
-	// A supplier an agent wrote to lately: anything they answer is for that agent.
-	if (hit?.supplier && hit.asked) return { allowed: true };
+	// An external contact an agent wrote to lately: anything they answer is for that agent. A direct guest
+	// with their agent, or anyone with an active encargo: anything they write is for it.
+	if ((hit?.external && hit.asked) || hit?.direct) return { allowed: true };
+	if (
+		hit &&
+		(await row(
+			"select 1 from delegations d join whatsapp_numbers n on n.id = d.number_id where n.jid = $1 and d.phone = $2 and d.status = 'active'",
+			[String(e.number ?? ''), phone],
+		))
+	)
+		return { allowed: true };
 	return { allowed: !!hit && /^\/(agentes|agente|ayuda)\b/i.test(String(e.text ?? '').trim()) };
 }
 
@@ -874,13 +947,18 @@ export async function inbound(m: Record<string, unknown>): Promise<Record<string
 		.slice(0, 20_000);
 	if (m.group) return groupInbound(n, String(m.group), phone, from, id, text, m);
 
+	// An active encargo with this phone takes everything it writes, and nothing else does.
+	const delegated = await (await import('./delegations')).inbound(n, phone, id, text, m);
+	if (delegated) return delegated;
+
 	// One to one: only to say where the agents are.
 	const reply = (t: string) => deliver(n, { phone: from }, t);
-	const entry = await row<{ supplier: boolean; label: string }>(
-		"select supplier, label from whatsapp_phones where number_id = $1 and phone = $2 and list = 'allow'",
+	const entry = await row<{ external: boolean; direct: boolean; label: string }>(
+		"select external, direct, label from whatsapp_phones where number_id = $1 and phone = $2 and list = 'allow'",
 		[n.id, phone],
 	);
-	if (entry?.supplier) return supplierInbound(n, phone, from, id, text, m, entry.label);
+	if (entry?.external) return externalInbound(n, phone, from, id, text, m, entry.label);
+	if (entry?.direct) return directInbound(n, phone, from, id, text, m, entry.label);
 	if (entry && /^\/(agentes|agente|ayuda)\b/i.test(text)) {
 		await reply(
 			'Los agentes están en tus grupos «Agentes …» de este número: escríbeles ahí. Dentro, /ayuda muestra los comandos.',
@@ -891,11 +969,11 @@ export async function inbound(m: Record<string, unknown>): Promise<Record<string
 }
 
 /**
- * A supplier's answer, one to one: to the agent that wrote to them (by Cuby's thread, else their latest chat
+ * A external's answer, one to one: to the agent that wrote to them (by Cuby's thread, else their latest chat
  * of the last days), in the conversation that asked. Nobody asked them, or the owner switched them off for
- * that agent: ignored. They never authorize anything (their messages are signed as a supplier's).
+ * that agent: ignored. They never authorize anything (their messages are signed as an external contact's).
  */
-async function supplierInbound(
+async function externalInbound(
 	n: NumberRow,
 	phone: string,
 	from: string,
@@ -909,14 +987,14 @@ async function supplierInbound(
 	const t =
 		(thread
 			? await row<Chat>(
-					'select id, agent_id, conversation_id from whatsapp_supplier_threads where number_id = $1 and thread_id = $2 and phone = $3',
+					'select id, agent_id, conversation_id from whatsapp_external_threads where number_id = $1 and thread_id = $2 and phone = $3',
 					[n.id, thread, phone],
 				)
 			: null) ??
 		(await row<Chat>(
-			`select id, agent_id, conversation_id from whatsapp_supplier_threads
+			`select id, agent_id, conversation_id from whatsapp_external_threads
 			 where number_id = $1 and phone = $2 and last_at > now() - make_interval(hours => $3) order by last_at desc limit 1`,
-			[n.id, phone, SUPPLIER_HOURS],
+			[n.id, phone, EXTERNAL_HOURS],
 		));
 	if (!t) return { ignored: true, reason: 'nadie le escribió' };
 	const on = await row(
@@ -931,29 +1009,30 @@ async function supplierInbound(
 		data: String(f?.data ?? ''),
 	}));
 	if (!text && !files.length) return { ignored: true };
-	const who = label || String(m.name ?? '').slice(0, 80) || 'Proveedor';
+	const who = label || String(m.name ?? '').slice(0, 80) || 'Contacto externo';
 	const kept = t.conversation_id
 		? await row<{ id: number }>(
-				'select id from conversations where id = $1 and agent_id = $2 and archived_at is null and deleted_at is null',
+				"select id from conversations where id = $1 and agent_id = $2 and archived_at is null and deleted_at is null and status = 'open'",
 				[t.conversation_id, t.agent_id],
 			)
 		: null;
 	const conversationId =
 		kept?.id ?? (await whatsappConversation(t.agent_id, `s:${n.id}:${phone}`, `WhatsApp · ${who}`));
-	await exec('update whatsapp_supplier_threads set last_at = now(), conversation_id = $2 where id = $1', [
+	await exec('update whatsapp_external_threads set last_at = now(), conversation_id = $2 where id = $1', [
 		t.id,
 		conversationId,
 	]);
+	await log.record(t.agent_id, `e:${phone}`, 'in', who, text, files, { conversationId, ref: id });
 	return receive(
 		{
 			agentId: t.agent_id,
 			conversationId,
 			source: 'whatsapp',
 			personId: null,
-			sender: `${who} (+${phone}), ${SUPPLIER_ROLE}`,
+			sender: `${who} (+${phone}), ${EXTERNAL_ROLE}`,
 			text,
 			attachments: files,
-			context: { whatsapp: { number: n.id, phone: from, supplier: t.id } },
+			context: { whatsapp: { number: n.id, phone: from, external: t.id } },
 			dedupeKey: `wa:${n.id}:${id}`,
 		},
 		{ routeNow: false },
@@ -961,11 +1040,271 @@ async function supplierInbound(
 }
 
 /**
- * whatsapp_notify to a supplier: one to one, in this agent's chat with them (Cuby: its thread, open up to
+ * A direct guest, one to one: to the single agent its owner switched them on for, in that chat's
+ * conversation, signed as a guest's (no authority). /terminar closes it and the next message starts a new
+ * one; /ayuda (and /agente…) says who answers. Nobody switched on: ignored.
+ */
+async function directInbound(
+	n: NumberRow,
+	phone: string,
+	from: string,
+	id: string,
+	text: string,
+	m: Record<string, unknown>,
+	label: string,
+) {
+	const [agent] = await directAgents(n.id, phone);
+	if (!agent) return { ignored: true, reason: 'sin agente' };
+	const key = `d:${n.id}:${phone}`;
+	// On Cuby, the thread it came in is where the answer goes.
+	const thread = typeof m.thread === 'string' && m.thread ? m.thread : null;
+	if (thread)
+		await exec(
+			`insert into whatsapp_direct_chats (number_id, phone, agent_id, thread_id) values ($1, $2, $3, $4)
+			 on conflict (number_id, phone) do update set agent_id = excluded.agent_id, thread_id = excluded.thread_id, last_at = now()`,
+			[n.id, phone, agent.id, thread],
+		);
+	const command = text.match(/^\/(terminar|ayuda|agentes|agente|actual)\b/i);
+	if (command) {
+		if (command[1].toLowerCase() === 'terminar') {
+			const closed = await endJobs(agent.id, key, label || 'el contacto');
+			await sayDirect(
+				n,
+				agent,
+				phone,
+				closed ? 'Terminé nuestra conversación; la próxima empieza de cero.' : 'No hay una conversación abierta.',
+			);
+			return { command: true, ended: !!closed };
+		}
+		await sayDirect(
+			n,
+			agent,
+			phone,
+			`Hablas con ${agent.name}, asistente de IA. /terminar cierra la conversación y la siguiente empieza de cero.`,
+		);
+		return { command: true };
+	}
+	const files = (Array.isArray(m.files) ? m.files : []).slice(0, 10).map((f: any) => ({
+		name: String(f?.name ?? 'archivo'),
+		mime: String(f?.mime ?? 'application/octet-stream'),
+		data: String(f?.data ?? ''),
+	}));
+	if (!text && !files.length) return { ignored: true };
+	const who = label || String(m.name ?? '').slice(0, 80);
+	// A task of one of its trabajos waits for their reply: it lands there.
+	const flows = await import('./flows');
+	const awaited = await flows.waitingOn(agent.id, n.id, phone);
+	if (awaited) await exec('update conversations set archived_at = null where id = $1', [awaited.conversation_id]);
+	// The trabajo the agent last wrote to them from, while it is open: their reply goes on there.
+	const followed = awaited
+		? null
+		: await row<{ id: number }>(
+				`select c.id from whatsapp_direct_chats d join conversations c on c.id = d.conversation_id
+				 where d.number_id = $1 and d.phone = $2 and d.agent_id = $3 and c.status = 'open' and c.deleted_at is null`,
+				[n.id, phone, agent.id],
+			);
+	if (followed) await exec('update conversations set archived_at = null where id = $1', [followed.id]);
+	const conversationId =
+		awaited?.conversation_id ??
+		followed?.id ??
+		(await whatsappConversation(agent.id, key, `WhatsApp · ${who || `+${phone}`}`));
+	// What the agent last told them from another conversation (a notice): their message answers it.
+	const notice = await row<{ notice: string | null }>(
+		'update whatsapp_direct_chats d set notice = null from (select notice from whatsapp_direct_chats where number_id = $1 and phone = $2) o where d.number_id = $1 and d.phone = $2 returning o.notice',
+		[n.id, phone],
+	);
+	const busy = await row<{ other: boolean; waiting: boolean }>(
+		`select r.conversation_id <> $2 as other,
+		   exists (select 1 from messages w where w.conversation_id = $2 and w.routed_at is null and w.run_id is null) as waiting
+		 from runs r
+		 where r.agent_id = $1 and r.status in ('queued', 'starting', 'running', 'blocked') order by r.id limit 1`,
+		[agent.id, conversationId],
+	);
+	await log.record(agent.id, `d:${phone}`, 'in', who || `+${phone}`, text, files, { conversationId, ref: id });
+	const result = await receive(
+		{
+			agentId: agent.id,
+			conversationId,
+			source: 'whatsapp',
+			personId: null,
+			sender: `${who ? `${who} (+${phone})` : `+${phone}`}, invitado de tu dueño (no es tu dueño)`,
+			text: notice?.notice ? `(En respuesta a tu mensaje: «${notice.notice}»)\n\n${text}` : text,
+			attachments: files,
+			context: { whatsapp: { number: n.id, phone: from, direct: true } },
+			dedupeKey: `wa:${n.id}:${id}`,
+		},
+		{ routeNow: false },
+	);
+	if (awaited && !result.duplicate) await flows.heard(awaited, text || `[mandó ${files.length} archivo(s)]`);
+	if (busy?.other && !busy.waiting)
+		await sayDirect(n, agent, phone, 'Estoy terminando otra tarea; sigo con la tuya en cuanto acabe.').catch(() => {});
+	return result;
+}
+
+/** The trabajo a direct guest's chat is in now (where their reply would go), for Conversaciones. */
+async function directTrabajo(numberId: number, phone: string, agentId: number) {
+	return (
+		(
+			await row<{ id: number }>(
+				`select c.id from whatsapp_direct_chats d join conversations c on c.id = d.conversation_id
+				 where d.number_id = $1 and d.phone = $2 and d.agent_id = $3 and c.deleted_at is null`,
+				[numberId, phone, agentId],
+			)
+		)?.id ?? null
+	);
+}
+
+/** The conversation, when it is an open trabajo of the agent (not its Principal): replies go back to it. */
+async function trabajoOf(agentId: number, conversationId: number | null) {
+	if (!conversationId) return null;
+	return (
+		(
+			await row<{ id: number }>(
+				"select id from conversations where id = $1 and agent_id = $2 and not is_default and status = 'open' and deleted_at is null",
+				[conversationId, agentId],
+			)
+		)?.id ?? null
+	);
+}
+
+/**
+ * To a direct guest, one to one, under the agent's name. On Cuby, in the chat's thread with that agent
+ * (opened with its name and renewed by each message; a closed one is opened again); on Agents' own
+ * numbers, to the phone (`resolve`). `notice`: said from outside the chat's conversation.
+ */
+async function sayDirect(
+	n: NumberRow,
+	agent: { id: number; name: string; owner_id: number },
+	phone: string,
+	text: string,
+	files: InboundFile[] = [],
+	notice = false,
+	/** Their reply goes to this trabajo (undefined: where it went before). */
+	conversationId?: number | null,
+) {
+	if (await sim.on(agent.id)) {
+		await sim.out(
+			agent.id,
+			`d:${phone}`,
+			agent.name,
+			text,
+			files,
+			conversationId === undefined ? {} : { conversationId },
+		);
+		return;
+	}
+	const chat = await row<{ agent_id: number; thread_id: string | null }>(
+		'select agent_id, thread_id from whatsapp_direct_chats where number_id = $1 and phone = $2',
+		[n.id, phone],
+	);
+	const body = text.trim() ? `*${agent.name}:* ${text}` : text;
+	let threadId = chat?.agent_id === agent.id ? chat.thread_id : null;
+	if (n.provider === 'cuby') {
+		const opening = () =>
+			cuby.send(phone, body, files, { personId: agent.owner_id, thread: agent.name, hours: EXTERNAL_HOURS });
+		threadId = threadId
+			? await cuby.send(phone, body, files, { personId: agent.owner_id, threadId }).catch(opening)
+			: await opening();
+	} else await deliver(n, { phone, resolve: true }, body, files, agent.owner_id);
+	await log.record(agent.id, `d:${phone}`, 'out', agent.name, text, files, {
+		conversationId: conversationId === undefined ? await directTrabajo(n.id, phone, agent.id) : conversationId,
+	});
+	await exec(
+		`insert into whatsapp_direct_chats (number_id, phone, agent_id, thread_id, notice, conversation_id) values ($1, $2, $3, $4, $5, $6)
+		 on conflict (number_id, phone) do update set agent_id = excluded.agent_id, thread_id = excluded.thread_id,
+		   notice = excluded.notice, last_at = now(),
+		   conversation_id = case when $7 then excluded.conversation_id else whatsapp_direct_chats.conversation_id end`,
+		[
+			n.id,
+			phone,
+			agent.id,
+			threadId,
+			notice ? text.slice(0, 300) : null,
+			conversationId ?? null,
+			conversationId !== undefined,
+		],
+	);
+}
+
+/**
+ * To the agent's owner, in their own group «Agentes …», under the agent's name: a flow's question or how it
+ * ended. Their reply there goes to `conversationId` (the flow's). False when they have no group.
+ */
+export async function tellOwner(
+	agentId: number,
+	text: string,
+	conversationId: number | null,
+	files: InboundFile[] = [],
+) {
+	const n = await groupNumber();
+	if (!n?.jid) return false;
+	const a = await row<{ id: number; name: string; owner_id: number }>(
+		'select id, name, person_id as owner_id from agents where id = $1',
+		[agentId],
+	);
+	if (!a) return false;
+	const g = await row<GroupRow>(
+		"select * from whatsapp_groups where number_id = $1 and owner_id = $2 and person_id = $2 and status = 'open'",
+		[n.id, a.owner_id],
+	);
+	if (!g) return false;
+	await sayInGroup(n, g, a, text, files, conversationId);
+	return true;
+}
+
+/** /terminar by WhatsApp: the trabajo of that chat ends (and is evaluated); the next message opens another. */
+async function endJobs(agentId: number, key: string, who: string) {
+	const jobs = await import('./jobs');
+	let n = 0;
+	for (const c of await rows<{ id: number }>(
+		"select id from conversations where agent_id = $1 and whatsapp_key = $2 and status = 'open' and deleted_at is null",
+		[agentId, key],
+	))
+		if (await jobs.closeByPerson(c.id, who)) n++;
+	return n;
+}
+
+/** A contact switched on for this agent, by its name as its owner sees it (also «dueño»). */
+export async function contactFor(agentId: number, ownerId: number, name: string) {
+	const n = await groupNumber();
+	if (!n?.jid) return null;
+	const enabled = (await contacts(agentId, { id: ownerId, admin: false } as Person, n)).filter((c) => c.enabled);
+	const want = fold(name);
+	const c =
+		enabled.find((x) => fold(x.name) === want) ??
+		(['dueño', 'dueno', 'yo', 'mi dueño'].includes(want) ? enabled.find((x) => x.kind === 'owner') : undefined) ??
+		enabled.find((x) => fold(x.name).startsWith(want));
+	return c ? { number: n, contact: c } : null;
+}
+
+/**
+ * One to one and as it is: no agent's name, nothing added (encargos). On Cuby, inside `threadId` (or a new
+ * thread titled `title`, open `hours`); on Agents' own numbers, to the phone. The thread it went in.
+ */
+export async function sendOneToOne(
+	n: Pick<NumberRow, 'jid' | 'provider'>,
+	phone: string,
+	text: string,
+	opts: { personId: number; threadId?: string | null; title: string; hours: number; files?: InboundFile[] },
+): Promise<string | null> {
+	const files = opts.files ?? [];
+	if (n.provider !== 'cuby') {
+		await deliver(n, { phone, resolve: true }, text, files, opts.personId);
+		return null;
+	}
+	const opening = () =>
+		cuby.send(phone, text, files, { personId: opts.personId, thread: opts.title, hours: opts.hours });
+	return opts.threadId
+		? cuby.send(phone, text, files, { personId: opts.personId, threadId: opts.threadId }).catch(opening)
+		: opening();
+}
+
+/**
+ * whatsapp_notify to an external contact: one to one, in this agent's chat with them (Cuby: its thread, open up to
  * 7 days and renewed by each message; a new chat introduces the agent as an AI assistant). Their answer
  * goes back to `conversationId`.
  */
-async function toSupplier(
+async function toExternal(
 	n: NumberRow,
 	agent: { id: number; name: string; person_id: number },
 	phone: string,
@@ -974,13 +1313,23 @@ async function toSupplier(
 	conversationId: number,
 ) {
 	const open = await row<{ id: number; thread_id: string | null }>(
-		`select id, thread_id from whatsapp_supplier_threads
+		`select id, thread_id from whatsapp_external_threads
 		 where number_id = $1 and phone = $2 and agent_id = $3 and last_at > now() - make_interval(hours => $4)
 		 order by last_at desc limit 1`,
-		[n.id, phone, agent.id, SUPPLIER_HOURS],
+		[n.id, phone, agent.id, EXTERNAL_HOURS],
 	);
 	const owner = (await row<{ name: string }>('select name from people where id = $1', [agent.person_id]))?.name ?? '';
 	const hello = `Hola, soy ${agent.name}, asistente de IA${owner ? ` de ${owner}` : ''}.\n\n`;
+	if (await sim.on(agent.id)) {
+		// A new chat (none in its last 7 days) introduces the agent, as a real one would.
+		const known = await row(
+			`select 1 from whatsapp_sim_messages where agent_id = $1 and chat = $2 and direction = 'out'
+			   and created_at > now() - make_interval(hours => $3)`,
+			[agent.id, `e:${phone}`, EXTERNAL_HOURS],
+		);
+		await sim.out(agent.id, `e:${phone}`, agent.name, `${known ? '' : hello}${text}`, files, { conversationId });
+		return;
+	}
 	let threadId: string | null = open?.thread_id ?? null;
 	let fresh = !open;
 	if (n.provider === 'cuby') {
@@ -988,7 +1337,7 @@ async function toSupplier(
 			cuby.send(phone, `${hello}${text}`, files, {
 				personId: agent.person_id,
 				thread: agent.name,
-				hours: SUPPLIER_HOURS,
+				hours: EXTERNAL_HOURS,
 			});
 		if (threadId)
 			threadId = await cuby.send(phone, text, files, { personId: agent.person_id, threadId }).catch(() => {
@@ -997,14 +1346,17 @@ async function toSupplier(
 			});
 		else threadId = await opening();
 	} else await deliver(n, { phone, resolve: true }, `${fresh ? hello : ''}${text}`, files, agent.person_id);
+	await log.record(agent.id, `e:${phone}`, 'out', agent.name, `${fresh ? hello : ''}${text}`, files, {
+		conversationId,
+	});
 	if (open && !fresh)
-		await exec('update whatsapp_supplier_threads set last_at = now(), conversation_id = $2 where id = $1', [
+		await exec('update whatsapp_external_threads set last_at = now(), conversation_id = $2 where id = $1', [
 			open.id,
 			conversationId,
 		]);
 	else
 		await exec(
-			`insert into whatsapp_supplier_threads (number_id, phone, agent_id, conversation_id, thread_id)
+			`insert into whatsapp_external_threads (number_id, phone, agent_id, conversation_id, thread_id)
 			 values ($1, $2, $3, $4, $5)`,
 			[n.id, phone, agent.id, conversationId, threadId],
 		);
@@ -1071,9 +1423,10 @@ async function groupInbound(
 					`Todavía no hablas con ningún agente. Escribe /agente y su nombre, o empieza tu mensaje con él («${list[0]?.name ?? 'Agente'}: …»).`,
 				).then(() => ({ command: true }));
 			const open = g.last_conversation_id
-				? await row('select 1 from conversations where id = $1 and archived_at is null and deleted_at is null', [
-						g.last_conversation_id,
-					])
+				? await row(
+						"select 1 from conversations where id = $1 and archived_at is null and deleted_at is null and status = 'open'",
+						[g.last_conversation_id],
+					)
 				: null;
 			const names = ['@' + aliases.handleOf(current.name), ...(mine.get(current.id) ?? []).map((x) => '@' + x)];
 			await say(
@@ -1114,10 +1467,7 @@ async function groupInbound(
 		}
 		if (verb === 'terminar') {
 			if (!current) return say('No hay una conversación abierta con un agente.').then(() => ({ command: true }));
-			await exec(
-				'update conversations set archived_at = now() where agent_id = $1 and whatsapp_key = $2 and archived_at is null',
-				[current.id, `g:${g.id}`],
-			);
+			await endJobs(current.id, `g:${g.id}`, g.person_id === g.owner_id ? 'su dueño' : 'quien escribe en el grupo');
 			await exec('update whatsapp_groups set last_conversation_id = null, updated_at = now() where id = $1', [g.id]);
 			await say(`Terminé la conversación con ${current.name}; la próxima empieza de cero.`);
 			return { command: true, ended: true };
@@ -1216,10 +1566,17 @@ async function groupInbound(
 		data: String(f?.data ?? ''),
 	}));
 	if (!text && !files.length) return { ignored: true };
+	// A task of one of its trabajos waits for this person's reply: it lands there (unless they quoted another).
+	const flows = await import('./flows');
+	const awaited = quoted && conversation ? null : await flows.waitingOn(agent.id, n.id, phone);
+	if (awaited) {
+		conversation = awaited.conversation_id;
+		await exec('update conversations set archived_at = null where id = $1', [conversation]);
+	}
 	// Its conversation: the one it wrote from (while open), or this group's with it.
 	const kept = conversation
 		? await row<{ id: number }>(
-				'select id from conversations where id = $1 and agent_id = $2 and archived_at is null and deleted_at is null',
+				"select id from conversations where id = $1 and agent_id = $2 and archived_at is null and deleted_at is null and status = 'open'",
 				[conversation, agent.id],
 			)
 		: null;
@@ -1231,9 +1588,11 @@ async function groupInbound(
 	const who = entry?.label || entry?.person_name || String(m.name ?? '').slice(0, 80);
 	const conversationId =
 		kept?.id ?? (await whatsappConversation(agent.id, `g:${g.id}`, `WhatsApp · ${who || `+${phone}`}`));
+	// A reply a task waited for does not move the group: what they write next goes on where it was.
 	await exec(
-		'update whatsapp_groups set last_agent_id = $2, last_conversation_id = $3, pending = null, updated_at = now() where id = $1',
-		[g.id, agent.id, conversationId],
+		`update whatsapp_groups set last_agent_id = $2, last_conversation_id = case when $4 then last_conversation_id else $3 end,
+		   pending = null, updated_at = now() where id = $1`,
+		[g.id, agent.id, conversationId, !!awaited],
 	);
 	// Busy in another conversation: say so once, without saying whose.
 	const busy = await row<{ other: boolean; waiting: boolean }>(
@@ -1249,6 +1608,7 @@ async function groupInbound(
 			: entry?.person_id
 				? 'con quien tu dueño compartió este agente (no es tu dueño)'
 				: 'invitado de tu dueño (no es tu dueño)';
+	await log.record(agent.id, `g:${g.phone}`, 'in', who || `+${phone}`, text, files, { conversationId, ref: id });
 	const result = await receive(
 		{
 			agentId: agent.id,
@@ -1264,6 +1624,7 @@ async function groupInbound(
 		},
 		{ routeNow: false },
 	);
+	if (awaited && !result.duplicate) await flows.heard(awaited, text || `[mandó ${files.length} archivo(s)]`);
 	if (busy?.other && !busy.waiting)
 		await sayInGroup(
 			n,
@@ -1334,20 +1695,57 @@ export async function onRun(
 		if (!r) return;
 		const n = await groupNumber();
 		if (!n?.jid) return;
-		const sources = await rows<{ source: string; group_id: string | null }>(
-			"select source, context->'whatsapp'->>'group' as group_id from messages where run_id = $1",
-			[runId],
+		const sources = await rows<{ source: string; group_id: string | null; direct: string | null; sim: string | null }>(
+			`select source, context->'whatsapp'->>'group' as group_id, context->'whatsapp'->>'sim' as sim,
+			   case when context->'whatsapp'->>'direct' = 'true' and (context->'whatsapp'->>'number')::bigint = $2
+			     then context->'whatsapp'->>'phone' end as direct
+			 from messages where run_id = $1`,
+			[runId, n.id],
 		);
+		// Direct guests it was asked by, still switched on for this agent.
+		const direct: string[] = [];
+		for (const p of new Set(sources.map((s) => (s.direct ? canonical(s.direct) : '')).filter(Boolean)))
+			if ((await directAgents(n.id, p))[0]?.id === r.agent_id) direct.push(p);
 		const ids = [...new Set(sources.map((s) => s.group_id).filter((x): x is string => !!x))].map(Number);
 		let groups = ids.length
 			? await rows<GroupRow>("select * from whatsapp_groups where id = any($1::bigint[]) and status = 'open'", [ids])
 			: [];
-		if (!ids.length && r.notify && sources.some((s) => s.source === 'cron' || s.source === 'hook'))
+		if (!ids.length && r.notify && sources.some((s) => ['cron', 'hook', 'delegation'].includes(s.source)))
 			groups = await rows<GroupRow>(
 				"select * from whatsapp_groups where number_id = $1 and owner_id = $2 and person_id = $2 and status = 'open'",
 				[n.id, r.owner_id],
 			);
-		if (!groups.length) return;
+		// Conversaciones simuladas: the simulated chats it was asked from (its owner's group stays real).
+		const simChats = (await sim.on(r.agent_id))
+			? [...new Set(sources.map((s) => s.sim).filter((x): x is string => !!x))]
+			: [];
+		// A question for its owner (request_help para: dueño): it goes, whole, to its owner's group, even when
+		// someone else asked for the work; they only hear that it is being asked. Only its owner unblocks it.
+		let asking: { owner: string } | null = null;
+		if (event === 'blocked' && decodeHelp(reason).para === 'dueño') {
+			const own = await row<GroupRow>(
+				"select * from whatsapp_groups where number_id = $1 and owner_id = $2 and person_id = $2 and status = 'open'",
+				[n.id, r.owner_id],
+			);
+			const others = groups.filter((g) => g.person_id !== r.owner_id);
+			if (others.length || direct.length || simChats.length) {
+				const owner = (await row<{ name: string }>('select name from people where id = $1', [r.owner_id]))?.name;
+				asking = { owner: owner ?? 'su dueño' };
+				const agent = { id: r.agent_id, name: r.name, owner_id: r.owner_id };
+				const wait = `Esto lo tiene que decidir ${asking.owner}: se lo consulto y sigo en cuanto responda.`;
+				for (const g of others)
+					await sayInGroup(n, g, agent, wait, [], r.conversation_id).catch((err) =>
+						console.error(`whatsapp run ${runId} → grupo ${g.id}:`, (err as Error).message),
+					);
+				for (const phone of direct) await sayDirect(n, agent, phone, wait).catch(() => {});
+				for (const chat of simChats)
+					await sim.out(r.agent_id, chat, r.name, wait, [], { conversationId: r.conversation_id });
+			}
+			groups = own ? [own] : [];
+			direct.length = 0;
+			simChats.length = 0;
+		}
+		if (!groups.length && !direct.length && !simChats.length) return;
 		let text: string;
 		let files: InboundFile[] = [];
 		if (event === 'blocked') {
@@ -1355,7 +1753,8 @@ export async function onRun(
 			const questions = help.questions
 				.map((q, i) => `${i + 1}. ${q.title}\n${q.options.map((o) => `   - ${o.label}`).join('\n')}`)
 				.join('\n\n');
-			text = `Necesito tu ayuda: ${help.reason}${questions ? `\n\n${questions}` : ''}\n\nResponde aquí para que siga.`;
+			// In its own words: its question, and its options if it gave some.
+			text = `${help.reason}${questions ? `\n\n${questions}` : ''}`;
 			if (shot?.jpeg && shot.url && shot.url !== 'about:blank')
 				files = [{ name: 'pantalla.jpg', mime: 'image/jpeg', data: shot.jpeg }];
 		} else if (event === 'done') {
@@ -1375,6 +1774,12 @@ export async function onRun(
 				console.error(`whatsapp run ${runId} → grupo ${g.id}:`, (err as Error).message),
 			);
 		}
+		for (const phone of direct)
+			await sayDirect(n, agent, phone, chunk(text), files, false, r.conversation_id).catch((err) =>
+				console.error(`whatsapp run ${runId} → directo …${phone.slice(-4)}:`, (err as Error).message),
+			);
+		for (const chat of simChats)
+			await sim.out(r.agent_id, chat, r.name, chunk(text), files, { conversationId: r.conversation_id });
 	} catch (err) {
 		console.error(`whatsapp run ${runId}:`, (err as Error).message);
 	}
@@ -1427,25 +1832,78 @@ export async function maintenanceNotice(runId: number, text: string) {
 
 // ---------- notices the agent sends on its own (whatsapp_notify) ----------
 
-const NOTICES_PER_RUN = 3,
-	NOTICES_PER_DAY = 10;
+/** In the quiet hours (configured, the platform's time zone), when they end; otherwise null. */
+export function quietUntil(now: Date) {
+	const s = settings();
+	const [h, m] = new Intl.DateTimeFormat('en-GB', {
+		hour: '2-digit',
+		minute: '2-digit',
+		hourCycle: 'h23',
+		timeZone: TZ,
+	})
+		.format(now)
+		.split(':')
+		.map(Number);
+	if (!inQuietHours(h, s)) return null;
+	const minutes = h * 60 + m;
+	const left = (s.quietTo * 60 - minutes + 1440) % 1440;
+	return new Date(Math.floor(now.getTime() / 60_000) * 60_000 + left * 60_000);
+}
+
+/** The notices the quiet hours held: when they end they go out, each checked again as if sent then. */
+export async function sendDeferred(now = new Date()) {
+	let n = 0;
+	for (;;) {
+		const d = await row<{ id: number; run_id: number; input: Parameters<typeof notify>[1] }>(
+			`update whatsapp_deferred set sent_at = now()
+			 where id = (select id from whatsapp_deferred where sent_at is null and send_at <= $1 order by id limit 1 for update skip locked)
+			 returning id, run_id, input`,
+			[now],
+		);
+		if (!d) return n;
+		const r = await notify(d.run_id, d.input, now).catch((err): NoticeResult => ({
+			ok: false,
+			error: (err as Error).message.slice(0, 300),
+		}));
+		await exec('update whatsapp_deferred set result = $2 where id = $1', [d.id, JSON.stringify(r)]);
+		if (!r.enviado_a?.length) console.warn(`aviso programado ${d.id}: ${noticeLine(r)}`);
+		n++;
+	}
+}
+
+let deferredSweeper: ReturnType<typeof setInterval> | null = null;
+export function startDeferredSweeper() {
+	deferredSweeper ??= setInterval(
+		() => void sendDeferred().catch((err) => console.error('avisos programados:', (err as Error).message)),
+		60_000,
+	);
+	deferredSweeper.unref?.();
+}
+
+// Per recipient, not per trabajo (Angel 11-nov-2026: the 3 per trabajo went; a trabajo of days needs more),
+// as the admin configured it (settings.noticesPerDay; 0 = no cap).
+const overCap = (sentToday: number) => !!settings().noticesPerDay && sentToday >= settings().noticesPerDay;
+const capReason = () => `ya recibió ${settings().noticesPerDay} avisos en las últimas 24 h`;
 
 export type NoticeResult = {
 	ok: boolean;
 	error?: string;
 	enviado_a?: string[];
 	no_enviado?: { para: string; motivo: string }[];
+	programado?: string;
+	siguiente?: string;
 };
 /** One line for the run's activity: who got the notice and who did not. */
 export function noticeLine(r: NoticeResult) {
 	const missed = (r.no_enviado ?? []).map((f) => `${f.para} (${f.motivo})`).join('; ');
+	if (r.programado) return `Programó el aviso por WhatsApp para el ${r.programado}: es horario de silencio.`;
 	return r.enviado_a?.length
 		? `Avisó por WhatsApp a ${r.enviado_a.join(', ')}.${missed ? ` No le llegó a: ${missed}.` : ''}`
 		: `No mandó el aviso por WhatsApp: ${r.error ?? missed}`;
 }
 /**
  * whatsapp_notify: the agent tells contacts something, as its contract says, in each one's group
- * «Agentes <owner>»: only contacts its owner switched on, not past the caps nor at night unless urgent.
+ * «Agentes <owner>»: only contacts its owner switched on, not past each one's daily cap nor at night unless urgent.
  * Says who got it and who did not, and why.
  */
 export async function notify(
@@ -1470,18 +1928,22 @@ export async function notify(
 		.trim()
 		.slice(0, 3500);
 	if (!text) return { ok: false, error: 'El aviso está vacío.' };
-	const hour = Number(
-		new Intl.DateTimeFormat('es-MX', { hour: 'numeric', hourCycle: 'h23', timeZone: TZ }).format(now),
-	);
-	if ((hour >= 22 || hour < 7) && input.urgent !== true)
+	// In the quiet hours it is not refused: it waits for their end and goes out by itself (unless urgent).
+	const until = quietUntil(now);
+	if (until && input.urgent !== true) {
+		await exec('insert into whatsapp_deferred (agent_id, run_id, input, send_at) values ($1, $2, $3, $4)', [
+			a.id,
+			runId,
+			JSON.stringify({ to: input.to, text, file: input.file ?? null }),
+			until,
+		]);
+		const when = until.toLocaleString('es-MX', { timeZone: TZ, weekday: 'long', hour: 'numeric', minute: '2-digit' });
 		return {
-			ok: false,
-			error: 'Horario de silencio (22:00 a 7:00): no se mandan avisos salvo urgentes. Déjalo en tu respuesta.',
+			ok: true,
+			programado: when,
+			siguiente: `Es horario de silencio (${quietHours()?.from} a ${quietHours()?.to}): el aviso quedó programado y sale solo el ${when}, con las mismas reglas. No lo repitas ni lo dejes pendiente.`,
 		};
-	const sent = (await row<{ n: number }>('select count(*)::int as n from whatsapp_notices where run_id = $1', [runId]))!
-		.n;
-	if (sent >= NOTICES_PER_RUN)
-		return { ok: false, error: `Ya mandaste ${NOTICES_PER_RUN} avisos en este trabajo: es el tope.` };
+	}
 	const wanted = (Array.isArray(input.to) ? input.to : [input.to])
 		.map((x) => String(x ?? ''))
 		.filter(Boolean)
@@ -1499,6 +1961,8 @@ export async function notify(
 			]
 		: [];
 	const agent = { id: a.id, name: a.name, owner_id: a.person_id };
+	// Written from an open trabajo, whoever answers answers there (its saga); from the Principal, in their chat.
+	const replyTo = await trabajoOf(a.id, a.conversation_id);
 	const delivered: string[] = [],
 		failed: { para: string; motivo: string }[] = [];
 	for (const name of wanted) {
@@ -1514,17 +1978,30 @@ export async function notify(
 			});
 			continue;
 		}
-		if (c.kind === 'supplier') {
+		if (
+			(c.kind === 'external' || c.kind === 'direct') &&
+			(await row("select 1 from delegations where number_id = $1 and phone = $2 and status = 'active'", [
+				n.id,
+				c.phone,
+			]))
+		) {
+			failed.push({
+				para: c.name,
+				motivo: 'tiene un encargo activo: háblale por el encargo (delegation_message), no con un aviso',
+			});
+			continue;
+		}
+		if (c.kind === 'external') {
 			const sentToday = (await row<{ n: number }>(
 				"select count(*)::int as n from whatsapp_notices where number_id = $1 and phone = $2 and at > now() - interval '1 day'",
 				[n.id, c.phone],
 			))!.n;
-			if (sentToday >= NOTICES_PER_DAY) {
-				failed.push({ para: c.name, motivo: `ya recibió ${NOTICES_PER_DAY} avisos en las últimas 24 h` });
+			if (overCap(sentToday)) {
+				failed.push({ para: c.name, motivo: capReason() });
 				continue;
 			}
 			try {
-				await toSupplier(n, a, c.phone, text, file, a.conversation_id);
+				await toExternal(n, a, c.phone, text, file, a.conversation_id);
 				await exec('insert into whatsapp_notices (agent_id, run_id, number_id, phone) values ($1, $2, $3, $4)', [
 					a.id,
 					runId,
@@ -1535,6 +2012,41 @@ export async function notify(
 			} catch (err) {
 				failed.push({ para: c.name, motivo: (err as Error).message.slice(0, 200) });
 			}
+			continue;
+		}
+		if (c.kind === 'direct') {
+			const sentToday = (await row<{ n: number }>(
+				"select count(*)::int as n from whatsapp_notices where number_id = $1 and phone = $2 and at > now() - interval '1 day'",
+				[n.id, c.phone],
+			))!.n;
+			if (overCap(sentToday)) {
+				failed.push({ para: c.name, motivo: capReason() });
+				continue;
+			}
+			try {
+				// From another conversation (a schedule's), their reply carries what it said.
+				const own = await row('select 1 from conversations where id = $1 and agent_id = $2 and whatsapp_key = $3', [
+					a.conversation_id,
+					a.id,
+					`d:${n.id}:${c.phone}`,
+				]);
+				await sayDirect(n, agent, c.phone, text, file, !own, replyTo);
+				await exec('insert into whatsapp_notices (agent_id, run_id, number_id, phone) values ($1, $2, $3, $4)', [
+					a.id,
+					runId,
+					n.id,
+					c.phone,
+				]);
+				delivered.push(c.name);
+			} catch (err) {
+				failed.push({ para: c.name, motivo: (err as Error).message.slice(0, 200) });
+			}
+			continue;
+		}
+		if (c.kind !== 'owner' && (await sim.on(a.id))) {
+			// Simulated: no real group needed (its owner's notices stay real).
+			await sim.out(a.id, `g:${c.phone}`, a.name, text, file, { conversationId: replyTo });
+			delivered.push(c.name);
 			continue;
 		}
 		const find = () =>
@@ -1551,13 +2063,14 @@ export async function notify(
 			"select count(*)::int as n from whatsapp_notices where number_id = $1 and phone = $2 and at > now() - interval '1 day'",
 			[n.id, c.phone],
 		))!.n;
-		if (today >= NOTICES_PER_DAY) {
-			failed.push({ para: c.name, motivo: `ya recibió ${NOTICES_PER_DAY} avisos en las últimas 24 h` });
+		if (overCap(today)) {
+			failed.push({ para: c.name, motivo: capReason() });
 			continue;
 		}
 		try {
-			// The owner's reply goes on in this run's conversation; anyone else's, in their group's with it.
-			await sayInGroup(n, g, agent, text, file, c.kind === 'owner' ? a.conversation_id : null);
+			// The owner's reply goes on in this run's conversation; anyone else's, in the trabajo it was written from
+			// (from the Principal, in their group's with it).
+			await sayInGroup(n, g, agent, text, file, c.kind === 'owner' ? a.conversation_id : replyTo);
 			await exec('insert into whatsapp_notices (agent_id, run_id, number_id, phone) values ($1, $2, $3, $4)', [
 				a.id,
 				runId,
@@ -1596,4 +2109,132 @@ async function outputs(runId: number) {
 			return [];
 		}
 	});
+}
+
+// ---------- Conversaciones simuladas: the owner writes as one of the agent's contacts ----------
+
+export type SimChat = {
+	chat: string;
+	kind: 'group' | 'direct' | 'external';
+	/** Who it is, as its owner sees them (its owner: «owner»). */
+	role: 'person' | 'guest' | 'direct' | 'external';
+	name: string;
+	shown: string;
+};
+
+/**
+ * The chats of its simulator: each contact switched on for it, as Canales lists them, but its owner: what the
+ * agent tells its owner is always real (they talk to it from their own WhatsApp).
+ */
+export async function simChats(agentId: number, owner: Person): Promise<SimChat[]> {
+	const n = await groupNumber();
+	if (!n) return [];
+	return (await contacts(agentId, owner, n))
+		.filter((c) => c.enabled && c.kind !== 'owner')
+		.map((c) => ({
+			chat: c.kind === 'external' ? `e:${c.phone}` : c.kind === 'direct' ? `d:${c.phone}` : `g:${c.phone}`,
+			kind: c.kind === 'external' ? 'external' : c.kind === 'direct' ? 'direct' : 'group',
+			role: c.kind as SimChat['role'],
+			name: c.name,
+			shown: c.shown,
+		}));
+}
+
+/**
+ * Its owner writes as one of its contacts (Conversaciones simuladas on). It goes the way a real message of
+ * theirs would: to an active simulated encargo with them, to a task waiting for their reply, or to the
+ * conversation the agent last spoke to them from (else a new one). Real groups and chats are not touched.
+ */
+export async function simulate(
+	agentId: number,
+	owner: Person,
+	chat: string,
+	input: { text?: unknown; files?: unknown },
+	/** Written by the simulator's AI actor, not by its owner. */
+	actor = false,
+): Promise<Record<string, unknown>> {
+	if (!(await sim.on(agentId)))
+		throw new Error('Enciende «Conversaciones simuladas» para escribir como sus contactos.');
+	const n = await groupNumber();
+	if (!n) throw new Error('No hay un número de WhatsApp para sus contactos.');
+	const c = (await simChats(agentId, owner)).find((x) => x.chat === chat);
+	if (!c) throw new Error('Ese contacto no está habilitado para este agente.');
+	const a = (await row<{ id: number; name: string; owner_id: number }>(
+		'select id, name, person_id as owner_id from agents where id = $1',
+		[agentId],
+	))!;
+	const text = String(input.text ?? '')
+		.trim()
+		.slice(0, 4000);
+	const files = (Array.isArray(input.files) ? input.files : []).slice(0, 10).map((f: any) => ({
+		name: String(f?.name ?? 'archivo').slice(0, 100),
+		mime: String(f?.mime ?? 'application/octet-stream'),
+		data: String(f?.data ?? ''),
+	}));
+	if (!text && !files.length) throw new Error('Escribe un mensaje.');
+	const phone = chat.slice(2);
+	const id = await sim.inbound(agentId, chat, c.name, text, files, actor);
+	const key = `sim:${chat}`;
+	if (/^\/terminar\b/i.test(text)) {
+		const closed = await endJobs(agentId, key, c.name);
+		await sim.follow(agentId, chat, null);
+		await sim.out(
+			agentId,
+			chat,
+			a.name,
+			closed ? 'Terminé nuestra conversación; la próxima empieza de cero.' : 'No hay una conversación abierta.',
+		);
+		return { command: true };
+	}
+	// An external contact with an active simulated encargo: it is for that encargo.
+	if (c.kind === 'external' || c.kind === 'direct') {
+		const delegated = await (await import('./delegations')).inbound(n, phone, `sim:${id}`, text, { files }, true);
+		if (delegated) {
+			await exec(
+				'update whatsapp_sim_messages s set delegation_id = d.id, conversation_id = d.conversation_id from delegations d where s.id = $1 and d.id = $2',
+				[id, delegated.delegation],
+			);
+			return delegated;
+		}
+	}
+	const flows = await import('./flows');
+	const awaited = await flows.waitingOn(agentId, n.id, phone, true);
+	if (awaited) await exec('update conversations set archived_at = null where id = $1', [awaited.conversation_id]);
+	const conversationId =
+		awaited?.conversation_id ??
+		(await sim.followed(agentId, chat)) ??
+		(await whatsappConversation(agentId, key, `WhatsApp · ${c.name} (simulación)`));
+	if (!awaited) await sim.follow(agentId, chat, conversationId);
+	await sim.tag(id, conversationId);
+	const role =
+		c.role === 'person'
+			? 'con quien tu dueño compartió este agente (no es tu dueño)'
+			: c.role === 'external'
+				? EXTERNAL_ROLE
+				: 'invitado de tu dueño (no es tu dueño)';
+	const personId =
+		c.role === 'person'
+			? ((
+					await row<{ person_id: number }>(
+						"select person_id from whatsapp_phones where number_id = $1 and phone = $2 and list = 'allow'",
+						[n.id, phone],
+					)
+				)?.person_id ?? null)
+			: null;
+	const result = await receive(
+		{
+			agentId,
+			conversationId,
+			source: 'whatsapp',
+			personId,
+			sender: `${c.name} (+${phone}), ${role}`,
+			text,
+			attachments: files,
+			context: { whatsapp: { number: n.id, phone, sim: chat } },
+			dedupeKey: `sim:${id}`,
+		},
+		{ routeNow: false },
+	);
+	if (awaited && !result.duplicate) await flows.heard(awaited, text || `[mandó ${files.length} archivo(s)]`);
+	return result;
 }

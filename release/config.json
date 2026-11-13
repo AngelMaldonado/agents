@@ -5,6 +5,7 @@
 	"repository": "AngelMaldonado/agents",
 	"workBranch": "wip",
 	"releaseBranch": "main",
+	"requiredChecks": ["Required checks"],
 	"stableBranch": "stable",
 	"platform": "linux/amd64",
 	"registry": "registry.cubytest.space/cuby",

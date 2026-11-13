@@ -252,6 +252,8 @@ async function cronTickFn(when: Date, ctx: { agentId: number; message: string; n
 					text: ctx.message,
 					scheduleName: ctx.name,
 					dedupeKey: `cron:${ctx.name}:${when.toISOString()}`,
+					// Each tick is a trabajo of its own: its own conversation, objective and evaluation.
+					job: { origin: 'cron', title: ctx.message.slice(0, 80) },
 				},
 				{ routeNow: false },
 			),

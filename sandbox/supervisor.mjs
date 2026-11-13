@@ -46,11 +46,13 @@ const OUT = join(WORK, 'out');
 const PI_DIR = join(STATE, 'pi-agent');
 // CLI tools the owner approved (harness installs), installed once per list into the volume.
 const TOOLS = join(STATE, 'tools');
-// CLI tools installed by hand (the owner's terminal, or the agent itself): npm -g, uv tool, pip --user.
-// In the volume and on the PATH, so they are there at the next run (#27).
+// CLI tools installed by hand (the owner's terminal, or the agent itself): bun add -g, uv tool, pip --user.
+// In the volume and on the PATH, so they are there at the next run (#27). The computer runs on Bun: there
+// is no Node.js nor npm (`node` and `npx` are Bun's stand-ins, at the end of the PATH).
 const LOCAL = join(STATE, 'local');
 const localEnv = {
-	NPM_CONFIG_PREFIX: LOCAL,
+	BUN_INSTALL_GLOBAL_DIR: join(LOCAL, 'bun'),
+	BUN_INSTALL_BIN: join(LOCAL, 'bin'),
 	PYTHONUSERBASE: LOCAL,
 	UV_TOOL_DIR: join(LOCAL, 'uv'),
 	UV_TOOL_BIN_DIR: join(LOCAL, 'bin'),
@@ -79,6 +81,7 @@ let expectedHarness = null;
 const piQueue = []; // steer/follow-up/abort that arrived before that
 let blockedWaitMs = 10 * 60_000;
 let session = null; // from the backend's start message; reconnects with it
+let assignedCard = null; // Pagos simulados: the run's card, for the browser wrapper (GET /card)
 let bye = false; // the backend ended the run: a close is final
 const backlog = []; // what could not be sent while the link was down (never frames)
 const BACKLOG_MAX = 2000;
@@ -116,6 +119,8 @@ function onBackend(raw) {
 			send({ t: 'caps', takeover: true }); // images before takeover never say so
 			session = msg.session ?? null;
 			blockedWaitMs = msg.blockedWaitMs ?? blockedWaitMs;
+			// Its assigned card for this run (Pagos simulados), whole: only the browser wrapper asks for it.
+			assignedCard = msg.card ?? null;
 			void start(msg).catch((err) => send({ t: 'startup_error', message: err.message }));
 			break;
 		case 'resumed':
@@ -150,6 +155,30 @@ function onBackend(raw) {
 			const waiter = notifyWaiters.get(msg.id);
 			notifyWaiters.delete(msg.id);
 			waiter?.(msg);
+			break;
+		}
+		case 'job_res': {
+			const waiter = jobWaiters.get(msg.id);
+			jobWaiters.delete(msg.id);
+			waiter?.(msg.result);
+			break;
+		}
+		case 'memory_res': {
+			const waiter = memoryWaiters.get(msg.id);
+			memoryWaiters.delete(msg.id);
+			waiter?.(msg.result);
+			break;
+		}
+		case 'flow_res': {
+			const waiter = flowWaiters.get(msg.id);
+			flowWaiters.delete(msg.id);
+			waiter?.(msg.result);
+			break;
+		}
+		case 'delegation_res': {
+			const waiter = delegationWaiters.get(msg.id);
+			delegationWaiters.delete(msg.id);
+			waiter?.(msg.result);
 			break;
 		}
 		case 'collect':
@@ -399,7 +428,10 @@ async function start(msg) {
 		...proxyEnvironment(msg.proxy),
 		...prepared.env,
 		...localEnv,
-		PATH: toolPath,
+		// agent-browser passes through its wrapper first: it heals a lost tab and, in a simulated list of
+		// tasks (AGENTS_SIMULATION), intercepts clicks to pay.
+		PATH: `/opt/agents/browser-bin:${toolPath}`,
+		...(msg.simulation ? { AGENTS_SIMULATION: '1' } : {}),
 		OPENAI_API_KEY: LLM_TOKEN,
 		// The harness' subagents run pi again with the agent's own model and system prompt.
 		AGENTS_MODEL: msg.model,
@@ -446,7 +478,7 @@ async function start(msg) {
 		);
 		const probe = await new Promise((resolve, reject) =>
 			execFile(
-				'node',
+				process.execPath,
 				['/opt/agents/harness-probe.mjs'],
 				{
 					timeout: 30000,
@@ -643,13 +675,13 @@ async function installTools(installs, env) {
 	send({ t: 'note', message: `Instalando herramientas: ${installs.map((i) => i.name ?? i.spec).join(', ')}…` });
 	rmSync(TOOLS, { recursive: true, force: true });
 	mkdirSync(join(TOOLS, 'bin'), { recursive: true });
+	// Packages from the npm registry, installed with Bun into their own project (its node_modules/.bin is on the PATH).
 	const npm = installs.filter((i) => i.kind === 'npm').map((i) => i.spec);
-	if (npm.length)
-		await run(
-			'npm',
-			['install', '--prefix', join(TOOLS, 'npm'), '--no-audit', '--no-fund', '--loglevel=error', ...npm],
-			env,
-		);
+	if (npm.length) {
+		mkdirSync(join(TOOLS, 'npm'), { recursive: true });
+		writeFileSync(join(TOOLS, 'npm', 'package.json'), JSON.stringify({ private: true }));
+		await run('bun', ['add', '--cwd', join(TOOLS, 'npm'), '--exact', '--no-progress', ...npm], env);
+	}
 	for (const i of installs.filter((x) => x.kind === 'uv')) {
 		await run('uv', ['tool', 'install', i.spec], {
 			...env,
@@ -696,7 +728,7 @@ async function checkAccess(prepared, msg, env, secrets, install = true) {
 	if (servers.length)
 		mcp = await new Promise((resolve) =>
 			execFile(
-				'node',
+				process.execPath,
 				['/opt/agents/harness-check.mjs'],
 				{
 					cwd: WORK,
@@ -891,6 +923,14 @@ async function selfOperation(request) {
 const credWaiters = new Map();
 const notifyWaiters = new Map();
 let notifySeq = 0;
+const delegationWaiters = new Map();
+let delegationSeq = 0;
+const flowWaiters = new Map();
+let flowSeq = 0;
+const memoryWaiters = new Map();
+let memorySeq = 0;
+const jobWaiters = new Map();
+let jobSeq = 0;
 let credSeq = 0;
 
 createServer((req, res) => {
@@ -915,6 +955,11 @@ createServer((req, res) => {
 						JSON.stringify({ error: 'No se pudo completar el mantenimiento. Consulta el estado antes de repetir.' }),
 					),
 				);
+			return;
+		}
+		if (req.method === 'GET' && req.url === '/card') {
+			// The browser wrapper fills {{tarjeta.*}} with it; the model never gets it.
+			res.end(JSON.stringify(assignedCard ? { ok: true, card: assignedCard } : { ok: false }));
 			return;
 		}
 		if (req.method === 'POST' && req.url === '/blocked') {
@@ -970,6 +1015,140 @@ createServer((req, res) => {
 				done(result);
 			});
 			send({ t: 'notify', id, to: q.para, text: q.texto, urgent: !!q.urgente, file });
+			return;
+		}
+		if (req.method === 'POST' && req.url === '/simulated') {
+			// Simulación: the interceptor stopped a click to pay; the platform records it.
+			let q = {};
+			try {
+				q = JSON.parse(body);
+			} catch {}
+			send({
+				t: 'simulated',
+				action: String(q.action ?? '').slice(0, 300),
+				label: String(q.label ?? '').slice(0, 200),
+			});
+			return res.end(JSON.stringify({ ok: true }));
+		}
+		const jobOp = req.method === 'POST' && req.url?.match(/^\/job\/(done|goal)$/);
+		if (jobOp) {
+			// The trabajo it works on: the server keeps its objective and closes it.
+			let args = {};
+			try {
+				args = JSON.parse(body);
+			} catch {}
+			const id = ++jobSeq;
+			const timer = setTimeout(() => {
+				jobWaiters.delete(id);
+				res.end(JSON.stringify({ ok: false, error: 'La plataforma no respondió a tiempo.' }));
+			}, 25_000);
+			jobWaiters.set(id, (r) => {
+				clearTimeout(timer);
+				res.end(JSON.stringify(r ?? { ok: false, error: 'Sin respuesta.' }));
+			});
+			send({ t: 'job', id, op: jobOp[1], args });
+			return;
+		}
+		const flowOp = req.method === 'POST' && req.url?.match(/^\/flow\/(plan|update|ask|list)$/);
+		if (flowOp) {
+			// Tareas: the server checks the list, the recipe and the budget, and keeps the tasks.
+			let args = {};
+			try {
+				args = JSON.parse(body);
+			} catch {}
+			// A question's files (a report) go along, read here from ~/work.
+			if (Array.isArray(args.archivos)) {
+				const files = [];
+				for (const path of args.archivos.slice(0, 5)) {
+					const full = resolve(WORK, String(path));
+					if (!full.startsWith(`${WORK}/`))
+						return res.end(JSON.stringify({ ok: false, error: 'Los archivos deben estar dentro de ~/work.' }));
+					try {
+						const data = readFileSync(full);
+						if (data.length > 8 * 1024 * 1024)
+							return res.end(JSON.stringify({ ok: false, error: `${path} pasa de 8 MB.` }));
+						files.push({ name: basename(full), data: data.toString('base64') });
+					} catch {
+						return res.end(JSON.stringify({ ok: false, error: `No encontré ${path}.` }));
+					}
+				}
+				delete args.archivos;
+				args.files = files;
+			}
+			const id = ++flowSeq;
+			const timer = setTimeout(() => {
+				flowWaiters.delete(id);
+				res.end(JSON.stringify({ ok: false, error: 'La plataforma no respondió a tiempo; consulta task_list.' }));
+			}, 50_000);
+			flowWaiters.set(id, (r) => {
+				clearTimeout(timer);
+				res.end(JSON.stringify(r ?? { ok: false, error: 'Sin respuesta.' }));
+			});
+			send({ t: 'flow', id, op: flowOp[1], args });
+			return;
+		}
+		const memoryOp = req.method === 'POST' && req.url?.match(/^\/memory\/(learn)$/);
+		if (memoryOp) {
+			// Aprendizajes (learn): the server keeps what the agent learns for other trabajos.
+			let args = {};
+			try {
+				args = JSON.parse(body);
+			} catch {}
+			const id = ++memorySeq;
+			const timer = setTimeout(() => {
+				memoryWaiters.delete(id);
+				res.end(
+					JSON.stringify({
+						ok: false,
+						error: 'La plataforma no respondió a tiempo; no repitas el mismo aprendizaje.',
+					}),
+				);
+			}, 25_000);
+			memoryWaiters.set(id, (r) => {
+				clearTimeout(timer);
+				res.end(JSON.stringify(r ?? { ok: false, error: 'Sin respuesta.' }));
+			});
+			send({ t: 'memory', id, op: memoryOp[1], args });
+			return;
+		}
+		const delegationOp = req.method === 'POST' && req.url?.match(/^\/delegation\/(start|status|message|cancel)$/);
+		if (delegationOp) {
+			// Encargos: the server checks the template, the contact and the limits, and runs them.
+			let args = {};
+			try {
+				args = JSON.parse(body);
+			} catch {}
+			// Files of ~/work it may send the contact go along, read here (the server never reads this disk).
+			if (Array.isArray(args.archivos)) {
+				const files = [];
+				for (const path of args.archivos.slice(0, 5)) {
+					const full = resolve(WORK, String(path));
+					if (!full.startsWith(`${WORK}/`))
+						return res.end(JSON.stringify({ ok: false, error: 'Los archivos deben estar dentro de ~/work.' }));
+					try {
+						const data = readFileSync(full);
+						if (data.length > 8 * 1024 * 1024)
+							return res.end(JSON.stringify({ ok: false, error: `${path} pasa de 8 MB.` }));
+						files.push({ name: basename(full), data: data.toString('base64') });
+					} catch {
+						return res.end(JSON.stringify({ ok: false, error: `No encontré ${path}.` }));
+					}
+				}
+				delete args.archivos;
+				args.files = files;
+			}
+			const id = ++delegationSeq;
+			const timer = setTimeout(() => {
+				delegationWaiters.delete(id);
+				res.end(
+					JSON.stringify({ ok: false, error: 'La plataforma no respondió a tiempo; consulta delegation_status.' }),
+				);
+			}, 50_000);
+			delegationWaiters.set(id, (r) => {
+				clearTimeout(timer);
+				res.end(JSON.stringify(r ?? { ok: false, error: 'Sin respuesta.' }));
+			});
+			send({ t: 'delegation', id, op: delegationOp[1], args });
 			return;
 		}
 		if (req.method === 'POST' && req.url === '/pi-launch') {
@@ -1275,7 +1454,7 @@ function writeConfig(prepared, msg) {
 					? installs.map((i) => `- **${i.kind}**: \`${i.name ?? i.spec}\`${i.kind === 'binary' ? ` (${i.spec})` : ''}`)
 					: ['Ninguna aprobada.']),
 				'',
-				'Se instalan en `~/state/tools` (aprobadas) y lo que instales a mano en `~/state/local` (npm -g, uv tool, pip --user).',
+				'Se instalan en `~/state/tools` (aprobadas) y lo que instales a mano en `~/state/local` (bun add -g, uv tool, pip --user). La computadora corre con Bun: no hay Node.js ni npm (`node` y `npx` son Bun).',
 			]),
 		);
 	} catch (err) {

@@ -375,7 +375,7 @@ function DocTiles({ docs, onOpen }: { docs: Doc[]; onOpen: (doc: Doc) => void })
 }
 
 /** The definition's revisions; restoring prepares a draft in Automejora (it must be tested and approved). */
-function Revisions({
+export function Revisions({
 	agent,
 	mine,
 	current,

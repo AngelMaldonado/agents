@@ -1,0 +1,5 @@
+#!/bin/sh
+# Aprendizajes (learn): what the agent learns for other trabajos, kept by the platform.
+# Usage: agents-memory learn '<json>'
+if [ -z "$1" ] || [ -z "$2" ]; then echo 'Uso: agents-memory learn <json>' >&2; exit 2; fi
+exec curl -sS --max-time 30 -X POST -H 'content-type: application/json' --data-binary "$2" "http://127.0.0.1:7777/memory/$1"

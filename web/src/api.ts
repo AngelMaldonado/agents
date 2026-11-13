@@ -67,6 +67,19 @@ export type Agent = {
 	handle?: string;
 	/** Yours or shared with you: you can write to it (an admin sees others' agents without using them). */
 	usable?: boolean;
+	/** Hours without activity that close one of its trabajos. */
+	inactivity_hours?: number;
+	/** Pagos simulados: its payments are intercepted and it sees them as done (to test flows). */
+	simulated_payments?: boolean;
+	/** Conversaciones simuladas: its WhatsApp goes to the simulator. */
+	simulated_conversations?: boolean;
+	/** Modo objetivo: its trabajos go on by themselves until their objective is met. */
+	goal_mode?: boolean;
+	/** Personalidad: its owner's five dials (shared/personality.ts); absent: the platform's default. */
+	personality?: Record<string, number> | null;
+	/** Estilo (shared/souls.ts): its preset (null: Cuby YOLO) and its owner's own text, if any. */
+	style?: string | null;
+	soul?: string | null;
 };
 /** GET /api/search: a match in what someone said to an agent, or what it answered. */
 export type SearchHit = {
@@ -186,6 +199,8 @@ export type Design = {
 		error: string | null;
 		steps: { id: string; label: string; done: boolean }[];
 	} | null;
+	/** Modo objetivo proposed (null: keeps the agent's). */
+	goal_mode?: boolean | null;
 };
 export type AccessCheck = {
 	tools: { ok: boolean; names: string[]; detail?: string };
@@ -201,12 +216,29 @@ export type Conversation = {
 	agent_id: number;
 	title: string;
 	is_default: boolean;
+	/** Where it started: web, whatsapp, cron, hook (null: the Principal, or before 042). */
+	origin?: string | null;
 	started_at: number;
 	archived_at: number | null;
 	runs: number;
 	last_at?: number; // its latest message or run («Recientes»)
 	/** It has a run in the queue or working now. */
 	live?: boolean;
+	/** As a trabajo: its objective and state (the Principal is not one). */
+	goal?: string | null;
+	status?: 'open' | 'done' | 'closed';
+	closed_at?: number | null;
+	end_reason?: string | null;
+	/** Its evaluation, 0 to 100. */
+	score?: number | null;
+	/** Its evaluation's state: pending while another agent evaluates it. */
+	evaluation?: 'pending' | 'done' | 'failed' | null;
+	/** How many of its agent's lessons came from it (Aprendizajes). */
+	learned?: number;
+	/** Its list of tasks: how many, how many over, and the one going on now. */
+	tasks?: number;
+	tasks_done?: number;
+	task_now?: string | null;
 };
 export type WorkRecord = { task: Task; events: TaskEvent[]; artifacts: Artifact[] };
 export type ConversationInput = {

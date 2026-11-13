@@ -258,11 +258,13 @@
 			scale: 1.6;
 		}
 	}
+	/* A fixed 16:9 box: the picture sits inside it (absolute), so a frame arriving never makes the card
+	   taller and the page keeps its proportions (object-contain letterboxes it). */
 	.browser-view {
-		@apply relative flex aspect-video items-center justify-center bg-neutral-950;
+		@apply relative flex aspect-video min-h-0 items-center justify-center overflow-hidden bg-neutral-950;
 	}
 	.browser-view img {
-		@apply size-full object-contain select-none;
+		@apply absolute inset-0 size-full object-contain select-none;
 		pointer-events: none;
 	}
 	.browser-view img.ended {
@@ -281,9 +283,6 @@
 		@apply hidden;
 	}
 
-	.agent-head {
-		@apply mb-4 flex min-w-0 shrink-0 flex-wrap items-start justify-between gap-x-4 gap-y-3;
-	}
 	.agent-view {
 		@apply flex h-full min-h-0 flex-col overflow-hidden;
 	}
@@ -291,31 +290,290 @@
 		max-width: 120rem;
 	}
 	/* The hub (#/agent/:id) scrolls as a page; the chat and Automejora split the height they get. */
-	.agent-view[data-view='hub'] {
+	.agent-view[data-view='hub'],
+	.agent-view[data-view='job'] {
 		@apply h-auto overflow-visible;
 	}
 	.agent-hub {
-		@apply mx-auto flex w-full flex-col gap-8;
+		@apply mx-auto flex w-full flex-col gap-6;
 	}
-	/* The header spans the page; the work and everything under it share one centered column. */
-	.agent-hub > :not(.agent-head) {
-		@apply mx-auto w-full max-w-3xl;
+	/* Under the stage, its info and tabs share one wide centered column. */
+	.agent-hub > :not(.hub-stage) {
+		@apply mx-auto w-full max-w-[96rem];
 	}
-	.agent-hub .agent-head {
-		@apply mb-0;
+
+	/* The stage (like a stream): edge to edge of the page, as tall as it can without hiding what follows.
+	   The work sits centered at 16:9; the sides are a dark blur of it (its screen) or of its surface. */
+	.hub-stage {
+		@apply relative -mx-4 -mt-4 overflow-hidden lg:-mx-6 lg:-mt-6;
+		isolation: isolate;
+		height: clamp(15rem, min(64vh, 50cqw), 46rem);
+		background: #05070a;
 	}
-	.current-work {
-		@apply flex min-w-0 flex-col;
+	.hub-stage-backdrop {
+		@apply absolute -inset-[10%] -z-10 bg-cover bg-center;
+		filter: blur(48px) saturate(1.25) brightness(0.42);
+		transition: background-image 600ms ease;
+	}
+	.hub-stage-backdrop.tint-dark {
+		filter: none;
+		background: radial-gradient(ellipse at center, #1a1f27 0%, #07090c 62%, #030405 100%);
+	}
+	.hub-stage-backdrop.tint-card {
+		filter: none;
+		background: radial-gradient(
+			ellipse at center,
+			color-mix(in oklab, var(--card) 38%, #05070a) 0%,
+			#07090c 62%,
+			#030405 100%
+		);
+	}
+	.hub-stage-screen {
+		@apply relative mx-auto flex h-full max-w-full flex-col overflow-hidden;
+		aspect-ratio: 16 / 9;
+		box-shadow: 0 0 80px rgb(0 0 0 / 0.55);
+	}
+	.hub-stage-screen.surface-card {
+		@apply bg-card text-card-foreground;
+	}
+	.hub-stage-screen.surface-dark {
+		@apply bg-neutral-950;
+	}
+	.hub-stage-screen > * {
+		@apply min-h-0 flex-1;
+	}
+	.hub-stage-screen .agent-browser,
+	.hub-stage-screen .browser {
+		@apply rounded-none border-0;
+	}
+	.hub-stage-idle {
+		@apply flex flex-col items-center justify-center gap-3 text-sm text-neutral-400;
+	}
+	.hub-stage-badges {
+		@apply pointer-events-none absolute top-3 left-3 z-10 flex items-center gap-2 lg:top-4 lg:left-6;
+	}
+	.hub-live {
+		@apply rounded-sm bg-red-600 px-1.5 py-0.5 text-2xs font-semibold tracking-wide text-white uppercase;
+	}
+	.hub-view {
+		@apply rounded-sm bg-black/60 px-1.5 py-0.5 text-2xs font-medium text-neutral-100 backdrop-blur-sm;
+	}
+	/* The whole stage opens the work it shows; while the owner drives the browser it is not a link. */
+	.hub-stage-link {
+		@apply absolute inset-0 z-20 outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-inset;
+	}
+	.hub-stage-cta {
+		@apply absolute right-3 bottom-3 inline-flex items-center gap-1 rounded-full bg-black/70 px-3 py-1.5 text-xs font-medium text-white opacity-0 backdrop-blur-sm transition-opacity lg:right-6;
+	}
+	.hub-stage-cta svg {
+		@apply size-3.5;
+	}
+	.hub-stage-link:hover .hub-stage-cta,
+	.hub-stage-link:focus-visible .hub-stage-cta {
+		@apply opacity-100;
+	}
+
+	/* Under the stage, like a stream's info: avatar, name, what it works on, tags; actions on the right. */
+	.stream-info {
+		container: stream / inline-size;
+	}
+	/* Back, avatar, what it is and does, and its actions on the same row. */
+	.stream-grid {
+		@apply grid min-w-0 items-start gap-x-4 gap-y-3;
+		grid-template-columns: auto auto minmax(0, 1fr) auto;
+	}
+	.stream-avatar {
+		@apply relative shrink-0 rounded-full p-1;
+	}
+	.stream-avatar.is-live {
+		@apply ring-2 ring-red-600;
+	}
+	.stream-avatar-badge {
+		@apply absolute -bottom-1.5 left-1/2 -translate-x-1/2 whitespace-nowrap;
+	}
+	.stream-text {
+		@apply flex min-w-0 flex-col gap-1;
+	}
+	.stream-name {
+		@apply truncate text-xl font-semibold;
+	}
+	.stream-title {
+		@apply line-clamp-2 text-sm font-medium;
+	}
+	.stream-task {
+		@apply flex min-w-0 items-center gap-2 text-xs text-muted-foreground;
+	}
+	.stream-meta {
+		@apply flex min-w-0 items-center gap-1.5 text-xs text-muted-foreground;
+	}
+	.stream-tags {
+		@apply mt-1 flex flex-wrap gap-1.5;
+	}
+	.stream-tags li {
+		@apply rounded-full bg-muted px-2.5 py-0.5 text-xs text-muted-foreground;
+	}
+	.stream-side {
+		@apply flex min-w-0 flex-col items-end gap-2;
+	}
+	.stream-side .agent-actions {
+		@apply flex-nowrap;
+	}
+	.stream-stats {
+		@apply flex flex-wrap items-center justify-end gap-3 text-xs text-muted-foreground tabular-nums;
+	}
+
+	.hub-tabs {
+		@apply flex flex-col gap-4;
+	}
+	.hub-tabs-bar {
+		@apply flex flex-wrap items-center justify-between gap-2;
+	}
+	/* Its trabajos as cards: state and score, objective, number, turns and last activity. */
+	.job-grid {
+		@apply grid gap-3;
+		grid-template-columns: repeat(auto-fill, minmax(min(100%, 16rem), 1fr));
+	}
+	.job-card {
+		@apply relative min-w-0 rounded-card border bg-card transition-colors hover:border-primary/50 focus-within:ring-2 focus-within:ring-ring;
+	}
+	/* The agent working on it now: tinted in the theme's color (its spinner sits right of its state). */
+	.job-card.is-live {
+		@apply border-primary/45;
+		background: linear-gradient(180deg, color-mix(in oklab, var(--primary) 8%, var(--card)) 0%, var(--card) 60%);
+	}
+	.job-card-link {
+		@apply flex h-full min-w-0 flex-col gap-2 p-4 outline-none;
+	}
+	.job-card-top {
+		@apply flex min-h-6 items-center gap-2 pr-8 text-xs;
+	}
+	.job-card-status {
+		@apply text-muted-foreground;
+	}
+	/* Estilo: its presets as illustrated tiles (a tinted art box with its emoji and kaomoji), how it sounds. */
+	.style-grid {
+		@apply grid min-w-0 gap-2;
+		grid-template-columns: repeat(auto-fill, minmax(8.5rem, 1fr));
+	}
+	.style-tile {
+		@apply flex min-w-0 flex-col items-stretch gap-1 rounded-card border bg-card p-2 text-left transition-[transform,border-color,box-shadow] outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:cursor-default;
+	}
+	.style-tile:not(:disabled):hover {
+		transform: translateY(-2px);
+		border-color: oklch(0.65 0.14 var(--tone) / 0.6);
+	}
+	.style-tile.is-on {
+		border-color: oklch(0.65 0.16 var(--tone));
+		box-shadow: 0 0 0 2px oklch(0.65 0.16 var(--tone) / 0.35);
+	}
+	.style-tile.is-base {
+		@apply border-dashed;
+		border-color: oklch(0.65 0.16 var(--tone) / 0.7);
+	}
+	.style-art {
+		@apply relative flex h-16 items-center justify-center overflow-hidden rounded-md;
+		background:
+			radial-gradient(circle at 30% 20%, oklch(0.85 0.1 var(--tone) / 0.55), transparent 60%),
+			linear-gradient(135deg, oklch(0.7 0.13 var(--tone) / 0.35), oklch(0.55 0.13 calc(var(--tone) + 40) / 0.25));
+	}
+	.style-emoji {
+		@apply text-3xl leading-none;
+		transition: transform 200ms ease;
+	}
+	.style-tile:not(:disabled):hover .style-emoji,
+	.style-tile:not(:disabled):hover .cuby-bot {
+		transform: rotate(-8deg) scale(1.12);
+	}
+	.style-kaomoji {
+		@apply absolute right-1 bottom-0.5 max-w-full truncate text-2xs text-foreground/60;
+	}
+	.style-name {
+		@apply truncate text-sm font-medium;
+	}
+	.style-desc {
+		@apply line-clamp-2 text-2xs text-muted-foreground;
+	}
+	.style-sample {
+		@apply mt-3 grid gap-2;
+	}
+	.style-sample-label {
+		@apply text-2xs font-medium text-muted-foreground;
+	}
+	.style-bubble {
+		@apply w-fit max-w-[36rem] rounded-2xl rounded-bl-md border bg-card px-3 py-2 text-sm shadow-xs;
+	}
+	@media (prefers-reduced-motion: reduce) {
+		.style-tile,
+		.style-emoji {
+			transition: none;
+		}
+	}
+	/* Importar: what a .cubyagent brings and what it needs (✓ matched here, ✗ to add later). */
+	.bundle-preview {
+		@apply grid min-w-0 gap-3;
+	}
+	.bundle-contract {
+		@apply max-h-40 overflow-auto rounded-md border bg-muted/40 p-2 font-mono text-2xs whitespace-pre-wrap text-muted-foreground;
+	}
+	.bundle-needs {
+		@apply mt-1 grid gap-1 text-sm;
+	}
+	.bundle-needs > li {
+		@apply flex min-w-0 items-center gap-2;
+	}
+	.bundle-needs > li > svg {
+		@apply size-4 shrink-0 text-destructive;
+	}
+	.bundle-needs > li[data-have] > svg {
+		@apply text-success;
+	}
+	.bundle-need-state {
+		@apply ml-auto shrink-0 text-2xs text-muted-foreground;
+	}
+	/* Development only: the bubble that plays the cards' states (components/dev-bubble). */
+	.dev-bubble {
+		@apply fixed right-5 bottom-5 z-50 flex size-11 items-center justify-center rounded-full border bg-card text-muted-foreground shadow-lg transition-colors outline-none hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring;
+	}
+	.dev-bubble > svg {
+		@apply size-5;
+	}
+	.dev-bubble.is-on {
+		@apply border-warning text-warning;
+	}
+	.dev-bubble-row {
+		@apply flex flex-row items-center justify-between gap-3;
+	}
+	/* Beside its score: being evaluated (a spinner), and what its agent learned from it (a book). */
+	.job-card-mark {
+		@apply inline-flex items-center gap-1 text-muted-foreground tabular-nums;
+	}
+	.job-card-mark > svg {
+		@apply size-3.5;
+	}
+	.job-card-mark.is-learned {
+		@apply rounded-md px-1.5 py-0.5 font-medium;
+		background: color-mix(in oklab, var(--warning) 14%, transparent);
+		color: var(--warning-on-soft);
+	}
+	.job-card-title {
+		@apply line-clamp-2 text-sm font-medium;
+	}
+	.job-card-tasks {
+		@apply flex min-w-0 flex-col gap-1.5 text-xs text-muted-foreground;
+	}
+	.job-card-sub {
+		@apply line-clamp-1 text-xs text-muted-foreground;
+	}
+	.job-card-foot {
+		@apply mt-auto flex items-center justify-between gap-2 pt-1 text-xs text-muted-foreground tabular-nums;
+	}
+	.job-card-menu {
+		@apply absolute top-3 right-3 opacity-0 group-hover/job:opacity-100 focus-visible:opacity-100 data-[state=open]:opacity-100;
 	}
 	/* Nothing in the hub shrinks to fit the screen: it scrolls instead. */
 	.agent-hub,
-	.agent-hub > *,
-	.current-work .agent-tabs,
-	.current-work .work-body {
+	.agent-hub > * {
 		flex: none;
-	}
-	.current-work .work-body {
-		height: min(62vh, 40rem);
 	}
 	.work-footer {
 		@apply flex min-w-0 items-center justify-between gap-3 pt-3 text-xs;
@@ -323,17 +581,975 @@
 	.work-footer-face {
 		@apply flex size-6 shrink-0 items-center justify-center rounded-full bg-muted text-[0.5625rem] font-medium;
 	}
-	.hub-section-title {
-		@apply mb-2 text-xs font-medium text-muted-foreground;
+	/* A trabajo's page, like a card opened in Notion or Trello: the objective as its title, its properties, a
+	   description with the long text, its to-dos; then its flow, conversations and encargos. */
+	.job-page {
+		@apply flex w-full min-w-0 flex-col gap-8 pb-12;
 	}
-	.hub-list > li + li {
-		@apply border-t;
+	/* The card itself reads in a column; its flow, saga and conversations below get the page's width. */
+	.job-page-main {
+		@apply mx-auto flex w-full max-w-4xl min-w-0 flex-col gap-6;
 	}
-	.hub-row {
-		@apply flex min-w-0 items-center justify-between gap-4 rounded-md px-3 py-3 text-sm outline-none hover:bg-muted/50 focus-visible:ring-2 focus-visible:ring-ring;
+	.job-page-actions {
+		@apply flex min-w-0 flex-wrap items-center gap-2;
+	}
+	.job-page-head {
+		@apply -mt-2 flex min-w-0 items-start gap-2;
+	}
+	.job-page-title {
+		@apply line-clamp-2 min-w-0 flex-1 text-2xl leading-tight font-semibold tracking-tight break-words sm:text-3xl;
+	}
+	.job-page-goal-form {
+		@apply flex min-w-0 items-center gap-2;
+	}
+	.job-props {
+		@apply grid min-w-0 gap-y-2.5 text-sm;
+	}
+	.job-prop {
+		@apply grid min-w-0 items-center gap-x-4;
+		grid-template-columns: minmax(7rem, 9rem) minmax(0, 1fr);
+	}
+	.job-prop > dt {
+		@apply flex items-center gap-2 text-muted-foreground;
+	}
+	.job-prop > dt svg {
+		@apply size-4 shrink-0;
+	}
+	.job-prop > dd {
+		@apply flex min-h-7 min-w-0 flex-wrap items-center gap-2;
+	}
+	.job-section-title {
+		@apply mb-2 text-sm font-medium text-muted-foreground;
+	}
+	/* The long text, folded to a few lines; open while focused or when asked to stay open. */
+	.job-desc {
+		@apply min-w-0 text-sm leading-relaxed break-words;
+	}
+	.job-desc > * + * {
+		@apply mt-2;
+	}
+	.job-desc ul {
+		@apply mt-1 list-disc space-y-1 pl-5;
+	}
+	/* An encargo as a chat, like its WhatsApp: ours on the right, the contact on the left, notes in the middle. */
+	.encargo {
+		@apply flex min-w-0 flex-col gap-3;
+	}
+	.encargo-head {
+		@apply flex min-w-0 items-center gap-3 border-b pb-3;
+	}
+	.encargo-avatar {
+		@apply flex size-10 shrink-0 items-center justify-center rounded-full bg-primary/15 text-sm font-semibold text-primary;
+	}
+	.encargo-avatar.is-small {
+		@apply size-7 self-end text-2xs;
+	}
+	.encargo-row.is-grouped .encargo-avatar.is-small {
+		@apply bg-transparent;
+	}
+	.encargo-name {
+		@apply flex min-w-0 items-center gap-2 text-sm font-semibold;
+	}
+	.encargo-sub {
+		@apply truncate text-xs text-muted-foreground;
+	}
+	/* Its parts as quick accesses; one slides in over the list, with a way back. */
+	.encargo-parts {
+		@apply grid gap-2;
+	}
+	.encargo-parts .job-hub-conv:hover .job-eval-arrow,
+	.encargo-parts .job-hub-conv:focus-visible .job-eval-arrow {
+		@apply translate-x-0.5 text-foreground;
+	}
+	.encargo-part {
+		@apply flex min-w-0 flex-col gap-3;
+	}
+	.encargo-part-head {
+		@apply flex min-w-0 items-center gap-2;
+	}
+	.encargo-text {
+		@apply rounded-card border bg-card px-4 py-3 text-sm break-words whitespace-pre-wrap;
+	}
+	.encargo-thread {
+		@apply flex max-h-[min(60vh,40rem)] min-h-48 min-w-0 flex-col gap-1 overflow-y-auto rounded-card border p-3 sm:p-4;
+		background: color-mix(in oklab, var(--muted) 45%, var(--background));
+	}
+	.encargo-day {
+		@apply my-3 flex justify-center text-2xs font-medium text-muted-foreground first:mt-0;
+	}
+	.encargo-day > span {
+		@apply rounded-full bg-background px-2.5 py-0.5 shadow-xs first-letter:uppercase;
+	}
+	.encargo-row {
+		@apply mt-2 flex min-w-0 items-end gap-2;
+	}
+	.encargo-row.is-grouped {
+		@apply mt-0.5;
+	}
+	.encargo-row.is-ours {
+		@apply justify-end;
+	}
+	.encargo-bubble {
+		@apply max-w-[78%] min-w-0 rounded-2xl px-3 py-2 text-sm shadow-xs;
+	}
+	.encargo-row.is-theirs .encargo-bubble {
+		@apply rounded-bl-md border bg-card;
+	}
+	.encargo-row.is-ours .encargo-bubble {
+		@apply rounded-br-md bg-primary/12 dark:bg-primary/20;
+	}
+	/* «…»: someone is writing in this chat now (its agent, or the simulated contact's AI). */
+	.encargo-bubble.chats-typing {
+		@apply flex items-center gap-1 px-3.5 py-3;
+	}
+	.chats-typing > span {
+		@apply size-1.5 rounded-full bg-muted-foreground;
+		animation: chats-typing 1.2s ease-in-out infinite;
+	}
+	.chats-typing > span:nth-child(2) {
+		animation-delay: 0.15s;
+	}
+	.chats-typing > span:nth-child(3) {
+		animation-delay: 0.3s;
+	}
+	@keyframes chats-typing {
+		0%,
+		60%,
+		100% {
+			opacity: 0.35;
+			transform: translateY(0);
+		}
+		30% {
+			opacity: 1;
+			transform: translateY(-3px);
+		}
+	}
+	@media (prefers-reduced-motion: reduce) {
+		.chats-typing > span {
+			animation: none;
+		}
+	}
+	.encargo-author {
+		@apply mb-0.5 text-2xs font-semibold text-primary;
+	}
+	.encargo-row.is-theirs .encargo-author {
+		@apply text-foreground;
+	}
+	.encargo-files {
+		@apply mt-1 flex items-center gap-1 text-xs text-muted-foreground;
+	}
+	.encargo-files svg {
+		@apply size-3.5 shrink-0;
+	}
+	.encargo-time {
+		@apply mt-0.5 text-right text-2xs text-muted-foreground tabular-nums;
+	}
+	.encargo-instruction,
+	.encargo-note {
+		@apply mx-auto my-2 max-w-[85%] rounded-lg px-3 py-1.5 text-center text-xs text-muted-foreground;
+	}
+	.encargo-instruction {
+		@apply border border-dashed bg-background;
+	}
+	.encargo-instruction .encargo-time,
+	.encargo-note .encargo-time {
+		@apply mt-0 inline text-2xs;
+	}
+	/* A modal's body follows its content's height smoothly (a list giving way to a detail, another part). */
+	.smooth-height {
+		@apply min-w-0;
+		overflow: clip;
+		overflow-clip-margin: 6px;
+		transition: height 240ms cubic-bezier(0.2, 0, 0, 1);
+	}
+	/* Lists of rows inside modals: each row as wide as the modal, its long line cut with an ellipsis. */
+	.encargo-parts {
+		grid-template-columns: minmax(0, 1fr);
+	}
+	.encargo-parts > li {
+		@apply min-w-0;
+	}
+	.hub-main-link {
+		@apply py-1.5 pr-2 pl-2.5 text-sm;
+	}
+	@media (prefers-reduced-motion: reduce) {
+		.smooth-height,
+		.slide-stack-track {
+			transition: none;
+		}
+	}
+	/* Conversaciones: its WhatsApp chats as WhatsApp shows them, the list on the left and the chat on the right;
+	   on a phone, one at a time. */
+	.agent-chats-page {
+		@apply flex min-h-0 min-w-0 flex-1 flex-col;
+	}
+	.agent-chats-page > p {
+		@apply m-4;
+	}
+	.chats {
+		@apply grid min-h-0 min-w-0 flex-1 overflow-hidden bg-card md:grid-cols-[minmax(16rem,22rem)_minmax(0,1fr)];
+	}
+	.chats-list {
+		@apply flex min-h-0 min-w-0 flex-col border-r max-md:border-r-0;
+	}
+	.chats[data-open] .chats-list {
+		@apply max-md:hidden;
+	}
+	.chats:not([data-open]) .chats-pane {
+		@apply max-md:hidden;
+	}
+	.chats-list-head {
+		@apply grid gap-2 border-b p-3;
+	}
+	.chats-search-icon {
+		@apply pointer-events-none absolute top-1/2 left-2.5 size-4 -translate-y-1/2 text-muted-foreground;
+	}
+	.chats-rows {
+		@apply min-h-0 flex-1 overflow-y-auto;
+	}
+	.chats-row {
+		@apply flex w-full min-w-0 items-center gap-3 border-b border-border/60 px-3 py-2.5 text-left outline-none hover:bg-muted/60 focus-visible:bg-muted/60;
+	}
+	.chats-row[aria-current='true'] {
+		@apply bg-muted;
+	}
+	.chats-row-top,
+	.chats-row-bottom {
+		@apply flex min-w-0 items-center gap-2;
+	}
+	.chats-row-name {
+		@apply min-w-0 flex-1 truncate text-sm font-medium;
+	}
+	.chats-row-when {
+		@apply shrink-0 text-2xs text-muted-foreground tabular-nums;
+	}
+	.chats-row-last {
+		@apply flex min-w-0 flex-1 items-center gap-1 truncate text-xs text-muted-foreground;
+	}
+	.chats-row-last > svg {
+		@apply size-3.5 shrink-0 text-primary;
+	}
+	.chats-row-sim,
+	.chats-row-encargo {
+		@apply size-3.5 shrink-0;
+	}
+	.chats-row-sim {
+		@apply text-warning-on-soft;
+	}
+	.chats-row-encargo {
+		@apply text-primary;
+	}
+	.encargo-avatar.is-sim {
+		@apply bg-warning-soft text-warning-on-soft;
+	}
+	.chats-pane {
+		@apply flex min-h-0 min-w-0 flex-col;
+	}
+	/* The conversation with the agent, pinned on top; open, its chat and turn fill the right side. */
+	.chats-row-pinned {
+		@apply shrink-0 border-b;
+	}
+	.chats-row-pin {
+		@apply size-3.5 shrink-0 rotate-45 text-muted-foreground;
+	}
+	.chats-row-crown {
+		@apply size-3.5 shrink-0 fill-amber-400 text-amber-500;
+	}
+	/* An avatar with its channel at its corner (WhatsApp, the web). */
+	.chats-avatar {
+		@apply relative shrink-0;
+	}
+	.channel-badge {
+		@apply absolute -right-0.5 -bottom-0.5 flex size-[1.125rem] items-center justify-center rounded-full bg-card ring-2 ring-card;
+	}
+	.channel-badge > svg {
+		@apply size-3;
+	}
+	.encargo-avatar.is-agent {
+		@apply bg-primary text-primary-foreground;
+	}
+	.chats-pane > .chat-view {
+		@apply min-h-0 flex-1;
+	}
+	.chats-pane-back {
+		@apply flex items-center gap-1.5 border-b px-3 py-2 text-sm text-muted-foreground hover:text-foreground md:hidden;
+	}
+	.chats-pane-back > svg {
+		@apply size-4;
+	}
+	.chats-empty {
+		@apply flex flex-1 flex-col items-center justify-center gap-2 text-sm text-muted-foreground;
+	}
+	.chats-empty > svg {
+		@apply size-8 opacity-60;
+	}
+	.chats-thread {
+		@apply flex min-h-0 flex-1 flex-col;
+	}
+	.chats-thread-head {
+		@apply flex min-w-0 items-center gap-3 border-b px-3 py-2.5;
+	}
+	.chats-back {
+		@apply md:hidden;
+	}
+	.chats-messages {
+		@apply flex min-h-0 flex-1 flex-col gap-1 overflow-y-auto p-3 sm:px-6;
+		background: color-mix(in oklab, var(--muted) 45%, var(--background));
+	}
+	.chats-context {
+		@apply mx-auto my-2 flex items-center gap-1.5 rounded-full border bg-background px-2.5 py-0.5 text-2xs font-medium text-muted-foreground;
+	}
+	.chats-context > svg {
+		@apply size-3;
+	}
+	.chats-context a {
+		@apply hover:text-foreground hover:underline;
+	}
+	.chats-backfill {
+		@apply mx-auto my-3 max-w-[85%] rounded-lg border border-dashed px-3 py-2 text-center text-2xs text-muted-foreground;
+	}
+	.encargo-bubble.is-partial {
+		@apply opacity-80;
+	}
+	.chats-readonly {
+		@apply border-t px-3 py-2.5 text-center text-xs text-muted-foreground;
+	}
+	.chats-composer {
+		@apply flex min-w-0 flex-wrap items-end gap-2 border-t p-3;
+	}
+	.chats-composer textarea {
+		@apply max-h-40 min-h-10 min-w-0 flex-1 resize-none;
+	}
+	.chats-sim {
+		@apply flex min-w-0 flex-wrap items-center gap-x-4 gap-y-1 border-b border-warning/30 bg-warning-soft/60 px-3 py-1.5 text-xs text-warning-on-soft;
+	}
+	.chats-sim-ai {
+		@apply flex cursor-pointer flex-row items-center gap-2 font-medium;
+	}
+	.chats-sim-ai > svg,
+	.chats-sim-state > svg {
+		@apply size-3.5 shrink-0;
+	}
+	.chats-sim-state {
+		@apply flex items-center gap-1.5 opacity-80;
+	}
+	/* Configuración → Avanzado: the agent as a character (its card, its skill tree, its prompt by sections). */
+	.brain-tune {
+		@apply mb-4 flex min-w-0 items-center gap-2 rounded-card border border-primary/30 bg-primary/8 px-3 py-2 text-sm;
+	}
+	.brain-tune > svg {
+		@apply size-4 shrink-0 text-primary;
+	}
+	.brain-tune.is-failed {
+		@apply border-danger/30 bg-danger-soft text-danger-on-soft;
+	}
+	.brain-tune.is-failed > svg {
+		@apply text-danger-on-soft;
+	}
+	/* Its parts are sections of the modal, as its other tabs (.app-settings .panel + .panel). */
+	.brain-card,
+	.brain-tree {
+		@apply @container min-w-0;
+	}
+	.brain-id {
+		@apply flex min-w-0 items-center gap-3;
+	}
+	.brain-model {
+		@apply mt-0.5 flex items-center gap-1 text-xs text-muted-foreground;
+	}
+	/* Its rank: five stars, each filled as far as its average reaches. */
+	.brain-rank {
+		@apply mt-0.5 flex items-center gap-0.5 rounded-sm text-xs outline-none focus-visible:ring-2 focus-visible:ring-ring;
+	}
+	.brain-rank-star {
+		@apply relative inline-block size-4 text-muted-foreground/40;
+	}
+	.brain-rank-star > svg,
+	.brain-rank-fill > svg {
+		@apply size-4;
+	}
+	.brain-rank-fill {
+		@apply absolute inset-y-0 left-0 overflow-hidden text-amber-400;
+	}
+	.brain-rank-fill > svg {
+		@apply max-w-none fill-amber-400;
+	}
+	.brain-rank-text {
+		@apply ml-1.5 text-muted-foreground tabular-nums;
+	}
+	.brain-model > svg {
+		@apply size-3.5;
+	}
+	.panel .brain-heading {
+		@apply mt-4 mb-2 text-2xs font-semibold tracking-wide text-muted-foreground uppercase;
+	}
+	.panel > .brain-heading:first-child {
+		@apply mt-0;
+	}
+	/* Its recipes and encargo templates: tiles with a light that runs around their edge, each in its color
+	   (--glow: a recipe, the theme's; an encargo, WhatsApp's green, where it talks). */
+	.brain-workflows {
+		@apply mb-4 grid min-w-0 gap-2 @xl:grid-cols-2;
+	}
+	.brain-workflow {
+		--glow: var(--primary);
+		@apply relative isolate flex min-w-0 items-center gap-3 overflow-hidden rounded-card px-3.5 py-3 text-left outline-none focus-visible:ring-2 focus-visible:ring-ring;
+		box-shadow: 0 0 12px -6px color-mix(in oklab, var(--glow) 35%, transparent);
+	}
+	.brain-workflow.is-encargo {
+		--glow: #25d366;
+	}
+	.brain-workflow::before {
+		@apply absolute -inset-1/2 -z-20 content-[''];
+		background: conic-gradient(
+			from 0deg,
+			transparent 0deg,
+			color-mix(in oklab, var(--glow) 55%, transparent) 80deg,
+			transparent 160deg,
+			transparent 360deg
+		);
+		animation: brain-orbit 7s linear infinite;
+	}
+	.brain-workflow.is-encargo::before {
+		animation-duration: 9s;
+		animation-direction: reverse;
+	}
+	.brain-workflow::after {
+		@apply absolute inset-[1.5px] -z-10 rounded-[calc(var(--radius-card)-1.5px)] bg-card content-[''];
+		background-image: linear-gradient(110deg, color-mix(in oklab, var(--glow) 7%, transparent), transparent 55%);
+	}
+	.brain-workflow > * {
+		@apply relative;
+	}
+	.brain-workflow:hover {
+		box-shadow: 0 0 16px -6px color-mix(in oklab, var(--glow) 50%, transparent);
+	}
+	.brain-workflow-icon {
+		@apply flex size-9 shrink-0 items-center justify-center rounded-lg;
+		color: var(--glow);
+		background: color-mix(in oklab, var(--glow) 12%, transparent);
+	}
+	.brain-workflow-icon > svg {
+		@apply size-5;
+	}
+	.brain-workflow-arrow {
+		@apply size-4 shrink-0 text-muted-foreground transition-transform;
+	}
+	.brain-workflow:hover .brain-workflow-arrow {
+		@apply translate-x-0.5;
+		color: var(--glow);
+	}
+	/* Its alias as the tools and the prompt name it: a code snippet. */
+	.brain-alias {
+		@apply rounded-sm border px-1 py-px font-mono text-xs font-medium;
+		border-color: color-mix(in oklab, var(--glow, var(--primary)) 35%, transparent);
+		background: color-mix(in oklab, var(--glow, var(--primary)) 10%, transparent);
+	}
+	@keyframes brain-orbit {
+		to {
+			transform: rotate(1turn);
+		}
+	}
+	@media (prefers-reduced-motion: reduce) {
+		.brain-workflow::before {
+			animation: none;
+		}
+	}
+	/* A section's editor: most of the screen; editing and its render, in tabs. */
+	.brain-editor-tabs {
+		@apply flex min-h-0 flex-1 flex-col gap-3;
+	}
+	.brain-editor-body {
+		@apply min-h-0 flex-1;
+	}
+	.brain-editor-view {
+		@apply overflow-y-auto rounded-md border p-4;
+	}
+	.brain-dial {
+		@apply grid min-w-0 grid-cols-[6.5rem_4.5rem_auto_4.5rem] items-center justify-start gap-2 text-xs;
+	}
+	.brain-dial-name {
+		@apply font-medium;
+	}
+	.brain-dial-end {
+		@apply truncate text-2xs text-muted-foreground;
+	}
+	.brain-dial-end:last-child {
+		@apply text-right;
+	}
+	/* A dial: a slider with whole steps (1 to 5), its steps marked under it. */
+	.brain-slider {
+		@apply grid w-36 gap-1;
+	}
+	.brain-ticks {
+		@apply flex justify-between px-[7px];
+	}
+	.brain-ticks > span {
+		@apply size-1 rounded-full bg-muted-foreground/30;
+	}
+	.brain-ticks > span.is-on {
+		@apply bg-primary;
+	}
+	.brain-branches {
+		@apply grid min-w-0 gap-4 @xl:grid-cols-2 @4xl:grid-cols-3;
+	}
+	.brain-branch {
+		@apply min-w-0;
+	}
+	.brain-branch-name {
+		@apply mb-2 flex items-center gap-1.5 text-sm font-semibold;
+	}
+	.brain-branch-name > svg {
+		@apply size-4 text-primary;
+	}
+	/* Its nodes hang from a line, as a game's skill tree. */
+	.brain-nodes {
+		@apply relative ml-2 grid min-w-0 gap-1.5 border-l-2 border-border pl-3;
+	}
+	.brain-node {
+		@apply relative flex w-full min-w-0 items-center gap-2 rounded-md border px-2.5 py-1.5 text-left text-xs transition-colors outline-none hover:bg-muted/60 focus-visible:ring-2 focus-visible:ring-ring;
+	}
+	.brain-node::before {
+		@apply absolute top-1/2 -left-3.5 h-0.5 w-3 bg-border content-[''];
+	}
+	.brain-node.is-on {
+		@apply border-primary/40 bg-primary/8 font-medium;
+	}
+	.brain-node.is-off {
+		@apply border-dashed text-muted-foreground;
+	}
+	.brain-node.is-locked {
+		@apply border-primary/40 bg-primary/8;
+	}
+	.brain-node-lock {
+		@apply ml-auto size-3 shrink-0 text-muted-foreground;
+	}
+	.brain-node-empty {
+		@apply text-2xs text-muted-foreground;
+	}
+	.brain-dot {
+		@apply inline-block size-2 shrink-0 rounded-full border border-muted-foreground/50;
+	}
+	.brain-dot.is-on {
+		@apply border-primary bg-primary shadow-[0_0_6px] shadow-primary/60;
+	}
+	.brain-legend {
+		@apply mt-4 flex flex-wrap items-center gap-x-2 gap-y-1 text-2xs text-muted-foreground;
+	}
+	.brain-legend > svg {
+		@apply size-3;
+	}
+	.brain-prompt {
+		@apply min-w-0;
+	}
+	.brain-hint {
+		@apply -mt-1 mb-3 text-2xs text-muted-foreground;
+	}
+	.brain-sections {
+		@apply grid min-w-0 gap-2 sm:grid-cols-2 xl:grid-cols-3;
+	}
+	/* A trabajo's playbook, in its description: each lesson with why it is there; what the trabajo taught. */
+	.job-playbook {
+		@apply grid gap-2;
+	}
+	.job-playbook-list {
+		@apply grid gap-1.5;
+		list-style: none;
+		padding-left: 0;
+	}
+	.job-playbook-list > li {
+		@apply flex min-w-0 items-start gap-2;
+	}
+	.job-playbook-icon {
+		@apply mt-0.5 size-3.5 shrink-0 text-muted-foreground;
+	}
+	.job-playbook-icon.is-fijado,
+	.job-playbook-icon.is-good {
+		@apply text-primary;
+	}
+	.job-playbook-icon.is-relevante,
+	.job-playbook-icon.is-útil {
+		color: var(--warning-on-soft);
+	}
+	.job-playbook-icon.is-bad {
+		@apply text-destructive;
+	}
+	.job-playbook-meta {
+		@apply shrink-0 text-2xs text-muted-foreground;
+	}
+	.brain-section {
+		@apply flex min-w-0 items-center gap-1 rounded-card border bg-card pr-1 pl-2.5 transition-[opacity,border-color,box-shadow];
+	}
+	.brain-section[draggable='true'] {
+		@apply cursor-grab active:cursor-grabbing;
+	}
+	.brain-section.is-dragging {
+		@apply opacity-40;
+	}
+	.brain-section.is-over {
+		@apply border-primary shadow-[0_0_0_2px] shadow-primary/30;
+	}
+	.brain-section-n {
+		@apply w-5 shrink-0 text-center text-xs font-semibold text-muted-foreground tabular-nums;
+	}
+	.brain-section-grip {
+		@apply flex size-7 shrink-0 cursor-grab items-center justify-center rounded-md text-muted-foreground outline-none hover:bg-muted focus-visible:ring-2 focus-visible:ring-ring;
+	}
+	.brain-section-grip > svg {
+		@apply size-4;
+	}
+	.brain-section-open {
+		@apply flex min-w-0 flex-1 items-center gap-2.5 px-1.5 py-2.5 text-left outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-inset;
+	}
+	.brain-section-icon {
+		@apply flex size-7 shrink-0 items-center justify-center rounded-md bg-muted text-muted-foreground;
+	}
+	.brain-section-icon > svg {
+		@apply size-3.5;
+	}
+	/* An encargo template as a form. */
+	.brain-form {
+		@apply grid max-h-[62vh] min-w-0 gap-4 overflow-y-auto pr-1;
+	}
+	.brain-form-row {
+		@apply grid min-w-0 gap-1.5 text-sm font-medium;
+	}
+	.brain-form-inline {
+		@apply grid min-w-0 gap-3 text-sm sm:grid-cols-2;
+	}
+	.brain-form-inline > label {
+		@apply grid gap-1.5 font-medium;
+	}
+	.brain-field {
+		@apply grid min-w-0 grid-cols-[minmax(0,9rem)_7.5rem_minmax(0,1fr)_auto] items-center gap-2;
+	}
+	.brain-pre {
+		@apply max-h-[65vh] overflow-auto rounded-md border bg-muted/40 p-3 font-mono text-xs leading-relaxed whitespace-pre-wrap break-words;
+	}
+	/* Configuración → General: Comportamiento / Experimental, one option per row, its explanation behind an «i». */
+	.setting-rows {
+		@apply grid min-w-0 divide-y;
+	}
+	.setting-row {
+		@apply flex min-w-0 flex-wrap items-center justify-between gap-x-6 gap-y-2 py-3 first:pt-1;
+	}
+	.setting-row-label {
+		@apply flex items-center gap-1.5 text-sm font-medium;
+	}
+	.setting-row-hint {
+		@apply mt-0.5 text-xs text-muted-foreground;
+	}
+	.setting-row-control {
+		@apply flex shrink-0 items-center gap-2;
+	}
+	.setting-sub {
+		@apply ml-0 grid min-w-0 gap-2 border-l-2 border-border py-3 pl-4 sm:ml-2;
+	}
+	/* Experimental: the warning theme, its contacts as tiles that open their simulated chat. */
+	.panel.is-experimental {
+		@apply border-warning/40 bg-warning-soft/40;
+	}
+	.is-experimental .setting-rows {
+		@apply divide-warning/20;
+	}
+	.is-experimental .setting-sub {
+		@apply border-warning/40;
+	}
+	/* Its simulated card, under Pagos simulados. */
+	.sim-card {
+		@apply flex min-w-0 flex-wrap items-center gap-3 rounded-card border border-warning/25 bg-card px-3 py-2.5;
+	}
+	.sim-card-icon {
+		@apply size-5 shrink-0 text-warning-on-soft;
+	}
+	.sim-tiles {
+		@apply flex min-w-0 flex-col gap-2;
+	}
+	/* Horizontal: avatar, who and their last line, when; its «IA» switch on the right. */
+	.sim-tile {
+		@apply flex min-w-0 items-stretch overflow-hidden rounded-card border border-warning/25 bg-card transition-[border-color,box-shadow] hover:border-warning/60 hover:shadow-sm;
+	}
+	.sim-tile.is-ai {
+		@apply border-warning/50;
+	}
+	.sim-tile-open {
+		@apply flex min-w-0 flex-1 items-center gap-3 px-3 py-2.5 text-left outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-inset;
+	}
+	.sim-tile-name {
+		@apply flex min-w-0 items-baseline gap-2 truncate text-sm font-medium;
+	}
+	.sim-tile-role {
+		@apply truncate text-xs font-normal text-muted-foreground;
+	}
+	.sim-tile-last {
+		@apply block truncate text-xs text-muted-foreground;
+	}
+	.sim-tile-when {
+		@apply shrink-0 self-start pt-0.5 text-xs text-muted-foreground;
+	}
+	.sim-tile-ai {
+		@apply flex shrink-0 cursor-pointer flex-row items-center gap-2.5 border-l border-warning/20 bg-warning-soft/50 px-4 text-xs font-medium text-warning-on-soft;
+	}
+	.sim-tile-ai > svg {
+		@apply size-3.5 shrink-0;
+	}
+	/* Modo objetivo: its pill and the designer's note on it. */
+	.goal-mode-pill {
+		@apply rounded-full bg-primary/10 px-2 py-0.5 text-xs font-medium text-primary;
+	}
+	.goal-mode-note {
+		@apply mb-4 flex min-w-0 items-start gap-3 rounded-card border bg-card p-3;
+	}
+	.goal-mode-note > svg {
+		@apply mt-0.5 size-4 shrink-0 text-muted-foreground;
+	}
+	.goal-mode-note.is-on {
+		@apply border-primary/40 bg-primary/5;
+	}
+	.goal-mode-note.is-on > svg {
+		@apply text-primary;
+	}
+	/* Quick access to the rest of the trabajo: each opens its modal. */
+	.job-quick {
+		@apply grid min-w-0 gap-3;
+		grid-template-columns: repeat(auto-fill, minmax(min(100%, 12rem), 1fr));
+	}
+	.job-quick-card {
+		@apply flex min-w-0 items-center gap-3 rounded-card border bg-card p-3 text-left shadow-xs outline-none;
+		transition:
+			transform 150ms ease,
+			border-color 150ms ease,
+			background-color 150ms ease;
+	}
+	.job-quick-card:hover,
+	.job-quick-card:focus-visible {
+		@apply -translate-y-0.5 border-primary/50 bg-muted/40;
+	}
+	.job-quick-card:focus-visible {
+		@apply ring-2 ring-ring;
+	}
+	.job-quick-card:hover .job-eval-arrow,
+	.job-quick-card:focus-visible .job-eval-arrow {
+		@apply translate-x-0.5 text-foreground;
+	}
+	.job-quick-icon {
+		@apply flex size-9 shrink-0 items-center justify-center rounded-lg bg-primary/10 text-primary;
+	}
+	.job-quick-icon svg {
+		@apply size-5;
+	}
+	.job-quick-title {
+		@apply block text-sm font-medium;
+	}
+	.job-quick-sub {
+		@apply block truncate text-xs text-muted-foreground;
+	}
+	.job-modal {
+		@apply max-h-[92vh] overflow-y-auto;
+	}
+	/* Its title on the left, its actions (Detener) on the right, clear of the close button. */
+	.job-modal-head {
+		@apply flex min-w-0 items-start justify-between gap-3 pr-8;
+	}
+	@media (prefers-reduced-motion: reduce) {
+		.job-quick-card,
+		.job-quick-card:hover {
+			transition: none;
+			transform: none;
+		}
+	}
+	/* Its evaluation opens the rubric: it looks pressable, and its arrow moves on hover. */
+	.job-eval {
+		@apply inline-flex items-center gap-2 rounded-md border bg-card py-1 pr-1.5 pl-1 text-xs font-medium text-foreground shadow-xs transition-colors outline-none hover:border-primary/50 hover:bg-muted focus-visible:ring-2 focus-visible:ring-ring;
+	}
+	.job-eval-arrow {
+		@apply size-4 text-muted-foreground transition-transform;
+	}
+	/* While another agent evaluates it; and what the agent learned from it (a book: something new). */
+	.job-evaluating {
+		@apply inline-flex items-center gap-1 rounded-md border border-primary/35 bg-primary/10 px-1.5 py-0.5 text-xs font-medium text-primary;
+	}
+	.job-evaluating > svg {
+		@apply size-3.5;
+	}
+	.job-learned {
+		@apply ml-1.5 inline-flex items-center gap-1 rounded-md border px-1.5 py-1 text-xs font-medium shadow-xs transition-colors outline-none focus-visible:ring-2 focus-visible:ring-ring;
+		border-color: color-mix(in oklab, var(--warning) 45%, transparent);
+		background: color-mix(in oklab, var(--warning) 12%, transparent);
+		color: var(--warning-on-soft);
+	}
+	.job-learned:hover {
+		background: color-mix(in oklab, var(--warning) 20%, transparent);
+	}
+	.job-learned > svg {
+		@apply size-3.5;
+	}
+	.job-eval:hover .job-eval-arrow,
+	.job-eval:focus-visible .job-eval-arrow {
+		@apply translate-x-0.5 text-foreground;
+	}
+	.job-hub-count {
+		@apply ml-1 rounded-full bg-muted px-1.5 text-2xs tabular-nums text-muted-foreground;
+	}
+	.job-hub-conv {
+		@apply flex w-full min-w-0 items-center gap-3 rounded-card border bg-card p-3 text-left transition-colors outline-none hover:border-primary/50 focus-visible:ring-2 focus-visible:ring-ring;
+	}
+	.job-hub-conv-icon {
+		@apply size-5 shrink-0 text-muted-foreground;
+	}
+	.job-hub-conv-title {
+		@apply flex min-w-0 items-center gap-2 text-sm font-medium;
+	}
+	.job-hub-conv-sub {
+		@apply block truncate text-xs text-muted-foreground;
 	}
 	.hub-files {
-		@apply grid gap-2 sm:grid-cols-2;
+		@apply grid gap-2 sm:grid-cols-2 xl:grid-cols-3;
+	}
+	/* Aprendizajes: a shelf of books, one per lesson (its state's color and icon; a ribbon when pinned). */
+	.lessons {
+		@apply flex min-w-0 flex-col gap-4;
+	}
+	/* Search, «Enseñar» and «Borrar todos» in one row; stacked when they no longer fit. */
+	.lessons-bar {
+		@apply flex min-w-0 flex-col gap-2 sm:flex-row sm:items-center;
+	}
+	.lessons-search {
+		@apply relative min-w-0 sm:flex-1;
+	}
+	.lessons-search-icon {
+		@apply pointer-events-none absolute top-1/2 left-2.5 size-4 -translate-y-1/2 text-muted-foreground;
+	}
+	.lessons-shelf {
+		@apply grid gap-x-5 gap-y-6 pt-2;
+		grid-template-columns: repeat(auto-fill, minmax(5.25rem, 1fr));
+	}
+	/* Several at once: each book's check, top left (on hover or focus; all of them while some are checked). */
+	.lessons-slot {
+		@apply relative;
+	}
+	.lessons-check {
+		@apply absolute top-1.5 left-1.5 z-30 bg-background/90 opacity-0 shadow-sm transition-opacity;
+	}
+	.lessons-slot:hover .lessons-check,
+	.lessons-slot:focus-within .lessons-check,
+	.lessons-shelf.is-picking .lessons-check {
+		@apply opacity-100;
+	}
+	@media (hover: none) {
+		.lessons-check {
+			@apply opacity-100;
+		}
+	}
+	.lessons-slot[data-picked] .lessons-book-cover {
+		@apply ring-2 ring-primary ring-offset-2 ring-offset-background;
+	}
+	.lessons-picked {
+		@apply flex min-w-0 flex-wrap items-center gap-2 rounded-card border bg-muted/50 px-3 py-1.5 text-sm;
+	}
+	.lessons-book {
+		@apply relative block aspect-[3/4] w-full max-w-28 cursor-pointer rounded-md outline-none;
+		transition:
+			transform 180ms ease,
+			filter 180ms ease;
+	}
+	.lessons-book:hover,
+	.lessons-book:focus-visible {
+		@apply z-10;
+		transform: translateY(-6px) scale(1.07);
+		filter: drop-shadow(0 10px 14px rgb(0 0 0 / 0.22));
+	}
+	.lessons-book:focus-visible .lessons-book-cover {
+		@apply ring-2 ring-ring ring-offset-2 ring-offset-background;
+	}
+	.lessons-book-cover {
+		@apply absolute inset-0 flex flex-col items-center overflow-hidden rounded-l-sm rounded-r-md;
+		background: linear-gradient(
+			105deg,
+			var(--book) 0%,
+			color-mix(in oklab, var(--book) 82%, white) 55%,
+			var(--book) 100%
+		);
+		/* The spine on the left, the pages' edge on the right. */
+		box-shadow:
+			inset 7px 0 0 color-mix(in oklab, var(--book) 70%, black),
+			inset 8px 0 0 rgb(255 255 255 / 0.18),
+			inset -3px 0 0 #f4efe3,
+			inset -4px 0 0 rgb(0 0 0 / 0.12),
+			0 1px 2px rgb(0 0 0 / 0.18);
+	}
+	.lessons-book-icon {
+		@apply mt-[28%] ml-1 size-6 text-white/90;
+	}
+	.lessons-book-label {
+		@apply mt-3 ml-1 h-2 w-1/2 rounded-full bg-white/35;
+		box-shadow: 0 6px 0 -1px rgb(255 255 255 / 0.22);
+	}
+	.lessons-book-ribbon {
+		@apply absolute top-0 right-3 h-1/3 w-2.5;
+		background: #f2c14e;
+		clip-path: polygon(0 0, 100% 0, 100% 100%, 50% 80%, 0 100%);
+	}
+	/* What it says: above the book while it is lifted (from its left edge, so the first column is not cut);
+	   always under it where nothing hovers (touch). */
+	.lessons-book-title {
+		@apply pointer-events-none absolute bottom-[calc(100%+0.5rem)] left-0 z-20 line-clamp-4 w-max max-w-60 rounded-md border bg-popover px-2 py-1 text-center text-xs font-medium text-popover-foreground opacity-0 shadow-md;
+		transition: opacity 120ms ease;
+	}
+	.lessons-book:hover .lessons-book-title,
+	.lessons-book:focus-visible .lessons-book-title {
+		@apply opacity-100;
+	}
+	@media (hover: none) {
+		.lessons-book {
+			@apply mb-10;
+		}
+		.lessons-book-title {
+			@apply top-[calc(100%+0.375rem)] bottom-auto line-clamp-2 w-full max-w-none border-0 bg-transparent p-0 opacity-100 shadow-none;
+		}
+	}
+	@media (prefers-reduced-motion: reduce) {
+		.lessons-book,
+		.lessons-book-title {
+			transition: none;
+		}
+		.lessons-book:hover,
+		.lessons-book:focus-visible {
+			transform: none;
+		}
+	}
+	.lessons-book[data-state='pinned'],
+	.lessons-state[data-state='pinned'] {
+		--book: oklch(0.48 0.16 295);
+	}
+	.lessons-book[data-state='useful'],
+	.lessons-state[data-state='useful'] {
+		--book: oklch(0.52 0.11 165);
+	}
+	.lessons-book[data-state='harmful'],
+	.lessons-state[data-state='harmful'] {
+		--book: oklch(0.56 0.16 15);
+	}
+	.lessons-book[data-state='new'],
+	.lessons-state[data-state='new'] {
+		--book: oklch(0.48 0.04 260);
+	}
+	/* Its state in the opened lesson: the book's color and icon. */
+	.lessons-state {
+		@apply inline-flex w-fit items-center gap-1.5 text-xs font-medium;
+		color: var(--book);
+	}
+	.lessons-state svg {
+		@apply size-3.5;
+	}
+	.lessons-detail-actions {
+		@apply gap-2 sm:justify-between;
+	}
+	.lessons-detail-actions > :first-child {
+		@apply sm:mr-auto;
+	}
+	.lessons-empty {
+		@apply flex flex-col items-center gap-2 rounded-card border border-dashed p-8 text-center text-muted-foreground;
 	}
 	.hub-file {
 		@apply flex min-w-0 items-center gap-2 rounded-lg border bg-card p-3;
@@ -400,14 +1616,16 @@
 	/* #/agent/:id/chat/:c: the chat is the protagonist; the work, when there is some, on the right. */
 	/* The chat reaches the page's top and bottom edges (its messages fade there); the work panel keeps the page's padding. */
 	.agent-view[data-view='chat'],
-	.agent-view[data-view='improve'] {
+	.agent-view[data-view='improve'],
+	.agent-view[data-view='whatsapp'] {
 		@apply max-w-none p-0;
 	}
 	.agent-view-error {
 		@apply mb-3;
 	}
 	.agent-view[data-view='chat'] .agent-view-error,
-	.agent-view[data-view='improve'] .agent-view-error {
+	.agent-view[data-view='improve'] .agent-view-error,
+	.agent-view[data-view='whatsapp'] .agent-view-error {
 		@apply mx-4 mt-3 mb-0;
 	}
 	.chat-view {
@@ -441,8 +1659,7 @@
 		@apply mx-0 bg-border;
 	}
 	/* When the four tabs do not fit with their names, only their icons (the name stays in the tooltip). */
-	.chat-work,
-	.current-work {
+	.chat-work {
 		container: work-panel / inline-size;
 	}
 	/* The contract panel's tabs, the same way (Contrato · Harness · Horarios · Pruebas · Vigente). */
@@ -607,35 +1824,6 @@
 	.agent-view-navigation a[aria-current='page'] {
 		@apply border-primary/40 bg-primary/5 text-primary;
 	}
-	.agent-heading {
-		@apply flex min-w-0 items-center gap-3;
-		flex: 1 1 12rem;
-	}
-	.agent-heading > svg {
-		flex-shrink: 0;
-	}
-	.agent-id {
-		@apply flex min-w-0 flex-1 flex-col gap-1.5;
-	}
-	.agent-name-line {
-		@apply flex min-w-0 flex-wrap items-center gap-x-2 gap-y-1;
-	}
-	.agent-name-line h1 {
-		@apply min-w-0 truncate;
-		flex: 0 1 auto;
-	}
-	.agent-header-meta {
-		@apply flex min-w-0 flex-wrap items-center gap-x-3 gap-y-1 text-2xs;
-	}
-	.agent-name-line .pill {
-		@apply max-w-full shrink-0 whitespace-normal;
-	}
-	.agent-id > .muted:not(.agent-header-meta) {
-		@apply line-clamp-3 max-w-[80ch] break-words;
-	}
-	.agent-head-side {
-		@apply ml-auto flex max-w-full shrink-0 flex-col items-end gap-2;
-	}
 	.agent-actions {
 		@apply flex max-w-full flex-wrap items-center justify-end gap-2;
 	}
@@ -651,10 +1839,7 @@
 		@apply shrink-0;
 	}
 	.agent-browser .browser-view {
-		@apply aspect-auto min-h-0 flex-1 overflow-hidden;
-	}
-	.agent-browser .browser-view img {
-		@apply absolute inset-0;
+		@apply aspect-auto flex-1;
 	}
 	.agent-details {
 		@apply flex h-full min-h-0 min-w-0 flex-1 flex-col;
@@ -668,18 +1853,6 @@
 	}
 	.work-toolbar [data-slot='tabs-trigger'] {
 		@apply h-auto! min-h-control-lg min-w-0 whitespace-nowrap;
-	}
-	/* The hub's input starts another job: a centered title with rules, apart from the current work above. */
-	.hub-composer {
-		@apply mt-8;
-	}
-	.hub-composer-title {
-		@apply mb-3 flex items-center gap-3 text-xs font-medium tracking-wide text-muted-foreground uppercase;
-	}
-	.hub-composer-title::before,
-	.hub-composer-title::after {
-		content: '';
-		@apply h-px flex-1 bg-border;
 	}
 	/* The agent's computer is on (a resource in use): its menus turn green. */
 	/* The human drives the computer (ComputerBusy): its screen types and its cursor blinks. */
@@ -1858,4 +3031,260 @@ html[data-sidebar-resize='drag'] {
 /* A cited job or conversation in a message (Automejora): an outline chip in the line of text. */
 .reference-chip {
 	@apply mx-0.5 max-w-64 gap-1 align-[-0.15em] font-normal no-underline [&>svg]:size-3 [&>svg]:shrink-0 [&>svg]:text-muted-foreground;
+}
+
+/* Flujos (#18): a step on the canvas, by its state; one under way pulses so «is it working or stuck» shows. */
+.flow-node {
+	@apply w-[190px] rounded-lg border bg-card px-3 py-2 text-card-foreground shadow-sm;
+}
+/* Its key, as task_update and the recipe name it: a code snippet. */
+.flow-node-key {
+	@apply ml-auto max-w-[6.5rem] truncate rounded-sm border border-primary/30 bg-primary/10 px-1 font-mono text-[10px] text-foreground;
+}
+.flow-node-done {
+	@apply border-success/60;
+}
+.flow-node-done > div:last-of-type {
+	@apply text-success;
+}
+.flow-node-working,
+.flow-node-waiting {
+	@apply border-primary;
+}
+.flow-node-failed {
+	@apply border-destructive;
+}
+.flow-node-failed > div:last-of-type {
+	@apply text-destructive;
+}
+.flow-node-skipped,
+.flow-node-removed {
+	@apply opacity-50;
+}
+.flow-node-removed {
+	@apply border-dashed;
+}
+.flow-node-pending > div:last-of-type {
+	@apply text-muted-foreground;
+}
+.flow-node-selected {
+	@apply ring-2 ring-ring;
+}
+.flow-node-live {
+	animation: flow-node-pulse 1.8s ease-in-out infinite;
+}
+@keyframes flow-node-pulse {
+	0%,
+	100% {
+		box-shadow: 0 0 0 0 color-mix(in oklab, var(--primary) 35%, transparent);
+	}
+	50% {
+		box-shadow: 0 0 0 6px color-mix(in oklab, var(--primary) 0%, transparent);
+	}
+}
+.flow-edge-removed path {
+	stroke-dasharray: 4 4;
+	opacity: 0.4;
+}
+.flow-event-ended,
+.flow-event-answer {
+	@apply font-medium;
+}
+.flow-event-escalated,
+.flow-event-question {
+	@apply text-warning;
+}
+.flow-event-planned {
+	@apply text-primary;
+}
+@media (prefers-reduced-motion: reduce) {
+	.flow-node-live {
+		animation: none;
+	}
+}
+
+/* Trabajos: the bar above a trabajo's chat (its objective, ending it) and its evaluation once it ended. */
+/* Apart from the edges, never wider than the chat: long summaries wrap and clamp to «Ver más». */
+.job-bar {
+	@apply mx-auto mt-3 mb-2 w-[calc(100%-1.5rem)] max-w-3xl min-w-0 shrink-0 overflow-hidden rounded-lg border bg-card px-3 py-2;
+}
+.job-bar-body {
+	@apply mt-2 flex min-w-0 flex-col gap-2 text-sm;
+}
+.job-summary {
+	@apply break-words;
+}
+.job-more {
+	@apply mt-0.5 text-xs font-medium text-primary hover:underline;
+}
+/* A trabajo's tasks, under its objective: the same width; a meter of how far it got. */
+.job-tasks {
+	@apply mx-auto mb-2 w-[calc(100%-1.5rem)] max-w-3xl min-w-0 shrink-0 overflow-hidden rounded-lg border bg-card px-3 py-2 text-sm;
+}
+.job-tasks-empty {
+	@apply border-dashed bg-transparent px-1 py-1;
+}
+.job-tasks-head {
+	@apply flex w-full min-w-0 items-center gap-2 text-left text-sm;
+}
+/* A trabajo's progress as segments (one per task, or 10), in the theme's own scale: destructive while it starts,
+   warning halfway, success when it ends; the steps between are mixed, so dark mode follows by itself. */
+.task-meter {
+	@apply grid h-3 w-20 shrink-0 gap-[2px] border bg-muted p-[2px];
+	grid-template-columns: repeat(var(--segments), minmax(0, 1fr));
+	border-radius: calc(var(--radius) - 4px);
+}
+.task-meter > span {
+	border-radius: calc(var(--radius) - 7px);
+	background: color-mix(in oklab, var(--foreground) 7%, transparent);
+	transition: background-color 300ms ease;
+}
+.task-meter > span[data-on] {
+	background: var(--meter);
+}
+.task-meter[data-level='1'] {
+	--meter: var(--destructive);
+}
+.task-meter[data-level='2'] {
+	--meter: color-mix(in oklab, var(--destructive) 66%, var(--warning));
+}
+.task-meter[data-level='3'] {
+	--meter: color-mix(in oklab, var(--destructive) 33%, var(--warning));
+}
+.task-meter[data-level='4'] {
+	--meter: var(--warning);
+}
+.task-meter[data-level='5'] {
+	--meter: color-mix(in oklab, var(--warning) 66%, var(--success));
+}
+.task-meter[data-level='6'] {
+	--meter: color-mix(in oklab, var(--warning) 33%, var(--success));
+}
+.task-meter[data-level='7'],
+.task-meter[data-level='8'] {
+	--meter: var(--success);
+}
+.job-prop .task-meter {
+	@apply h-3.5 w-36;
+}
+/* In a modal the canvas leaves room for its header. */
+.job-modal .flow-canvas {
+	height: min(68vh, 720px);
+}
+/* The to-dos of a trabajo's page: a heading, not a fold; long notes in two lines (the flow has them whole). */
+.job-tasks.is-hub {
+	@apply m-0 w-full max-w-none rounded-card px-4 py-3;
+}
+.job-modal .job-tasks.is-hub {
+	@apply border-0 bg-transparent p-0;
+}
+.job-tasks.is-hub .job-tasks-list {
+	@apply max-h-none;
+}
+.job-tasks.is-hub .job-tasks-head {
+	@apply cursor-default opacity-100;
+}
+.job-tasks.is-hub .job-task-note {
+	@apply line-clamp-2;
+}
+/* In a trabajo's card it runs the card's whole width. */
+.job-card-tasks .task-meter {
+	@apply h-3.5 w-full;
+}
+.job-tasks-list {
+	@apply mt-2 grid max-h-72 min-w-0 gap-0.5 overflow-y-auto;
+}
+.job-task {
+	@apply flex min-w-0 items-start gap-2 rounded-md px-1 py-1 hover:bg-muted/40;
+}
+.job-task-check {
+	@apply mt-0.5 grid size-5 shrink-0 place-items-center rounded-full outline-none focus-visible:ring-2 focus-visible:ring-ring;
+}
+.job-task-check svg {
+	@apply size-4;
+}
+.job-task.is-working .job-task-check svg {
+	@apply animate-pulse;
+}
+.job-task-title {
+	@apply block truncate;
+}
+.job-task.is-done .job-task-title,
+.job-task.is-skipped .job-task-title {
+	@apply text-muted-foreground line-through decoration-muted-foreground/50;
+}
+.job-task-note {
+	@apply block text-xs break-words text-muted-foreground;
+}
+.job-task.is-blocked .job-task-note {
+	@apply text-warning-on-soft;
+}
+.job-task-who {
+	@apply mt-0.5 shrink-0 text-xs whitespace-nowrap text-muted-foreground;
+}
+.job-task-menu {
+	@apply -my-0.5 opacity-0 focus-visible:opacity-100 data-[state=open]:opacity-100;
+}
+.job-task:hover .job-task-menu {
+	@apply opacity-100;
+}
+.job-bar-foot {
+	@apply flex min-w-0 flex-wrap items-center justify-between gap-2 border-t pt-2;
+}
+.job-score {
+	@apply rounded px-1.5 py-0.5 text-xs font-semibold tabular-nums;
+}
+.job-score.good {
+	@apply bg-success/15 text-success;
+}
+.job-score.fair {
+	@apply bg-warning/15 text-warning;
+}
+.job-score.poor {
+	@apply bg-destructive/15 text-destructive;
+}
+.job-meter {
+	@apply flex gap-0.5;
+}
+.job-meter > span {
+	@apply h-1.5 w-5 rounded-full bg-muted;
+}
+.job-meter > span[data-on] {
+	@apply bg-primary;
+}
+
+/* The hub's actions (unlayered, like .agent-action-label above): with their names when the row has room;
+   icons when it does not; and on a narrow one, under it as buttons in two columns, «Nuevo trabajo» first. */
+@container stream (max-width: 84rem) {
+	.stream-side .agent-action-label {
+		display: none;
+	}
+}
+@container stream (max-width: 40rem) {
+	.stream-grid {
+		grid-template-columns: auto auto minmax(0, 1fr);
+	}
+	.stream-side {
+		grid-column: 1 / -1;
+		align-items: stretch;
+	}
+	.stream-side .agent-actions {
+		display: grid;
+		grid-template-columns: repeat(2, minmax(0, 1fr));
+	}
+	.stream-side .agent-actions > *,
+	.stream-side .agent-actions > * > button {
+		width: 100%;
+		justify-content: center;
+	}
+	.stream-side .agent-action-label {
+		display: inline;
+	}
+	.stream-side .stream-new-job {
+		grid-column: 1 / -1;
+		order: -1;
+	}
+	.stream-side .stream-stats {
+		justify-content: flex-start;
+	}
 }

@@ -26,6 +26,7 @@ dev verb="session" arg="":
         scripts/dev/init.sh
         docker --context "$SBX_CTX" image inspect "$SBX_IMAGE" >/dev/null 2>&1 || just sandbox build
         docker --context "$SBX_CTX" image inspect "$PROXY_IMAGE" >/dev/null 2>&1 || just proxy build
+        pick_web_port
         first=1
         for w in $wins; do
           if [ $first = 1 ]; then tmux new-session -d -s "$s" -n "$w" -c "$ROOT" "scripts/dev/run.sh $w"; first=0
@@ -95,7 +96,7 @@ sandbox verb="build":
     set -euo pipefail
     if [ "{{verb}}" = test ]; then
       python3 -B sandbox/agents_pi_test.py
-      exec bun test sandbox/self-maintenance.test.ts
+      exec bun test sandbox/self-maintenance.test.ts sandbox/browser-wrapper.test.ts
     fi
     . scripts/dev/env.sh
     case "{{verb}}" in

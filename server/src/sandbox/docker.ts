@@ -59,7 +59,10 @@ export class DockerSandbox implements SandboxProvider {
 		};
 	}
 
-	/** Read the installed npm manifest, not pi's CLI or the supervisor. No network, state or secrets. */
+	/**
+	 * Read the installed package manifest, not pi's CLI or the supervisor. No network, state or secrets. Images
+	 * on Bun keep pi among Bun's global packages and answer `node` with Bun; older ones ran on Node and npm.
+	 */
 	async imagePiVersion(image: string): Promise<string | null> {
 		if (!/^sha256:[a-f0-9]{64}$/.test(image)) throw new Error('Se requiere el ID inmutable de la imagen.');
 		const pending = piReads.get(image);
@@ -84,7 +87,7 @@ export class DockerSandbox implements SandboxProvider {
 				Cmd: [
 					'--input-type=commonjs',
 					'-e',
-					`const p=JSON.parse(require('node:fs').readFileSync('/usr/local/lib/node_modules/@earendil-works/pi-coding-agent/package.json','utf8')); if(p.name!=='@earendil-works/pi-coding-agent')process.exit(1); process.stdout.write(String(p.version));`,
+					`const fs=require('node:fs'),f=['/usr/local/lib/bun-global/node_modules','/usr/local/lib/node_modules'].map((d)=>d+'/@earendil-works/pi-coding-agent/package.json').find((x)=>fs.existsSync(x)); if(!f)process.exit(1); const p=JSON.parse(fs.readFileSync(f,'utf8')); if(p.name!=='@earendil-works/pi-coding-agent')process.exit(1); process.stdout.write(String(p.version));`,
 				],
 				User: 'agent',
 				Tty: true,
@@ -202,6 +205,7 @@ export class DockerSandbox implements SandboxProvider {
 			'/containers/create',
 			{
 				Image: imageId,
+				// `node` is Node in older images and Bun's stand-in in newer ones: the same call probes both.
 				Entrypoint: ['node', '/opt/agents/harness-probe.mjs'],
 				Cmd: [],
 				User: 'agent',
@@ -237,6 +241,12 @@ export class DockerSandbox implements SandboxProvider {
 			} as RequestInit);
 			const logs = await response.text();
 			const marker = logs.split(/\r?\n/).find((line) => line.startsWith('AGENTS_HARNESS_PROBE '));
+			// An image older than the contract does not know its newer parts (encargos, flujos, a new tool):
+			// its own validation refuses the whole manifest. Said so, not as a stack trace.
+			if (!marker && /Harness: (campos no admitidos|elige herramientas del catálogo)/.test(logs))
+				throw new Error(
+					`La imagen de computadora con que se probó (${imageId.replace(/^sha256:/, '').slice(0, 12)}) es anterior a este contrato: no conoce algo de él (por ejemplo, encargos, flujos o una herramienta nueva). Hay que construir o publicar la imagen nueva (en dev: just sandbox build) y volver a probar.`,
+				);
 			if (!marker) throw new Error(`La imagen no confirmó la prueba del harness: ${logs.slice(-1000)}`);
 			const report = JSON.parse(marker.slice('AGENTS_HARNESS_PROBE '.length));
 			if (!report.ok) throw new Error(String(report.error ?? 'pi no cargó el harness.').slice(0, 1000));
@@ -305,6 +315,71 @@ export class DockerSandbox implements SandboxProvider {
 				[409],
 			);
 		}
+	}
+
+	/**
+	 * A folder of an agent's volume as a tar (.cubyagent's workspace), through a container that is created and
+	 * never started: Docker reads the volume for the archive. null: the folder does not exist.
+	 */
+	async readVolume(volume: { name: string; target: string }, image: string, path: string): Promise<Uint8Array | null> {
+		const id = await this.holder(volume, image);
+		try {
+			const res = await fetch(`${API}/containers/${id}/archive?path=${encodeURIComponent(path)}`, {
+				unix: SOCKET,
+				signal: AbortSignal.timeout(300_000),
+			} as RequestInit);
+			if (res.status === 404) return null;
+			if (!res.ok) throw new Error(`docker archive ${path}: ${res.status} ${await res.text()}`);
+			return new Uint8Array(await res.arrayBuffer());
+		} finally {
+			await this.destroy(id);
+		}
+	}
+
+	/** A tar unpacked into an agent's volume, at a path (the workspace of an imported .cubyagent). */
+	async writeVolume(
+		volume: { name: string; target: string; labels?: Record<string, string> },
+		image: string,
+		path: string,
+		tar: Uint8Array,
+	) {
+		const id = await this.holder(volume, image);
+		try {
+			const res = await fetch(`${API}/containers/${id}/archive?path=${encodeURIComponent(path)}`, {
+				method: 'PUT',
+				unix: SOCKET,
+				headers: { 'content-type': 'application/x-tar' },
+				body: tar,
+				signal: AbortSignal.timeout(300_000),
+			} as RequestInit);
+			if (!res.ok) throw new Error(`docker archive ${path}: ${res.status} ${await res.text()}`);
+		} finally {
+			await this.destroy(id);
+		}
+	}
+
+	/** A container that only holds a volume mounted, for its archive; never started. */
+	private async holder(volume: { name: string; target: string; labels?: Record<string, string> }, image: string) {
+		const created = await call('POST', '/containers/create', {
+			Image: image,
+			Entrypoint: ['true'],
+			User: 'agent',
+			Labels: { 'agents.volume-holder': 'true' },
+			NetworkDisabled: true,
+			HostConfig: {
+				NetworkMode: 'none',
+				AutoRemove: false,
+				Mounts: [
+					{
+						Type: 'volume',
+						Source: volume.name,
+						Target: volume.target,
+						VolumeOptions: { Labels: volume.labels ?? {} },
+					},
+				],
+			},
+		});
+		return created.Id as string;
 	}
 
 	async destroy(id: string) {

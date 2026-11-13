@@ -11,7 +11,7 @@ import urllib.request
 
 REAL = "/usr/local/bin/pi"  # the real pi; in the owner's terminals `pi` is this script (#27)
 args = sys.argv[1:]
-# pi belongs to the validated image, not the mutable volume. Do not run npm or partially update
+# pi belongs to the validated image, not the mutable volume. Do not run a package manager or partially update
 # extensions with --all. Package-only/model updates and help still go to pi for their own validation.
 if args and args[0] == "update" and not {"--help", "-h"}.intersection(args[1:]):
     options = set(args[1:])
@@ -27,7 +27,7 @@ if args and args[0] == "update" and not {"--help", "-h"}.intersection(args[1:]):
         print(
             "Esta instalación de pi está gestionada por Agents.\n"
             "pi se actualiza junto con la imagen de la computadora, después de validar su compatibilidad.\n"
-            "No se ejecutó npm ni se cambió la versión.\n"
+            "No se instaló nada ni se cambió la versión.\n"
             "Consulta versiones y actualizaciones en el menú Computadora de Agents.\n"
             "Para aplicar una, apaga la computadora y valida la imagen desde esa pantalla.",
             file=sys.stderr,

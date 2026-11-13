@@ -78,7 +78,7 @@ case "${1:-}" in
 		;;
 	web)
 		cd web
-		exec bun --bun vite --port 5173 --strictPort
+		exec bun --bun vite --port "$WEB_PORT" --strictPort
 		;;
 	*)
 		echo "usage: scripts/dev/run.sh tunnel|db|cliproxy|fake|proxy|server|web" >&2
