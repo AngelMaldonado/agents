@@ -84,8 +84,9 @@ jobs:
     name: Required checks
     if: always()
     needs: [quality, sandbox]
-    # It only compares two results and runs for every PR (forks too, to fail closed): GitHub's own runner.
-    runs-on: ubuntu-24.04
+    # It only compares two results. On the self-hosted runner too: GitHub's own do not start while the account
+    # is locked by billing («The job was not started because your account is locked due to a billing issue»).
+    runs-on: [self-hosted, linux, x64, agents]
     steps:
       - name: Fail closed if any required job failed or was skipped
         env:

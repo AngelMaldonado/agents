@@ -18,7 +18,7 @@ El repositorio es **público** y `main` exige `Required checks` por protección 
 
 ## Runners de CI (reko-3)
 
-Quality y Sandbox E2E piden `runs-on: [self-hosted, linux, x64, agents]`; `Required checks` sólo compara sus resultados y corre en `ubuntu-24.04`. Se administran con Runner Fleet (`~/dev/work/runners`, un runner por contenedor). Lo que necesita un runner de este repo:
+Los tres jobs piden `runs-on: [self-hosted, linux, x64, agents]`. Los runners de GitHub no arrancan mientras la cuenta tenga un bloqueo de facturación («your account is locked due to a billing issue»), aunque el repo sea público. Se administran con Runner Fleet (`~/dev/work/runners`, un runner por contenedor). Lo que necesita un runner de este repo:
 
 | Qué                                                                                                                                               | Por qué                                                                                                                                                                                                                                                           |
 | ------------------------------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
