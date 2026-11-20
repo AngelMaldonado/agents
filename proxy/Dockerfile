@@ -4,7 +4,7 @@
 FROM mitmproxy/mitmproxy:12.1.2
 
 COPY --chmod=0555 entrypoint.sh /usr/local/bin/agents-proxy
-COPY --chmod=0444 agents.py swap.py /opt/agents-proxy/
+COPY --chmod=0444 agents.py egress.py swap.py /opt/agents-proxy/
 
 EXPOSE 8080
 ENTRYPOINT ["agents-proxy"]

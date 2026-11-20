@@ -91,6 +91,7 @@ function Panel({ onChanged }: { onChanged: () => void }) {
 	const [data, setData] = useState<any>(null);
 	const [draft, setDraft] = useState<any>(null);
 	const [models, setModels] = useState('');
+	const [internalHosts, setInternalHosts] = useState('');
 	const [msg, setMsg] = useState('');
 	const saving = useSaving();
 	const [link, setLink] = useState('');
@@ -99,6 +100,7 @@ function Panel({ onChanged }: { onChanged: () => void }) {
 			setData(r);
 			setDraft(r.settings);
 			setModels(r.settings.models.map((m: any) => `${m.id} | ${m.label}`).join('\n'));
+			setInternalHosts((r.settings.internalHosts ?? []).join('\n'));
 		});
 	useEffect(() => {
 		void load();
@@ -190,6 +192,23 @@ function Panel({ onChanged }: { onChanged: () => void }) {
 					</span>
 					<Textarea rows={6} value={models} onChange={(e) => setModels(e.target.value)} className="mono" />
 				</label>
+				<label className="field mt-3">
+					<span>
+						Servicios internos{' '}
+						<span className="muted small block font-normal">
+							uno por línea, sólo el host (<code>sonos.cubytest.space</code>): las computadoras de todos los agentes
+							llegan a ellos por Traefik (HTTPS desde la terminal, curl y CLIs; el navegador no). Ningún otro destino de
+							la red local.
+						</span>
+					</span>
+					<Textarea
+						rows={4}
+						value={internalHosts}
+						onChange={(e) => setInternalHosts(e.target.value)}
+						className="mono"
+						placeholder="sonos.cubytest.space"
+					/>
+				</label>
 				<div className="field-actions row wrap mt-4">
 					<SaveButton
 						state={saving.state}
@@ -205,7 +224,14 @@ function Panel({ onChanged }: { onChanged: () => void }) {
 								});
 							try {
 								await saving.run(async () => {
-									await api('/admin/settings', { method: 'PUT', body: { ...draft, models: list } });
+									const hosts = internalHosts
+										.split('\n')
+										.map((l) => l.trim())
+										.filter(Boolean);
+									await api('/admin/settings', {
+										method: 'PUT',
+										body: { ...draft, models: list, internalHosts: hosts },
+									});
 									await load();
 									onChanged();
 								});

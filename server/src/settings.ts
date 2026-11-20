@@ -13,7 +13,14 @@ export type Settings = {
 	sandboxImage: string;
 	// openai/<model>: GPT only, no Claude. The id must exist in pi's catalog AND in CLIProxyAPI's.
 	models: { id: string; label: string }[];
+	// Services behind Traefik that the sandboxes may reach (sonos.cubytest.space…): their DNS points at the
+	// LAN, locked away from the sandboxes, so the egress proxy sends exactly these hosts to Traefik (proxy/egress.py).
+	internalHosts: string[];
 };
+
+/** A plain host name, lowercase, without port or wildcard: exactly what the proxy will send to Traefik. */
+const HOST = /^(?=.{1,253}$)([a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z][a-z0-9-]{0,61}[a-z0-9]$/;
+export const MAX_INTERNAL_HOSTS = 50;
 
 const DEFAULTS: Settings = {
 	maxConcurrent: 3,
@@ -28,6 +35,7 @@ const DEFAULTS: Settings = {
 		{ id: 'openai/gpt-6.1-sol', label: 'GPT-6.1 Sol' },
 		{ id: 'openai/gpt-6-sol', label: 'GPT-6 Sol' },
 	],
+	internalHosts: [],
 };
 
 let cached: Settings = DEFAULTS;
@@ -103,6 +111,17 @@ function clean(p: Partial<Settings>): Partial<Settings> {
 		out.models = p.models
 			.filter((m) => m && /^openai\/[\w.-]+$/.test(m.id))
 			.map((m) => ({ id: m.id, label: String(m.label || m.id).slice(0, 60) }));
+	}
+	if (Array.isArray(p.internalHosts)) {
+		const hosts = p.internalHosts
+			.filter((h): h is string => typeof h === 'string')
+			.map((h) => h.trim().toLowerCase().replace(/\.$/, ''))
+			.filter(Boolean);
+		const bad = hosts.filter((h) => !HOST.test(h));
+		if (bad.length) throw new Error(`No es un nombre de host: ${bad.join(', ')} (sin https://, puerto ni comodines).`);
+		const unique = [...new Set(hosts)];
+		if (unique.length > MAX_INTERNAL_HOSTS) throw new Error(`Máximo ${MAX_INTERNAL_HOSTS} servicios internos.`);
+		out.internalHosts = unique;
 	}
 	for (const k of Object.keys(out) as (keyof Settings)[]) if (out[k] === undefined) delete out[k];
 	return out;

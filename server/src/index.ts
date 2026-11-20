@@ -200,7 +200,8 @@ app.get('/internal/proxy/rules', async (c) => {
 	const token = c.req.header('x-agents-run-token') ?? '';
 	const rules = token ? await accesses.rulesFor(token) : null;
 	c.header('Cache-Control', 'no-store');
-	return rules ? c.json({ rules }) : c.json({ error: 'not a live run' }, 404);
+	// The internal services go with every run's rules: the proxy keeps the latest list (Administración).
+	return rules ? c.json({ rules, internal: settings().internalHosts }) : c.json({ error: 'not a live run' }, 404);
 });
 
 // ---------- the WhatsApp bridge (internal network, shared secret; no login) ----------
@@ -1842,7 +1843,12 @@ app.delete('/api/whatsapp/group-photo', async (c) => c.json(await whatsapp.setGr
 app.put('/api/admin/settings', async (c) => {
 	const denied = adminOnly(c);
 	if (denied) return denied;
-	const s = await saveSettings(await c.req.json());
+	let s;
+	try {
+		s = await saveSettings(await c.req.json());
+	} catch (err) {
+		return fail(c, err); // a host that is not one: said, nothing saved
+	}
 	await tasks.applyGlobalCap();
 	return c.json({ settings: s });
 });

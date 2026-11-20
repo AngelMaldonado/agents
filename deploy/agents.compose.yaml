@@ -61,9 +61,16 @@ services:
       AGENTS_BACKEND_URL: http://agents-prod-server:8787
       AGENTS_PROXY_SECRET: ${AGENTS_PROXY_SECRET:?just prod proxyca, then the stack's Environment}
       AGENTS_PROXY_CA_PEM_B64: ${AGENTS_PROXY_CA_PEM_B64:?just prod proxyca, then the stack's Environment}
+      # Administración → Servicios internos (sonos.cubytest.space…) go to Traefik on the `proxy` network; with
+      # this set, the proxy refuses every other non-public destination (proxy/egress.py).
+      AGENTS_PROXY_INTERNAL_UPSTREAM: traefik
     networks:
       sandbox:
         aliases: [agents-prod-proxy]
+        # The default route stays on the locked bridge (agents-prd-sbx): the internet as before, never the LAN.
+        gw_priority: 1
+      # Only to reach Traefik; this network is not locked, so the addon decides what it is used for.
+      proxy: {}
 
   # Never runs: it is here so that Pull downloads the sandbox image of the release (the server starts the
   # agents' computers from it), and its stopped container keeps that image from a prune. In Komodo it goes

@@ -141,6 +141,7 @@ check:
     bun test scripts/deploy
     python3 -B scripts/backup/s3_test.py
     python3 -B proxy/swap_test.py
+    python3 -B proxy/egress_test.py
     python3 -B scripts/deploy/cutover_test.py
     python3 -B scripts/deploy/transfer_test.py
     just sandbox test

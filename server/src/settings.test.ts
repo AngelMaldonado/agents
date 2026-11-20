@@ -42,3 +42,25 @@ run('saving the admin form stores the sandbox image only when it differs from th
 	expect(settings().sandboxImage).toBe(release);
 	expect((await stored()).maxConcurrent).toBe(3); // what else was changed stays
 });
+
+run('internal services are plain host names, normalized; anything else is refused and nothing is saved', async () => {
+	const { loadSettings, saveSettings, settings } = await import('./settings');
+	await db!.exec("delete from settings where key = 'settings'");
+	await loadSettings();
+	expect(settings().internalHosts).toEqual([]);
+	await saveSettings({
+		internalHosts: [' Sonos.Cubytest.Space. ', 'sonos.cubytest.space', 'music.cubytest.space', ''],
+	});
+	expect(settings().internalHosts).toEqual(['sonos.cubytest.space', 'music.cubytest.space']);
+	for (const bad of [
+		'https://grafana.cubytest.space',
+		'*.cubytest.space',
+		'grafana.cubytest.space:443',
+		'localhost',
+		'192.168.20.247',
+	])
+		await expect(saveSettings({ internalHosts: [bad] })).rejects.toThrow('No es un nombre de host');
+	expect(settings().internalHosts).toEqual(['sonos.cubytest.space', 'music.cubytest.space']);
+	await saveSettings({ internalHosts: [] });
+	expect(settings().internalHosts).toEqual([]);
+});

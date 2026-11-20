@@ -183,6 +183,7 @@ Código: `server/src/designs.ts`, `design-format.ts`, `harnesses.ts`, migracione
 - CLIProxyAPI sólo es alcanzable por el backend (red `*-internal`); los sandboxes están en otra red.
 - Nadie toca el navegador ni la terminal del agente: la vista es sólo lectura; el humano hace steer o cancela.
 - Los sandboxes salen a internet y a su propia red (el backend), nunca a la LAN, otras redes Docker, la tailnet, link-local/metadata ni al host. La regla es del host y vive en `~/dev/work/reko-3` (`docker_egress_lock_interfaces` y `firewall_deny_interfaces`, sobre el bridge `agents-prd-sbx`); los scripts de deploy la verifican con `scripts/egress-check.sh`. En dev (reko-2) no existe ese bloqueo. Los sandboxes resuelven DNS con resolvers públicos (`AGENTS_SANDBOX_DNS`).
+- Excepción explícita: los **servicios internos** de Administración (p. ej. `sonos.cubytest.space`, que resuelve a la LAN). El proxy de salida tiene una segunda red, la de Traefik (`proxy`), y manda exactamente esos hosts, en 80/443, a `traefik`; con `AGENTS_PROXY_INTERNAL_UPSTREAM` puesto rechaza cualquier otro destino no público (`proxy/egress.py`), porque esa red no está bloqueada por el host. Sirve a todo lo que sale por el proxy (terminal, curl, CLIs, MCP); Chrome no usa el proxy y sigue sin llegar a la LAN.
 
 ## Producción
 
