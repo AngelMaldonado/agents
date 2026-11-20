@@ -1,20 +1,29 @@
 # Release de Agents
 
-`just release` es autorización para integrar y publicar: **no pide `PUBLICAR` ni confirmación interactiva**. No despliega, migra datos ni cambia dominios. La preparación nunca ejecuta la publicación del baseline.
+`just release` (desde `wip`) es la autorización para publicar **y desplegar**: no pide confirmación. Todo lo dispara ese comando desde la Mac; nada en Komodo escucha pushes ni webhooks, y no hace falta `just dev` arriba. El código: [`scripts/release/release.ts`](../scripts/release/release.ts).
 
 ## Flujo
 
 ```text
-Mac: calidad → push wip → PR/Required checks → merge protegido sin prompt
-     → esperar CI del SHA integrado → checkout temporal main → versión
-     → Komodo agents-app: build → push → sign → verify
-     → Komodo agents-sandbox: build → push → sign → verify
-     → tag/prerelease GitHub y manifest → registros locales
+Mac   wip limpio y no detrás de origin/wip · API key de Komodo (1Password) · ve los stacks agents y agents-firma
+Mac   just sanitize history · format check · lint · check            (rápido, sin base de datos)
+reko-5  git archive <sha> | buildx build --push                    agents-app, agents-sandbox, agents-proxy :<sha12>
+reko-5  scripts/ci/e2e.sh contra ESAS imágenes                     red propia en el bridge bloqueado agents-dev-sbx,
+        PostgreSQL desechable, la app real arranca y /healthz, pruebas del servidor con base, E2E de diseño y de compartir
+Mac   git push wip
+Komodo  stack de un solo uso agents-firma: cosign sign -a git_sha=<sha> con la llave de sus variables; se destruye
+reko-5  cosign verify contra release/cosign.pub (llave, digest y git_sha) · :beta → ese digest
+Komodo  deploy/agents.compose.yaml del commit → stack agents (sólo el compose; el Environment no se toca) · Deploy
+Mac   espera a que https://agents.cubytest.space/healthz diga ready y el sha del commit
 ```
 
-GitHub conserva un único workflow de CI: Quality con PostgreSQL temporal y Sandbox E2E con app/pi/Chrome reales y GPT simulado. `Required checks` exige ambos exitosos; no admite skipped. Se mantiene CI sobre la PR y sobre el commit integrado. El plan GitHub no ofrece reviewers obligatorios de entorno privado; no se simulan.
+Si algo falla se detiene ahí: antes de la firma no hay nada publicado (sólo imágenes `:<sha12>` sin firma en Zot, que nadie usa); después, el mensaje dice en qué paso quedó. El diff entre el compose que tiene Komodo y el del commit se imprime antes de aplicarlo.
 
-El repositorio es **público** y `main` exige `Required checks` por protección de ramas. Si GitHub no ofreciera protección (un repo privado en el plan gratuito responde 403), `just release` exige los checks de `release/config.json` (`requiredChecks`) y vuelve a esperar `Required checks` del SHA integrado después del merge: nunca integra sin ellos.
+**Volver atrás**: `just release <sha12>` verifica las firmas de las imágenes de ese commit, mueve `:beta` a ellas y despliega el compose de ese commit.
+
+**Versión**: no hay tags ni releases de GitHub; la versión es el commit. `/healthz` dice `version` (sha de 12) y `sha` (completo); las imágenes llevan `org.opencontainers.image.revision` (sha) y `org.opencontainers.image.version` (sha de 12). Por eso «Computadora → Versiones» ya no enlaza notas de GitHub en imágenes nuevas: compara imágenes por su ID, como siempre.
+
+El CI de GitHub (`.github/workflows/checks.yml`) sigue igual para PRs y pushes a `main`, pero el release no depende de él.
 
 ## Runners de CI (reko-3)
 
@@ -49,60 +58,22 @@ Los runners propios ejecutan el código que corre en ellos con acceso a un Docke
 
 El Mac coordina mediante `gh` y la API Komodo, usando versiones de herramientas/dependencias fijadas. No construye imágenes ni recibe la clave privada de firma. No hay runner JIT, workflow de publicación ni servidor Git temporal. El proceso debe seguir abierto para completar la publicación; una desconexión no revierte ni necesariamente cancela operaciones remotas.
 
-## Recursos Komodo
+## Recursos Komodo (reko-5)
 
-El diseño final tiene **dos Repos ejecutores**, no Builds nativos ni servicios persistentes:
-
-| Recurso          | Contexto   | Imagen de producto                                  |
-| ---------------- | ---------- | --------------------------------------------------- |
-| `agents-app`     | `.`        | `registry.cubytest.space/cuby/agents-app:<SHA>`     |
-| `agents-sandbox` | `sandbox/` | `registry.cubytest.space/cuby/agents-sandbox:<SHA>` |
-
-Ambos clonan `AngelMaldonado/agents` directamente por HTTPS con la cuenta Git provider **`AngelMaldonado`**, seleccionada por nombre. El token se resuelve y usa en Komodo/reko-3: no se exporta al Mac, imprime ni copia a archivos locales; tampoco se amplían las credenciales de otros perfiles. No hay webhooks. Cada ejecución recibe SHA completo y versión; valida fuente limpia, plataforma linux/amd64, labels y firma del digest exacto.
-
-Komodo 2.3.3 sólo tiene `pre_build`, no hook posterior para firma. Para cumplir el límite de dos recursos se usa un script común `scripts/release/komodo-job.sh` en `on_pull`, dejando `on_clone` vacío: CloneRepo también ejecuta on_pull. El script usa tres contenedores temporales de la misma imagen auxiliar `agents-release-tools`, fijada mediante referencia descargable `registry.cubytest.space/cuby/agents-release-tools@sha256:…`: build, sign, verify. Un ID local `sha256:…` no basta: el segundo intento real de Angel falló porque esa imagen ya no estaba en el daemon de reko-3 (mismo daemon para Komodo y host; no se determinó quién la eliminó). El ejecutor ahora autentica y descarga el digest exacto antes de las fases, sin depender de que sobreviva la caché local, y rechaza IDs locales/tags o repositorios distintos. La configuración Docker de esta descarga está en un directorio temporal privado fuera del repo, se elimina antes de arrancar las fases y también al fallar login/pull; no modifica las credenciales permanentes del host. Sólo sign recibe la clave privada y contraseña; build y verify no las reciben. La autenticación de registry de cada fase se guarda en tmpfs del contenedor; la descarga inicial usa el directorio temporal descrito arriba. Las contraseñas no van en capas, build args ni argv; login recibe la contraseña por stdin. El envfile temporal git-internal se borra inmediatamente después de cargarlo, antes de montar el repo en cualquier contenedor; un trap lo elimina también si falla la carga. La auditoría detectó que borrarlo sólo al terminar dejaba sus valores accesibles por archivo en el montaje readonly de build/verify; no hubo exportación fuera de reko-3 y se corrigió antes de habilitar publicación.
-
-Estos ejecutores tienen Docker socket y ejecutan código aprobado con autoridad sobre el host. No son un sandbox ni una frontera fuerte de seguridad. No montan datos de usuarios; nunca se debe podar imágenes, porque los agentes aprobados fijan IDs inmutables.
+- Stack **`agents`**: producción. El release sólo reescribe su compose (`file_contents`) y lo despliega; su Environment (PIN, llaves, contraseñas, CA del proxy) se administra a mano.
+- Stack **`agents-firma`**: vacío entre releases (`services: {}`, sin Environment), en el servidor reko-5. El release lo llena con el compose de cosign y `[[COSIGN_PRIVATE_KEY_B64]]`/`[[COSIGN_PASSWORD]]`, lo despliega, y al terminar lo destruye, vacía su Environment y borra su `.env` de `/etc/komodo/stacks/agents-firma/` dentro de `komodo-periphery-1`.
+- Variables **`COSIGN_PRIVATE_KEY_B64`** y **`COSIGN_PASSWORD`**: la llave de firma de la organización (la misma de asterion; su pública es `release/cosign.pub`, huella `cosignPublicKeySha256` de `release/config.json`).
+- La API key del ítem de 1Password necesita **Read + Write + Execute** sobre los dos stacks. Nada más.
+- Los Repos `agents-app`, `agents-sandbox` y `agents-proxy` del flujo anterior ya no se usan.
 
 ## Credenciales
 
-- API Komodo: cuenta de servicio `agents-release`, sólo Write sobre los dos Repos y Read de metadatos del servidor. Retirados sus permisos a los cuatro recursos previos y al Builder. Eliminados los dos secretos API del entorno GitHub y revocada la clave anterior `agents-release-github`; sólo queda `agents-release-mac`. El Mac carga `key` y `secret` desde **1Password / Cuby / Agents Release**, por stdin/memoria, sin archivos locales ni valores en argv. No es el token GitHub ni la clave Cosign.
-- GitHub del Mac: autenticación existente de `gh`; se usa para PR, merge, checks, tags y release.
-- GitHub de Komodo: cuenta Git provider existente `AngelMaldonado`, autorizada expresamente por Angel. No se exporta su token al Mac.
-- Cosign y registry: referencias `[[COSIGN_PRIVATE_KEY_B64]]`, `[[COSIGN_PASSWORD]]`, `[[REGISTRY_USERNAME]]`, `[[REGISTRY_PASSWORD]]` resueltas sólo en Komodo.
+- 1Password, bóveda **Cuby**, ítem **Agents Release**, campos `key` y `secret`: sólo a memoria del proceso y tapados en lo que se imprime. Sin 1Password: `AGENTS_RELEASE_KOMODO_KEY` y `AGENTS_RELEASE_KOMODO_SECRET`.
+- El registry (`registry.cubytest.space`): la sesión de Docker de reko-5 (`~/.docker/config.json`), que también montan la firma y la verificación (sólo lectura).
+- La llave privada de cosign nunca sale de Komodo ni pasa por la Mac.
 
-## Firma y versión
+## Requisitos de reko-5
 
-Cosign 3.1.4 fijado por checksum. Clave pública `release/cosign.pub`, huella SHA-256 `306102f7485320db8a37e90babb847b7f99e5910775d292d6a44801736475859`. Política explícita `transparencyLog=false`, sin Rekor público; mantiene verificación criptográfica de clave, anotaciones SHA/versión y digest. Flags compatibles compartidos en `cosign.mjs`; no se presupone compatibilidad de versiones futuras.
-
-El tag Docker es el SHA completo integrado; no hay `latest` ni tags semver Docker. Primera versión GitHub exacta `v0.0.1-beta`, sólo después de verificar ambas imágenes. Después cada beta sube el patch: `v0.0.1-beta` → `v0.0.2-beta` → `v0.0.3-beta` (`nextBeta` en `scripts/release/version.mjs`; `-beta` nombra la etapa, sin `-beta.N`). Publica sólo si desde la última tag hay un commit `feat`, `fix`, `perf`, `build`, `ci`, `refactor`, `chore(release)` o un cambio incompatible (`releasable`); el tipo no cambia el número. Salir de `0.0.x` es una decisión explícita. La versión ya no la calcula semantic-release (se quitó); cada tag conserva la nota de canal `beta` sobre su commit, así la historia sigue siendo legible por semantic-release. Sin cambios publicables, no hay builds/tag/release nuevos.
-
-El manifest incluye referencias por digest, versión, SHA, plataforma y hash/lista de archivos de migración. No representa el estado de una base viva. El publisher corre desde un checkout temporal limpio de main; no modifica el checkout dev ni cambia de rama el worktree de trabajo.
-
-## Validación y activación
-
-Ensayo de recuperación de tools APROBADO sobre `c2e2169e9360f475f1262c5c507c963272790f68`: ambos jobs autenticaron y descargaron el digest desde el registry antes de construir/firmar/verificar. App update `6ae5465a5c3077fa6f9da82b`, sandbox `6ae546725c3077fa6f9da833`; referencias y digests exactos en [tools-recovery-proof.json](tools-recovery-proof.json). Sólo namespaces probe; no se borraron imágenes para simular una caché vacía ni se presenta el pull real como una prueba de daemon vacío. La regresión de shell exige siempre login/pull antes de las fases y abortado/limpieza al fallar cada paso. Bootstrap de la auxiliar: `6ae545085c3077fa6f9da7e4`, sin clave de firma ni cuentas adicionales. Recursos de ensayo restablecidos a ociosos, sin hooks/inputs; publicación del producto y despliegue no ejecutados por el asistente.
-
-Ensayo anterior completo APROBADO sobre `2c3c15865d2ba5d505eadffb3fa0ff7907e1a218`, repetido después de corregir el envfile: ambos Repos clonaron con `AngelMaldonado`, construyeron linux/amd64 y firmaron/verificaron por digest con la clave pública fijada. Evidencia pública persistente: [setup-proof.json](setup-proof.json), con SHA, plataforma, esquema, digests e IDs de ejecución Komodo. App: `6ae52d0d5c3077fa6f9da2fe`; sandbox: `6ae52d185c3077fa6f9da300`. Sólo se publicaron imágenes de ensayo `agents-release-probe*`, no tags/releases del producto. Los tests de release comprueban que el archivo ya no exista al invocar Docker en ninguna fase y que se elimine incluso al fallar la carga; también se exigen Quality y Sandbox E2E antes de habilitar la variable de publicación.
-
-El 403 inicial se diagnosticó usando el token únicamente dentro de un contenedor temporal en reko-3: GitHub identificaba correctamente al usuario, pero no permitía ver el repo privado. Tras actualizar su acceso al repositorio, clon y ensayo pasaron. No se exportó el token al Mac. La primera limpieza se detuvo por autorización de 1Password agotada; se reintentó con éxito una vez disponible.
-
-Retirados los cuatro recursos anteriores (`agents-release-app`, `agents-release-sandbox`, `agents-release-sign`, `agents-release-verify`), sus permisos, acceso al Builder y credencial API vieja. No se borraron imágenes ni se tocaron stacks de usuarios. Sólo quedan los dos Repos nuevos para este pipeline, sin webhooks, hooks ni inputs residuales de ensayo; el coordinador los configura para cada SHA aprobado. Runner JIT, snapshot HTTP y workflow de publicación ya no forman parte del flujo. La publicación se habilita con flag versionado y variable GitHub después del ensayo/CI; despliegue permanece false. Durante la preparación no se ejecutó `just release` ni se emitió `v0.0.1-beta`.
-
-Evidencia histórica de la arquitectura anterior: [ensayo real app+sandbox build/sign/verify](https://github.com/AngelMaldonado/agents/actions/runs/41119238161) y [CI 75ea2f8](https://github.com/AngelMaldonado/agents/actions/runs/41121510012). No sustituyen la validación del flujo nuevo.
-
-**Incidente previo de inventario:** una consulta admin inicial devolvió material secreto a memoria del Mac antes de filtrar salida. No se escribió en archivos, logs ni commits, pero incumplió el límite de mantenerlo en Komodo; fue notificado y documentado en Bubble #16. La consulta se retiró y no se rotó la clave compartida sin autorización. El nuevo flujo no requiere esa lectura.
-
-## Operación y recuperación
-
-```bash
-cd /Users/amald/dev/work/agents-release-setup
-just release plan  # sólo explica; no opera remotamente
-just release       # integra y publica SIN pedir confirmación; no despliega
-```
-
-Logs redactados en `.release/` (gitignored, 0600), más IDs/logs Komodo y JSON de resultado/manifest copiados del checkout temporal, incluso si falla después del build. Subprocesses Mac acotados a 75 min, operación Komodo a 30, comandos del helper a 20. Un timeout puede dejar trabajo remoto activo: revisar IDs antes de reintentar. Un merge o tag publicado no se revierte automáticamente; un fallo al adjuntar manifest exige conciliar la release existente, no repetir bootstrap a ciegas.
-
-Primer intento real de Angel: PR #1 integrada en `06582c79b385869284eab3e416c0dd109011ee5c` y CI de main aprobado; el publisher se detuvo antes de builds/tags/releases porque el enlace de dependencias aparecía como `?? node_modules`. El patrón `node_modules/` sólo ignoraba directorios, no symlinks. Corregido a `node_modules`, conservando el chequeo estricto de fuente limpia. Una regresión reproduce clon temporal + enlace y exige seguir detectando cambios tracked y archivos inesperados. Tras incorporar el fix, reejecutar `just release` desde wip: reutiliza/abre la PR del arreglo, integra de forma protegida y vuelve a validar main; no revierte el merge anterior ni inventa otro baseline. Si ya existe algún tag/release al reintentar, conciliar antes, no forzar publicación.
-
-Fuera de alcance: stack `agents` y su .env, PostgreSQL de usuarios, conversaciones, cuentas, sesiones, volúmenes, dominios, corte y rollback de despliegue. WhatsApp sigue excluido por gate estático, conservando código y migración histórica. `deploy/release.compose.yaml` sólo es referencia futura, no un stack listo para aplicar.
+- El bloqueo de salida del host cubre `agents-dev-sbx` (y `agents-prd-sbx`): `~/dev/work/reko-3/inventory/host_vars/reko-5/main.yml`. Las computadoras de prueba quedan igual de aisladas que las de producción; el runner y la app de prueba usan DNS públicos.
+- Docker con buildx y unos 10 GB libres para las tres imágenes y la red de prueba.
+- Un release a la vez: `agents-release.lock` en el directorio de git (el bridge de prueba y el stack de firma son únicos).

@@ -1,8 +1,7 @@
-# The production stack `agents` in Komodo (reko-3), as it runs since v0.0.5-beta: it follows the `:beta`
-# tags, which `just release` moves only after both images are built, signed with Cosign and verified.
-# Deploying a beta is: Komodo → stack agents → Pull, then Deploy (poll_for_updates shows when :beta moved).
-# Rollback: `just release promote <version>`, then Pull + Deploy. The version and SHA are inside the app
-# image (/healthz). Agents keep running on the exact sandbox image they were validated on.
+# The production stack `agents` in Komodo (reko-5). `just release` writes this file into the stack (its Environment,
+# with the secrets, is never touched) and deploys it once the three `:beta` tags point at images it built, tested,
+# signed with Cosign and verified (scripts/release/release.ts). Rollback: `just release <sha12>`. The commit is
+# inside the app image (/healthz). Agents keep running on the exact sandbox image they were validated on.
 # The stack's Environment keeps AGENTS_ADMIN_PIN, AGENTS_MASTER_KEY, AGENTS_PROXY_KEY and AGENTS_DB_PASSWORD,
 # and the egress proxy's AGENTS_PROXY_SECRET, AGENTS_PROXY_CA_PEM_B64 (its CA key + certificate) and
 # AGENTS_PROXY_CA_CERT_B64 (the certificate the sandboxes trust): `just prod proxyca` makes them.

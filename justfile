@@ -137,7 +137,6 @@ check:
     cd web && bunx tsc --noEmit
     cd server && bun test
     cd web && bun test
-    bun test scripts/release
     bun test scripts/deploy
     python3 -B scripts/backup/s3_test.py
     python3 -B proxy/swap_test.py
@@ -172,16 +171,12 @@ ci:
     just check
     cd web && bun run build
 
-# `just release` publishes the next beta and points the `:beta` tags at it (after signing and verifying);
-# production then only needs Pull + Deploy in Komodo. `just release promote <version>` points `:beta` at a
-# published version again (a rollback). Neither deploys.
-release mode="run" arg="":
-    #!/usr/bin/env bash
-    set -euo pipefail
-    case "{{mode}}" in
-      promote) bun scripts/release/promote.mjs {{arg}} ;;
-      *) bun scripts/release/main.mjs {{mode}} ;;
-    esac
+# `just release`: desde wip, en esta Mac sólo las revisiones rápidas; el commit (git archive) se compila en reko-5,
+# ahí corren las pruebas con base y los E2E contra esas imágenes, se firma en Komodo (stack de un solo uso
+# agents-firma), se verifica, se mueve :beta y se despliega el stack agents hasta que /healthz diga el commit.
+# `just release <sha12>` vuelve a una versión ya publicada. Ver scripts/release/release.ts.
+release *args:
+    bun scripts/release/release.ts {{args}}
 
 # ---- production (Komodo stack `agents` on reko-3) ----
 

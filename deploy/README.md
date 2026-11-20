@@ -1,14 +1,12 @@
-# Desplegar una beta (desde v0.0.5-beta)
+# Desplegar
 
-1. `just release` (desde `wip`): pruebas locales con base y los dos E2E, PR `chore(release): vX` con lo que entra, CI, merge, build/firma/verificación en Komodo, tag y release. Al final mueve `registry.cubytest.space/cuby/agents-app:beta` y `agents-sandbox:beta` a los digests verificados de esa release.
-2. Komodo → stack `agents` → **Pull** y luego **Deploy** (con `poll_for_updates`, Komodo avisa cuando `:beta` cambió). Las migraciones corren al arrancar.
-3. Verificar `https://agents.cubytest.space/healthz`: versión y SHA vienen dentro de la imagen.
+`just release` (desde `wip`) compila en reko-5, prueba, firma, mueve `:beta`, sube [`agents.compose.yaml`](agents.compose.yaml) del commit al stack `agents` de Komodo, despliega y espera a que `https://agents.cubytest.space/healthz` diga ese commit: ya no hay Pull + Deploy ni copia del compose a mano. Las migraciones corren al arrancar. `just release <sha12>` vuelve a una versión anterior. El detalle: [release/README.md](../release/README.md).
 
 Proxy de salida de las API keys (#24, desde v0.0.6-beta): la release publica también `agents-proxy:beta` (Repo `agents-proxy` en Komodo, con Write para `agents-release`). Para activarlo una vez: `just prod proxyca` genera en `.env.production` (0600, sin mostrar valores) la CA y el secreto; cópialos al Environment del stack como `AGENTS_PROXY_CA_PEM_B64`, `AGENTS_PROXY_CA_CERT_B64` y `AGENTS_PROXY_SECRET`, y el compose ya trae el servicio `proxy` y las tres variables del servidor. Sin esas variables el stack no arranca (`:?`), así que van antes del Deploy. No regeneres la CA: los sandboxes confían en ella.
 
-Servicios internos (desde la release que trae `proxy/egress.py`): el servicio `proxy` del compose gana la red externa `proxy` (la de Traefik), `gw_priority: 1` en la red del sandbox y `AGENTS_PROXY_INTERNAL_UPSTREAM: traefik`. Ese cambio de compose va **a mano** en el campo Compose del stack en Komodo (copia de [`agents.compose.yaml`](agents.compose.yaml)) junto con el Pull + Deploy de esa release; después, en Administración → Servicios internos, uno por línea (`sonos.cubytest.space`, `music.cubytest.space`, `grafana.cubytest.space`). Sin la variable el proxy se comporta como antes.
+Servicios internos (desde la release que trae `proxy/egress.py`): el servicio `proxy` del compose está también en la red externa `proxy` (la de Traefik), con `gw_priority: 1` en la red del sandbox y `AGENTS_PROXY_INTERNAL_UPSTREAM: traefik`; llega con el compose del release. Después, en Administración → Servicios internos, uno por línea (`sonos.cubytest.space`, `music.cubytest.space`, `grafana.cubytest.space`). Sin la variable el proxy se comporta como antes.
 
-En la configuración del stack: «Poll for updates» encendido, «Auto update» apagado e «Ignore Services» = `sandbox` (ese servicio nunca corre, sólo baja la imagen; sin eso Komodo marca el stack unhealthy).
+En la configuración del stack: «Auto update» apagado (despliega `just release`) e «Ignore Services» = `sandbox` (ese servicio nunca corre, sólo baja la imagen; sin eso Komodo marca el stack unhealthy).
 
 Rollback: `just release promote <versión>` vuelve a apuntar `:beta` a esa release (verifica las firmas otra vez) y luego Pull + Deploy. El compose del stack es [`agents.compose.yaml`](agents.compose.yaml) y no cambia entre releases. Los agentes siguen en la imagen exacta con la que se validaron; la imagen del sandbox de Administración sólo se guarda si un admin pone otra distinta.
 
