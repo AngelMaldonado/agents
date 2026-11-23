@@ -1,13 +1,15 @@
-// `just release [<sha de 12>]`: todo lo dispara este comando, desde esta Mac; nada escucha pushes ni webhooks.
+// `just release [<sha de 12> | vX.Y.Z-beta]`: todo lo dispara este comando, desde esta Mac; nada escucha pushes ni webhooks.
 //
-//   just release          revisa wip, corre las revisiones rápidas aquí, manda el commit (git archive) al Docker de
+//   just release          revisa wip, calcula la versión (la siguiente beta después del último tag vX.Y.Z-beta), corre
+//                         las revisiones rápidas aquí, manda el commit (git archive) al Docker de
 //                         reko-5, que compila las tres imágenes y las sube a Zot con :<sha12>; en reko-5 corre las
 //                         pruebas con base y los dos E2E contra esas mismas imágenes (scripts/ci/e2e.sh); sube wip;
 //                         las firma el stack de un solo uso «agents-firma» de Komodo (la llave de cosign vive en las
 //                         variables de Komodo y sólo entra a ese contenedor); las verifica contra release/cosign.pub,
 //                         mueve :beta, sube deploy/agents.compose.yaml al stack «agents», despliega y espera a que
-//                         /healthz diga el commit.
-//   just release <sha12>  vuelve a una versión ya publicada: verifica sus firmas, mueve :beta y despliega su compose.
+//                         /healthz diga el commit; al final crea y sube el tag anotado v<versión> en ese commit.
+//   just release <sha12>  vuelve a una versión ya publicada (también por su tag: just release v0.0.9-beta): verifica sus
+//                         firmas, mueve :beta y despliega su compose.
 //
 // La API key de Komodo sale de 1Password (bóveda Cuby, ítem «Agents Release»: campos key y secret), sólo a memoria.
 // Para no usar 1Password: AGENTS_RELEASE_KOMODO_KEY y _SECRET en el entorno. Sólo cambia el compose del stack: su
@@ -120,7 +122,7 @@ async function digestEnRegistry(imagen: string): Promise<string> {
 }
 
 /** Compila en el Docker de reko-5 lo que manda git archive (el commit, sin cambios locales) y lo sube con :<sha12>. */
-async function compilar(sha: string): Promise<Record<Nombre, string>> {
+async function compilar(sha: string, version: string): Promise<Record<Nombre, string>> {
 	const corto = sha.slice(0, 12);
 	paso(`Compilando en ${CONTEXTO} las imágenes de ${corto} (el código va desde esta Mac)`);
 	const digests = {} as Record<Nombre, string>;
@@ -131,10 +133,10 @@ async function compilar(sha: string): Promise<Record<Nombre, string>> {
 			// La app dice en /healthz qué commit corre; las tres llevan el commit en sus etiquetas.
 			const args =
 				i.nombre === 'agents-app'
-					? ['--build-arg', `AGENTS_RELEASE_VERSION=${corto}`, '--build-arg', `AGENTS_RELEASE_SHA=${sha}`]
+					? ['--build-arg', `AGENTS_RELEASE_VERSION=${version}`, '--build-arg', `AGENTS_RELEASE_SHA=${sha}`]
 					: [];
 			const r =
-				await $`git archive --format=tar ${arbol} | docker --context ${CONTEXTO} buildx build --platform linux/amd64 --provenance=false --sbom=false --label ${`org.opencontainers.image.revision=${sha}`} --label ${`org.opencontainers.image.version=${corto}`} ${args} -f Dockerfile -t ${`${REGISTRY}/${i.nombre}:${corto}`} --push --metadata-file ${meta} --progress plain -`.nothrow();
+				await $`git archive --format=tar ${arbol} | docker --context ${CONTEXTO} buildx build --platform linux/amd64 --provenance=false --sbom=false --label ${`org.opencontainers.image.revision=${sha}`} --label ${`org.opencontainers.image.version=${version}`} ${args} -f Dockerfile -t ${`${REGISTRY}/${i.nombre}:${corto}`} --push --metadata-file ${meta} --progress plain -`.nothrow();
 			if (r.exitCode !== 0) falla(`No compiló ${i.nombre}`);
 			const d = JSON.parse(readFileSync(meta, 'utf8'))['containerimage.digest'] as string;
 			rmSync(meta, { force: true });
@@ -313,14 +315,57 @@ async function subir(sha: string) {
 		falla(`No pude subir ${RAMA}`);
 }
 
+const SEMVER = /^v(\d+)\.(\d+)\.(\d+)-beta$/;
+
+/**
+ * La versión de este release: la que ya tenga el commit (un reintento), o la siguiente beta después del último tag
+ * (v0.0.8-beta → 0.0.9-beta). El tag se crea al final, ya desplegado; hasta entonces el número se puede repetir.
+ */
+async function siguienteVersion(sha: string): Promise<string> {
+	if ((await $`git fetch -q --tags origin`.nothrow()).exitCode !== 0) falla('No pude traer los tags de origin');
+	const propias = (await $`git tag --points-at ${sha}`.quiet()).stdout
+		.toString()
+		.split('\n')
+		.filter((t) => SEMVER.test(t));
+	if (propias.length > 1) falla(`El commit ya tiene varias versiones (${propias.join(', ')}): revísalo a mano`);
+	if (propias.length === 1) return propias[0]!.slice(1);
+	const numeros = (await $`git tag --list ${'v*'}`.quiet()).stdout
+		.toString()
+		.split('\n')
+		.map((t) => SEMVER.exec(t))
+		.filter((m): m is RegExpExecArray => m !== null)
+		.map((m) => [Number(m[1]), Number(m[2]), Number(m[3])] as const)
+		.sort((a, b) => a[0] - b[0] || a[1] - b[1] || a[2] - b[2]);
+	const ultima = numeros.at(-1);
+	if (!ultima) return falla('No hay ningún tag vX.Y.Z-beta del cual seguir');
+	return `${ultima[0]}.${ultima[1]}.${ultima[2] + 1}-beta`;
+}
+
+/** Ya desplegada: el tag anotado v<versión> en el commit, en origin. */
+async function etiquetar(sha: string, version: string) {
+	const tag = `v${version}`;
+	paso(`Tag ${tag}`);
+	const existente = (await $`git rev-parse -q --verify ${`refs/tags/${tag}^{commit}`}`.quiet().nothrow()).stdout
+		.toString()
+		.trim();
+	if (existente && existente !== sha)
+		falla(`${tag} ya existe en otro commit (${existente.slice(0, 12)}): revísalo a mano`);
+	if (!existente) await $`git tag -a ${tag} ${sha} -m ${tag}`;
+	if ((await $`git push origin ${`refs/tags/${tag}`}`.nothrow()).exitCode !== 0)
+		falla(`Desplegado, pero no pude subir ${tag}: \`git push origin ${tag}\``);
+	console.log(`✓ ${tag} → ${sha.slice(0, 12)}`);
+}
+
 async function publicar() {
 	const sha = await revisarRama();
+	const version = await siguienteVersion(sha);
+	console.log(`Versión: v${version} (${sha.slice(0, 12)})`);
 	acceso = await credenciales();
 	await revisarKomodo();
 	paso('Revisiones rápidas en esta Mac (secretos en el historial, formato, lint, tipos y pruebas sin base)');
 	for (const args of [['sanitize', 'history'], ['format', 'check'], ['lint'], ['check']])
 		if ((await $`just ${args}`.nothrow()).exitCode !== 0) falla(`just ${args.join(' ')} falló`);
-	const digests = await compilar(sha);
+	const digests = await compilar(sha, version);
 	await probar(sha);
 	await subir(sha);
 	const refs = IMAGENES.map((i) => `${REGISTRY}/${i.nombre}@${digests[i.nombre]}`);
@@ -329,14 +374,18 @@ async function publicar() {
 	for (const ref of refs) await verificar(ref, sha);
 	for (const i of IMAGENES) await promover(i.nombre, digests[i.nombre]);
 	await desplegar(sha);
+	await etiquetar(sha, version);
 }
 
-async function volverA(prefijo: string) {
-	const sha = (await $`git rev-parse --verify ${`${prefijo}^{commit}`}`.quiet().nothrow()).stdout.toString().trim();
-	if (!/^[0-9a-f]{40}$/.test(sha)) falla(`No encuentro el commit ${prefijo} en este repo`);
+/** Una versión ya publicada, por su sha de 12 o su tag (v0.0.9-beta). Las imágenes se encuentran por el sha. */
+async function volverA(referencia: string) {
+	if (SEMVER.test(referencia)) await $`git fetch -q --tags origin`.nothrow();
+	const sha = (await $`git rev-parse --verify ${`${referencia}^{commit}`}`.quiet().nothrow()).stdout.toString().trim();
+	if (!/^[0-9a-f]{40}$/.test(sha)) falla(`No encuentro ${referencia} en este repo`);
+	const prefijo = sha.slice(0, 12);
 	acceso = await credenciales();
 	await revisarKomodo();
-	paso(`Volviendo a ${prefijo}: verificando y moviendo :beta`);
+	paso(`Volviendo a ${referencia} (${prefijo}): verificando y moviendo :beta`);
 	const digests = {} as Record<Nombre, string>;
 	for (const i of IMAGENES) {
 		digests[i.nombre] = await digestEnRegistry(`${REGISTRY}/${i.nombre}:${prefijo}`);
@@ -357,5 +406,5 @@ try {
 process.on('exit', () => rmSync(candado, { force: true }));
 const [modo] = process.argv.slice(2);
 if (!modo) await publicar();
-else if (/^[0-9a-f]{12}$/.test(modo)) await volverA(modo);
-else falla(`Uso: just release [<sha de 12>]; «${modo}» no es un sha de 12`);
+else if (/^[0-9a-f]{12}$/.test(modo) || SEMVER.test(modo)) await volverA(modo);
+else falla(`Uso: just release [<sha de 12> | vX.Y.Z-beta]; «${modo}» no es ninguno`);

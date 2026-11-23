@@ -173,8 +173,8 @@ ci:
 
 # `just release`: desde wip, en esta Mac sólo las revisiones rápidas; el commit (git archive) se compila en reko-5,
 # ahí corren las pruebas con base y los E2E contra esas imágenes, se firma en Komodo (stack de un solo uso
-# agents-firma), se verifica, se mueve :beta y se despliega el stack agents hasta que /healthz diga el commit.
-# `just release <sha12>` vuelve a una versión ya publicada. Ver scripts/release/release.ts.
+# agents-firma), se verifica, se mueve :beta, se despliega el stack agents hasta que /healthz diga el commit y se
+# sube el tag v0.0.N-beta. `just release <sha12|vX.Y.Z-beta>` vuelve a una versión ya publicada. Ver scripts/release/release.ts.
 release *args:
     bun scripts/release/release.ts {{args}}
 

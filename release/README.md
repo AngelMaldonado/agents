@@ -19,9 +19,9 @@ Mac   espera a que https://agents.cubytest.space/healthz diga ready y el sha del
 
 Si algo falla se detiene ahí: antes de la firma no hay nada publicado (sólo imágenes `:<sha12>` sin firma en Zot, que nadie usa); después, el mensaje dice en qué paso quedó. El diff entre el compose que tiene Komodo y el del commit se imprime antes de aplicarlo.
 
-**Volver atrás**: `just release <sha12>` verifica las firmas de las imágenes de ese commit, mueve `:beta` a ellas y despliega el compose de ese commit.
+**Volver atrás**: `just release <sha12>` o `just release v0.0.9-beta` verifica las firmas de las imágenes de ese commit, mueve `:beta` a ellas y despliega el compose de ese commit.
 
-**Versión**: no hay tags ni releases de GitHub; la versión es el commit. `/healthz` dice `version` (sha de 12) y `sha` (completo); las imágenes llevan `org.opencontainers.image.revision` (sha) y `org.opencontainers.image.version` (sha de 12). Por eso «Computadora → Versiones» ya no enlaza notas de GitHub en imágenes nuevas: compara imágenes por su ID, como siempre.
+**Versión**: semver beta en tags de git, sin releases de GitHub. El release toma la siguiente después del último tag `vX.Y.Z-beta` (`v0.0.8-beta` → `0.0.9-beta`), o la que ya tenga el commit si es un reintento; compila la app con ella (`/healthz` dice `version` y `sha`), la pone en la etiqueta `org.opencontainers.image.version` de las tres imágenes (la muestra «Computadora → Versiones») y, ya desplegada, crea el tag anotado `v<versión>` en el commit y lo sube a origin. Las imágenes en Zot se etiquetan por commit (`:<sha12>`) y `:beta`. Hasta el tag, un release que falla no gasta número.
 
 El CI de GitHub (`.github/workflows/checks.yml`) sigue igual para PRs y pushes a `main`, pero el release no depende de él.
 
