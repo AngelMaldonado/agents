@@ -244,8 +244,10 @@ async function verificar(ref: string, sha: string) {
 
 /** :beta apunta al digest ya verificado (nunca a algo sin firma). */
 async function promover(nombre: string, digest: string) {
+	// --prefer-index=false: una copia exacta. Con un solo manifest de origen (se compila sin provenance), buildx si no
+	// lo envuelve en un index nuevo, con otro digest y sin firma.
 	const r = await enReko(
-		`docker buildx imagetools create -t ${REGISTRY}/${nombre}:beta ${REGISTRY}/${nombre}@${digest}`,
+		`docker buildx imagetools create --prefer-index=false -t ${REGISTRY}/${nombre}:beta ${REGISTRY}/${nombre}@${digest}`,
 	);
 	if (r.exitCode !== 0) falla(`No pude mover ${nombre}:beta`);
 	if ((await digestEnRegistry(`${REGISTRY}/${nombre}:beta`)) !== digest) falla(`${nombre}:beta no quedó en ${digest}`);
