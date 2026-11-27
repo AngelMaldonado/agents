@@ -16,6 +16,7 @@ const groups: { title: string; members: string[]; listen: string }[] = [];
 const added: { thread: string; add: string[] }[] = [];
 let allowlist: { phone: string; label: string }[] = [];
 let threads = 0;
+let refuse: string | null = null; // WhatsApp refuses to add a member back, with this reason (left_recently…)
 const fake = Bun.serve({
 	hostname: '127.0.0.1',
 	port: 0,
@@ -57,7 +58,9 @@ const fake = Bun.serve({
 			added.push({ thread: members[1], add: body.add });
 			return Response.json({
 				threadId: members[1],
-				added: body.add.map((phone: string) => ({ phone, status: 'added', reason: null })),
+				added: body.add.map((phone: string) =>
+					refuse ? { phone, status: 'failed', reason: refuse } : { phone, status: 'added', reason: null },
+				),
 				removed: [],
 			});
 		}
@@ -245,6 +248,33 @@ run('the company number: link a phone, get a group «Agentes …» with your age
 	await cuby.startLink(anaP, { phone: '+52 444 222 3333' });
 	await whatsapp.syncGroups();
 	expect(added).toEqual([{ thread, add: ['+524442223333'] }]);
+
+	// Reopened while WhatsApp still refuses her (she left a moment ago): out for now, and not taken for leaving
+	// on her own: the next passes try again every 10 minutes until she is in (Miguel, 27-nov-2026).
+	added.length = 0;
+	await cuby.unlink(anaP);
+	await whatsapp.syncGroups();
+	await left('self');
+	refuse = 'left_recently';
+	await cuby.startLink(anaP, { phone: '+52 444 222 3333' });
+	await whatsapp.syncGroups();
+	expect(added).toHaveLength(1);
+	expect(await db!.row('select status, member_out, error from whatsapp_groups where ref = $1', [thread])).toEqual({
+		status: 'open',
+		member_out: 'reopen',
+		error: 'No se pudo meter al grupo (left_recently).',
+	});
+	await whatsapp.syncGroups();
+	expect(added).toHaveLength(1); // not again within 10 minutes
+	refuse = null;
+	await db!.exec("update whatsapp_groups set updated_at = now() - interval '11 minutes' where ref = $1", [thread]);
+	await whatsapp.syncGroups();
+	expect(added).toHaveLength(2);
+	expect(await db!.row('select member_out, error from whatsapp_groups where ref = $1', [thread])).toEqual({
+		member_out: null,
+		error: null,
+	});
+	expect(sent.at(-1)).toMatchObject({ threadId: thread, text: expect.stringContaining('1. Cuby Compras') });
 
 	// A external on the company number: Cuby Compras writes to them one to one in a thread of its own (open
 	// 7 days), and their answer in that thread goes back to the conversation that asked.

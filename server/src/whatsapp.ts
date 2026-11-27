@@ -541,7 +541,7 @@ type GroupRow = {
 	last_conversation_id: number | null;
 	pending: { agents: number[]; text: string } | null;
 	/** Out of the group, and why (Cuby's group.member_left); null: in it. */
-	member_out: 'list' | 'integration' | 'self' | null;
+	member_out: 'list' | 'integration' | 'self' | 'reopen' | null;
 	error: string | null;
 	updated_at: number;
 };
@@ -678,7 +678,12 @@ async function syncOnce() {
 				const open = { ...g, status: 'open' as const, person_id: w.person_id };
 				// Out of it, whatever Cuby said (it may report a list removal as `self`): reopening is a new
 				// invitation, so they go back in before the welcome. In an open group, leaving is respected.
-				if (n.provider === 'cuby' && g.member_out) await putBack(g);
+				// Marked `reopen` first: if WhatsApp refuses now (left_recently), it is tried again every 10
+				// minutes below instead of keeping a `self` that is never retried.
+				if (n.provider === 'cuby' && g.member_out) {
+					await exec("update whatsapp_groups set member_out = 'reopen' where id = $1", [g.id]);
+					await putBack(g);
+				}
 				await sayInGroup(n, open, null, welcome(open, w.owner_name, await groupAgents(open)));
 				continue;
 			}
@@ -725,14 +730,15 @@ async function syncOnce() {
 			if (/rate|overlimit|429|tope/i.test(message)) break; // WhatsApp says slow down: the next pass, later
 		}
 	}
-	// Out of an open group that is still theirs (Cuby took them out with the list): back in, with the
-	// welcome. Not who left on their own; one try every 10 minutes when WhatsApp refuses (left recently).
+	// Out of an open group that is still theirs (Cuby took them out with the list, or a reopening could not
+	// put them back): back in, with the welcome. Not who left on their own; one try every 10 minutes when
+	// WhatsApp refuses (left recently).
 	if (n.provider === 'cuby') {
 		const out = have.filter(
 			(g) =>
 				g.status === 'open' &&
 				g.ref &&
-				(g.member_out === 'list' || g.member_out === 'integration') &&
+				(g.member_out === 'list' || g.member_out === 'integration' || g.member_out === 'reopen') &&
 				(!g.error || Date.now() - new Date(g.updated_at).getTime() > 10 * 60_000) &&
 				want.some((w) => w.owner_id === g.owner_id && w.phone === g.phone),
 		);
